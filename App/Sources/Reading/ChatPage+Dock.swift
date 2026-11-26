@@ -117,8 +117,6 @@ extension ChatPage {
             files: $files,
             onPresentApproval: { approval in presentApproval(approval) },
             onToEnd: { toEnd() },
-            onPreviousQuestion: { stepQuestion(earlier: true) },
-            onNextQuestion: { stepQuestion(earlier: false) },
             onReturnToLatest: returnToLatest,
             onClearComposer: clearComposer,
             onListen: listen,
@@ -406,8 +404,6 @@ struct ChatBottomStackView<FindBar: View>: View {
 
     let onPresentApproval: (Approval) -> Void
     let onToEnd: () -> Void
-    let onPreviousQuestion: () -> Void
-    let onNextQuestion: () -> Void
     let onReturnToLatest: () -> Void
     let onClearComposer: () -> Void
     let onListen: () -> Void
@@ -474,8 +470,6 @@ struct ChatBottomStackView<FindBar: View>: View {
                             files: $files,
                             onPresentApproval: onPresentApproval,
                             onToEnd: onToEnd,
-                            onPreviousQuestion: onPreviousQuestion,
-                            onNextQuestion: onNextQuestion,
                             onReturnToLatest: onReturnToLatest,
                             onClearComposer: onClearComposer,
                             onListen: onListen,
@@ -496,25 +490,8 @@ struct ChatBottomStackView<FindBar: View>: View {
                         petPerch: petPerch,
                         inHistory: historyInView,
                         followState: followState,
-                        onPrevious: onPreviousQuestion,
-                        onNext: onNextQuestion,
                         onLatest: onReturnToLatest
                     )
-                }
-                .background(alignment: .top) {
-                    LinearGradient(
-                        colors: [Ink.paper.opacity(0), Ink.paper.opacity(0.96)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: Ink.Space.m)
-                    .offset(y: -Ink.Space.m)
-                    .allowsHitTesting(false)
-                }
-                .background {
-                    Ink.paper.opacity(0.96)
-                        .ignoresSafeArea(edges: .bottom)
-                        .allowsHitTesting(false)
                 }
                 .background(alignment: .top) {
                     ChatPetPerchAnchorView(
@@ -545,7 +522,7 @@ struct ChatBottomStackView<FindBar: View>: View {
                 onLatest: onReturnToLatest
             )
             .padding(.trailing, Ink.Space.page)
-            .padding(.bottom, Ink.Space.xs)
+            .padding(.bottom, 8 * UIScale.factor)
             .opacity(fabAlpha)
             .offset(y: calmPetMotion ? 0 : CGFloat(1 - fabAlpha) * 12)
             .scaleEffect(calmPetMotion ? 1 : CGFloat(0.88 + 0.12 * fabAlpha))
@@ -722,8 +699,6 @@ struct ChatComposerBarView: View {
 
     let onPresentApproval: (Approval) -> Void
     let onToEnd: () -> Void
-    let onPreviousQuestion: () -> Void
-    let onNextQuestion: () -> Void
     let onReturnToLatest: () -> Void
     let onClearComposer: () -> Void
     let onListen: () -> Void
@@ -783,10 +758,8 @@ struct ChatComposerBarView: View {
                 fileNote: fileNote,
                 outgoingText: outgoingText
             )
-            ChatComposerHintToast(notice: notice)
-                .padding(.horizontal, Ink.Space.page)
         }
-        .padding(.bottom, Ink.Space.xs)
+        .padding(.bottom, 8 * UIScale.factor)
     }
 }
 
@@ -1051,7 +1024,8 @@ private struct ChatComposerMainCard: View {
     }
 
     private func cardBody(composing: Bool) -> some View {
-        let sidePadding = composing ? Ink.Space.page : 26 * UIScale.factor
+        let idleMargin = max(28, 28 * UIScale.factor)
+        let sidePadding = composing ? Ink.Space.page : idleMargin
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
             ChatComposerQuoteBanner(quote: $quote)
             ChatComposerEditingBanner(editing: $editing, draftState: draftState)
@@ -1298,21 +1272,26 @@ private struct ChatComposerFilesRow: View {
                 HStack(spacing: Ink.Space.s) {
                     ForEach(files, id: \.self) { path in
                         HStack(spacing: 4) {
-                            Image(systemName: "doc").font(.system(size: Ink.Size.small))
+                            Image(systemName: "doc")
+                                .font(.system(size: Ink.Size.small))
+                                .layoutPriority(1)
                             Text((path as NSString).lastPathComponent)
                                 .font(.system(size: Ink.Size.small, weight: .medium))
                                 .lineLimit(1)
+                                .truncationMode(.middle)
                             Button {
                                 withAnimation(Ink.Motion.settle) { files.removeAll { $0 == path } }
                             } label: {
                                 Image(systemName: "xmark").font(.system(size: Ink.Size.micro, weight: .bold))
                             }
                             .buttonStyle(TapStyle(grow: 8))
+                            .layoutPriority(1)
                             .accessibilityLabel("移除文件：\((path as NSString).lastPathComponent)")
                         }
                         .foregroundStyle(Ink.ink)
                         .padding(.horizontal, Ink.Space.m)
                         .frame(height: 30)
+                        .frame(maxWidth: 180 * UIScale.factor)
                         .background(Ink.mine, in: .capsule)
                     }
                 }
@@ -1950,24 +1929,6 @@ private struct ChatActionButtonCore: View {
     }
 }
 
-private struct ChatComposerHintToast: View {
-    let notice: ChatComposerNotice
-
-    var body: some View {
-        if let text = notice.text {
-            Text(text)
-                .font(Ink.footnote)
-                .foregroundStyle(Ink.inkSoft)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-                .onTapGesture {
-                    withAnimation(Ink.Motion.settle) { notice.text = nil }
-                }
-        }
-    }
-}
-
 private struct ChatDockedJumpOverlaySlot: View {
     let chatKey: String
     @ObservedObject var team: TeamModel
@@ -1976,8 +1937,6 @@ private struct ChatDockedJumpOverlaySlot: View {
     let petPerch: PetPerch
     let inHistory: Bool
     let followState: ChatFollowState
-    let onPrevious: () -> Void
-    let onNext: () -> Void
     let onLatest: () -> Void
 
     private var hasInlineAsk: Bool {
@@ -1997,8 +1956,6 @@ private struct ChatDockedJumpOverlaySlot: View {
             inHistory: inHistory,
             following: followState.following,
             suppressed: hasInlineAsk || hasPendingApproval,
-            onPrevious: onPrevious,
-            onNext: onNext,
             onLatest: onLatest
         )
         .padding(.horizontal, Ink.Space.page)

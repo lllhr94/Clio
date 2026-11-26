@@ -105,7 +105,7 @@ struct TideChip: View {
         }
         .sheet(isPresented: $open) {
             TideSheet(keeper: keeper)
-                .presentationDetents([.medium, .large])
+                .detentPaperBackdrop()
         }
     }
 }
@@ -174,7 +174,6 @@ struct TideSheet: View {
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
             }
-            .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("nav.dailyDiscover"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }

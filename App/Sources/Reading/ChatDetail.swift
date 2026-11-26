@@ -47,10 +47,11 @@ struct ChatDetail: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
                     hero
-                    Picker("看什么", selection: $tab) {
-                        ForEach(Tab.allCases) { Text($0.title).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
+                    SlidingCapsuleControl(
+                        selection: $tab,
+                        options: Tab.allCases
+                    ) { $0.title }
+                    .accessibilityLabel("看什么")
                     switch tab {
                     case .steps: stepList
                     case .files: fileList
@@ -59,6 +60,7 @@ struct ChatDetail: View {
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
             }
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("chat.details"))
             .navigationBarTitleDisplayMode(.inline)
@@ -87,7 +89,7 @@ struct ChatDetail: View {
             Button(L.t("actions.save")) { team.rename(chat.key, to: renameText) }
         }
         .sheet(isPresented: $usage) {
-            UsageSheet(team: team, key: chat.key).presentationDetents([.medium, .large])
+            UsageSheet(team: team, key: chat.key).detentPaperBackdrop()
         }
         .sheet(item: $sharing) { item in ChatShareSheet(url: item.url) }
         .alert(L.t("errors.exportChat"), isPresented: $exportFailed) {
@@ -129,9 +131,9 @@ struct ChatDetail: View {
             .buttonStyle(.plain)
             .accessibilityHint("重命名对话")
             HStack(spacing: 0) {
-                stat("\(minutes)", "分钟")
-                stat("\(steps.count)", "步")
-                stat("\(files.count)", "个文件")
+                stat(minutes, "分钟")
+                stat(steps.count, "步")
+                stat(files.count, "个文件")
             }
             HStack(spacing: Ink.Space.s) {
                 pill("用量", "chart.pie") { usage = true }
@@ -165,9 +167,13 @@ struct ChatDetail: View {
         .accessibilityLabel("编辑\(bot.name)的名字、性格和模型")
     }
 
-    private func stat(_ value: String, _ unit: String) -> some View {
+    private func stat(_ value: Int, _ unit: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Ink.Space.xs / 2) {
-            Text(value).font(.system(size: Ink.Size.title, weight: .semibold).monospacedDigit()).foregroundStyle(Ink.ink)
+            Text("\(value)")
+                .font(.system(size: Ink.Size.title, weight: .semibold).monospacedDigit())
+                .foregroundStyle(Ink.ink)
+                .contentTransition(.numericText(value: Double(value)))
+                .animation(Ink.Motion.quick, value: value)
             Text(unit).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkSoft)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

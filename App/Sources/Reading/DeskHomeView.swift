@@ -60,6 +60,7 @@ struct DeskHomeView: View {
             .padding(.bottom, Ink.Space.huge)
         }
         .scrollIndicators(.hidden)
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .animation(Ink.Motion.settle, value: team.approvals.count)
     }
 
@@ -258,7 +259,7 @@ struct DeskHomeView: View {
                         .background(Ink.paperRaised, in: .capsule)
                         .overlay(Capsule().strokeBorder(Ink.rule, lineWidth: 1))
                     }
-                    .buttonStyle(PressStyle(haptic: false))
+                    .buttonStyle(PressStyle(haptic: false, elevated: true))
                     .contextMenu {
                         Button(Words.t("看名帖"), systemImage: "person.text.rectangle") { cardBot = bot }
                         ShareLink(item: NameCardTransfer(bot: bot), preview: SharePreview(bot.name)) { Label(Words.t("递名帖"), systemImage: "square.and.arrow.up") }

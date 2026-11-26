@@ -227,6 +227,7 @@ struct StudyFolder: View {
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
             }
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
         }
         .hitchPage("书案列表")
         .navigationTitle(navigationTitle)
@@ -257,7 +258,12 @@ struct StudyFolder: View {
                     Button(L.t("files.unmountAction"), role: .destructive) {
                         if let target = unmounting {
                             MountedFolders.remove(id: target.id)
-                            mountNotice = L.format("files.unmountedNotice", target.name)
+                            mountNotice = nil
+                            ToastCenter.shared.show(
+                                L.format("files.unmountedNotice", target.name),
+                                symbol: "link.badge.minus",
+                                tint: Ink.inkSoft
+                            )
                             Haptics.lock()
                             Task { await load() }
                         }
@@ -327,6 +333,7 @@ struct StudyFolder: View {
                     mountRow(inspection)
                 }
             }
+            .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
             .paperCard()
             Text(L.t("files.mountedNote"))
                 .font(.system(size: Ink.Size.small))
@@ -347,8 +354,9 @@ struct StudyFolder: View {
                     title: inspection.mount.name,
                     line: L.format("files.mountFolderPath", inspection.mount.name)
                 )
+                .background(Ink.paperRaised)
             }
-            .buttonStyle(PressStyle())
+            .buttonStyle(PressStyle(elevated: true))
             .contextMenu { mountContextMenu(inspection.mount) }
         } else {
             Button {
@@ -362,8 +370,9 @@ struct StudyFolder: View {
                     title: inspection.mount.name,
                     line: L.t("files.mountExpiredTap")
                 )
+                .background(Ink.paperRaised)
             }
-            .buttonStyle(PressStyle(haptic: false))
+            .buttonStyle(PressStyle(haptic: false, elevated: true))
             .contextMenu { mountContextMenu(inspection.mount) }
         }
     }
@@ -386,17 +395,21 @@ struct StudyFolder: View {
             }
             LazyVStack(spacing: 0) {
                 ForEach(items) { item in
-                    NavigationLink(value: item) { row(item) }
-                        .buttonStyle(PressStyle())
-                        .contextMenu {
-                            if let shareURL = item.shareURL {
-                                ShareLink(item: shareURL) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") }
-                            }
-                            Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = item }
+                    NavigationLink(value: item) {
+                        row(item)
+                            .background(Ink.paperRaised)
+                    }
+                    .buttonStyle(PressStyle(elevated: true))
+                    .contextMenu {
+                        if let shareURL = item.shareURL {
+                            ShareLink(item: shareURL) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") }
                         }
+                        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = item }
+                    }
                     if item.id != items.last?.id { Kit.divider }
                 }
             }
+            .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
             .paperCard()
         }
     }
@@ -491,10 +504,20 @@ struct StudyFolder: View {
                 let saved: MountedFolder
                 if let targetMount {
                     saved = try MountedFolders.reauthorize(id: targetMount.id, with: url)
-                    mountNotice = L.format("files.reauthorizedNotice", saved.name)
+                    mountNotice = nil
+                    ToastCenter.shared.show(
+                        L.format("files.reauthorizedNotice", saved.name),
+                        symbol: "checkmark.circle.fill",
+                        tint: Ink.ok
+                    )
                 } else {
                     saved = try MountedFolders.add(url)
-                    mountNotice = L.format("files.mountedAddedNotice", saved.name, saved.name)
+                    mountNotice = nil
+                    ToastCenter.shared.show(
+                        L.format("files.mountedAddedNotice", saved.name, saved.name),
+                        symbol: "checkmark.circle.fill",
+                        tint: Ink.ok
+                    )
                 }
                 Haptics.thud()
                 Task { await load() }
@@ -727,6 +750,7 @@ struct StudyFile: View {
                     .padding(.horizontal, Ink.Space.page)
                     .padding(.vertical, Ink.Space.l)
                 }
+                .scrollEdgeEffectStyle(.soft, for: .vertical)
             } else if loaded {
                 if let quickLookURL {
                     if ext == "pdf", let initialPage, initialPage >= 1 {

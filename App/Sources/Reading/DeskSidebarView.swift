@@ -71,6 +71,7 @@ struct DeskSidebarView: View {
                 .padding(.bottom, Ink.Space.l)
             }
             .scrollIndicators(.hidden)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .scrollDismissesKeyboard(.interactively)
 
             settingsFooter

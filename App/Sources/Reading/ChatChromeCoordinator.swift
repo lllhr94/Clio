@@ -265,16 +265,7 @@ final class ChatChromeCoordinator {
         }
     }
 
-    static func jumpKeepOutWidth(jumpVisible: Bool, latestVisible: Bool) -> CGFloat {
-        if jumpVisible && latestVisible {
-            return 112 * UIScale.factor + Ink.Space.xs + Ink.Space.s
-        }
-        if jumpVisible {
-            return 70 * UIScale.factor + Ink.Space.s
-        }
-        if latestVisible {
-            return 38 * UIScale.factor + Ink.Space.s
-        }
-        return 0
+    static func jumpKeepOutWidth(latestVisible: Bool) -> CGFloat {
+        latestVisible ? 48 * UIScale.factor : 0
     }
 }

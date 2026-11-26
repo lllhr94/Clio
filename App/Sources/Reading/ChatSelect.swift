@@ -17,14 +17,13 @@ struct PickWords: View {
         NavigationStack {
             Selectable(text: text)
                 .padding(.horizontal, Ink.Space.page)
-                .background(Ink.paper.ignoresSafeArea())
                 .navigationTitle("选择文字")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
                 }
         }
-        .presentationDetents([.medium, .large])
+        .detentPaperBackdrop()
     }
 }
 

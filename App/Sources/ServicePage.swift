@@ -65,6 +65,7 @@ struct ServicePage: View {
             }
         }
         .scrollDismissesKeyboard(.interactively)
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(endpoint?.name ?? L.t("settings.modelService"))
         .navigationBarTitleDisplayMode(.inline)
@@ -90,7 +91,7 @@ struct ServicePage: View {
         }
         .sheet(item: Binding(get: { editing.map { Picked(model: $0) } }, set: { editing = $0?.model })) { picked in
             ModelSheet(team: team, endpointId: currentID, model: picked.model)
-                .presentationDetents([.large])
+                .detentPaperBackdrop(initial: .large, detents: [.large])
         }
         // A name or address typed and left without pressing return is kept, not lost.
         .onDisappear {
@@ -479,7 +480,9 @@ struct ServicePage: View {
         Task {
             guard await save(endpoint) != nil else { return }
             Haptics.thud()
-            note = L.t("servicePage.keyReplacedNotice")
+            let message = L.t("servicePage.keyReplacedNotice")
+            note = message
+            ToastCenter.shared.show(message, symbol: "key.fill", tint: Ink.ok)
         }
     }
 
@@ -688,6 +691,7 @@ private struct ManageModelsSheet: View {
                 }
             }
             .scrollDismissesKeyboard(.interactively)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("settings.manageModels"))
             .navigationBarTitleDisplayMode(.inline)
@@ -815,12 +819,16 @@ private struct ManageModelsSheet: View {
 
     private func addTyped(_ endpoint: Endpoint, model: String) {
         guard !endpoint.models.contains(model) else {
-            note = L.format("servicePage.modelAlreadyActive", model)
+            let message = L.format("servicePage.modelAlreadyActive", model)
+            note = message
+            ToastCenter.shared.show(message, symbol: "checkmark.circle", tint: Ink.inkSoft)
             return
         }
         Haptics.tick(0.6)
         withAnimation(.smooth) { team.setModels(endpoint.id, endpoint.models + [model]) }
-        note = L.format("servicePage.modelAddedNotice", model)
+        let message = L.format("servicePage.modelAddedNotice", model)
+        note = message
+        ToastCenter.shared.show(message, symbol: "checkmark.circle.fill", tint: Ink.ok)
     }
 
     private func refresh(_ endpoint: Endpoint) {
@@ -829,7 +837,9 @@ private struct ManageModelsSheet: View {
         Task {
             do {
                 let count = try await team.refreshModels(endpoint.id)
-                note = L.format("servicePage.catalogRefreshedNotice", count)
+                let message = L.format("servicePage.catalogRefreshedNotice", count)
+                note = message
+                ToastCenter.shared.show(message, symbol: "checkmark.circle.fill", tint: Ink.ok)
             } catch {
                 note = Explain.model(error, service: endpoint.name).displayTitle
             }
@@ -943,6 +953,7 @@ struct ModelSheet: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .scrollDismissesKeyboard(.interactively)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(model)
             .navigationBarTitleDisplayMode(.inline)

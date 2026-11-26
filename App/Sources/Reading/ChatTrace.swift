@@ -475,11 +475,27 @@ struct Trace: View {
             return "第 \(line.tools.count) 步：" + current
         }
         var kinds: [String] = []
-        for tool in line.tools {
-            let kind = String(tool.split(whereSeparator: { $0 == "：" || $0 == "·" }).first ?? Substring(tool)).trimmingCharacters(in: .whitespaces)
+        var failedCount = 0
+        var cancelledCount = 0
+        var unknownCount = 0
+        for (index, tool) in line.tools.enumerated() {
+            let output = index < line.details.count ? line.details[index].output : nil
+            let parsed = TraceStepStatus.parse(tool, output: output)
+            switch parsed.status {
+            case .ok: break
+            case .failed: failedCount += 1
+            case .cancelled: cancelledCount += 1
+            case .unknown: unknownCount += 1
+            }
+            let kind = String(parsed.clean.split(whereSeparator: { $0 == "：" || $0 == "·" }).first ?? Substring(parsed.clean)).trimmingCharacters(in: .whitespaces)
             if !kind.isEmpty, !kinds.contains(kind) { kinds.append(kind) }
         }
         var out = "\(line.tools.count) 步"
+        var issues: [String] = []
+        if failedCount > 0 { issues.append("\(failedCount) 步失败") }
+        if unknownCount > 0 { issues.append("\(unknownCount) 步结果未知") }
+        if cancelledCount > 0 { issues.append("\(cancelledCount) 步已取消") }
+        if !issues.isEmpty { out += "（" + issues.joined(separator: "、") + "）" }
         if !kinds.isEmpty { out += " · " + kinds.prefix(3).joined(separator: "、") + (kinds.count > 3 ? " 等" : "") }
         if let seconds = line.seconds { out += " · " + Clock.said(seconds) }
         return out
@@ -1298,7 +1314,7 @@ struct Trace: View {
                             }
                             .padding(.horizontal, Ink.Space.m)
                             .padding(.vertical, Ink.Space.s)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: 210 * UIScale.factor, alignment: .leading)
                             .paperCard()
                         }
                         .buttonStyle(PressStyle())

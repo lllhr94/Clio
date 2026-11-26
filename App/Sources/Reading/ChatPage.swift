@@ -35,6 +35,7 @@ struct ChatPage: View {
     @State var headerHeight: CGFloat = 0
     @State var headerBottomY: CGFloat?
     @State var dockTopY: CGFloat?
+    @State var nonKeyboardSafeMaxY: CGFloat?
     @State var photos: [Data] = []
     @State var draftAttachmentQueuedIds: [UUID] = []
     @State var draftAttachmentsLoaded = false
@@ -880,8 +881,6 @@ struct ChatPage: View {
             files: $files,
             onPresentApproval: { approval in presentApproval(approval) },
             onToEnd: { toEnd() },
-            onPreviousQuestion: { stepQuestion(earlier: true) },
-            onNextQuestion: { stepQuestion(earlier: false) },
             onReturnToLatest: returnToLatest,
             onClearComposer: clearComposer,
             onListen: listen,
@@ -902,6 +901,7 @@ struct ChatPage: View {
         ChatConversationObservers(
             chat: chat,
             team: team,
+            chrome: chrome,
             viewport: viewport,
             idleMood: idleMood,
             awayState: awayState,
@@ -914,6 +914,7 @@ struct ChatPage: View {
             onClearedLines: {
                 historyPage = nil
                 lookupRows = []
+                chrome.unreadCount = 0
             },
             onFollowToEnd: { followToEnd() },
             onApprovalInsetChanged: { approvalInsetChanged() },
@@ -1003,7 +1004,8 @@ struct ChatPage: View {
         }
         bridge.onSay = { [weak noticeRef] text in
             guard let noticeRef else { return }
-            Self.postComposerNotice(text, to: noticeRef)
+            let symbol = text.contains("复制") ? "doc.on.doc" : nil
+            Self.postComposerNotice(text, to: noticeRef, symbol: symbol)
         }
         bridge.onRetry = { [weak chatRef] in
             guard let chatRef else { return }
@@ -1048,9 +1050,15 @@ struct ChatPage: View {
     private var coreContent: some View {
         ZStack(alignment: .top) {
             Ink.paper.ignoresSafeArea()
+            Color.clear
+                .ignoresSafeArea(.keyboard)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: {
+                    nonKeyboardSafeMaxY = $0
+                }
             conversation
-            ChatTopEdgeFadeOverlay(chromeCoordinator: chromeCoordinator, headerHeight: headerHeight)
-            ChatBottomEdgeFadeOverlay()
+            ChatStatusBarBlurVeil()
             if !roaming {
                 ChatRoamThumbHost(
                     browser: team.browser,
@@ -1078,10 +1086,21 @@ struct ChatPage: View {
         .background {
             observers
             chromeLockObserver
+            toastClearanceObserver
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
             if chatViewport != newSize { chatViewport = newSize }
         }
+    }
+
+    private var toastClearanceObserver: some View {
+        ChatToastClearanceObserver(
+            dockTopY: dockTopY,
+            nonKeyboardSafeMaxY: nonKeyboardSafeMaxY,
+            petPerch: petPerch,
+            face: isRoom ? nil : bot.avatar,
+            viewport: chatViewport
+        )
     }
 
     private var chromeLockObserver: some View {
@@ -1123,7 +1142,7 @@ struct ChatPage: View {
             .sheet(isPresented: $petSettingsOpen) { PetPage() }
             .sheet(isPresented: $usageOpen) {
                 UsageSheet(team: team, key: chat.key)
-                    .presentationDetents([.medium, .large])
+                    .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
             }
             .sheet(item: $noting) { note in
                 NoteSheet(text: note.text, from: isRoom ? Words.t("雅集 · \(bot.name)") : bot.name, question: askedBefore(note.id),
@@ -1137,7 +1156,7 @@ struct ChatPage: View {
                 ) { savedPath in
                     say(Words.t("已存成笔记：书案/\(savedPath)"))
                 }
-                .presentationDetents([.medium, .large])
+                .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
             }
             .sheet(item: $quoting) { item in
                 QuoteSheet(text: item.text) { picked in
@@ -1146,7 +1165,7 @@ struct ChatPage: View {
                     withAnimation(Ink.Motion.settle) { quote = picked }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { typing = true }
                 }
-                .presentationDetents([.medium, .large])
+                .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
             }
             .sheet(isPresented: $cardOpen) { NameCardSheet(team: team, bot: bot) }
             .sheet(isPresented: $detailOpen, onDismiss: {
@@ -1171,7 +1190,7 @@ struct ChatPage: View {
             .sheet(isPresented: $chatConnectorsOpen) { ConnectorsPage() }
             .sheet(isPresented: $abilities) {
                 AbilitiesSheet(team: team, key: chat.key, name: bot.name)
-                    .presentationDetents([.medium, .large])
+                    .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
             }
             .sheet(item: $reading) { file in
                 NavigationStack { StudyFile(url: file.url, mount: file.mount, showsDone: true) }
@@ -1202,14 +1221,14 @@ struct ChatPage: View {
                 OutlineSheet(pairs: outlinePairs) { id in
                     jumpToOutlineItem(id)
                 }
-                .presentationDetents([.medium, .large])
+                .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
             }
             .sheet(item: $picking) { line in
                 PickWords(text: line.text)
             }
             .sheet(isPresented: $leafing) {
                 LeavesSheet(team: team, key: chat.key, name: bot.name)
-                    .presentationDetents([.medium, .large])
+                    .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
             }
             .sheet(item: $approving, onDismiss: { followToEnd() }) { approval in
                 ApproveView(approval: approval, team: team)
@@ -1301,7 +1320,7 @@ struct ChatPage: View {
             if let index = photos.firstIndex(of: data) { _ = withAnimation(Ink.Motion.settle) { photos.remove(at: index) } }
         }, pick: { attachPicked = $0 })
         // Half open: photos, camera and files at hand; pull up for the rest.
-        .presentationDetents([.medium, .large])
+        .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
         .presentationBackgroundInteraction(.disabled)
         .presentationDragIndicator(.visible)
     }
@@ -1387,6 +1406,7 @@ struct ChatPage: View {
         dictationSlot.cancelIfActive()
         _ = voice.stopSpeaking(at: .immediate)
         speakingText = nil
+        ToastCenter.shared.bottomClearance = 0
         bridge.unbind()
     }
 
@@ -1511,38 +1531,12 @@ struct ChatPage: View {
     @State var linkAsking = false
     @State var linkDraft = ""
     @State var cardOpen = false
-    @State var glancing = false
     @State var outlining = false
     @State var renaming = false
     @State var renameText = ""
     @State var tuningOpen = false
     @State var careOpen = false
     @State var petSettingsOpen = false
-}
-
-private struct ChatBottomEdgeFadeOverlay: View {
-    var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            LinearGradient(
-                stops: [
-                    .init(color: Ink.paper.opacity(0), location: 0),
-                    .init(color: Ink.paper.opacity(0.65), location: 0.55),
-                    .init(color: Ink.paper.opacity(0.98), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 16 * UIScale.factor)
-            Ink.paper.opacity(0.98)
-                .frame(height: 1)
-                .background {
-                    Ink.paper.opacity(0.98).ignoresSafeArea(edges: .bottom)
-                }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
 }
 
 private struct ChatRoamThumbHost: View {
@@ -1911,6 +1905,7 @@ private struct ChatActiveEmptyPetFace: View {
 struct ChatConversationObservers: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
+    let chrome: ChatChrome
     let viewport: ChatViewport
     let idleMood: ChatIdleMood
     let awayState: ChatAwayState
@@ -1966,6 +1961,8 @@ struct ChatConversationObservers: View {
                 ChatSecondaryObservers(
                     chat: chat,
                     team: team,
+                    chrome: chrome,
+                    followState: followState,
                     viewport: viewport,
                     idleMood: idleMood,
                     awayState: awayState,
@@ -1985,6 +1982,8 @@ struct ChatConversationObservers: View {
 private struct ChatSecondaryObservers: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
+    let chrome: ChatChrome
+    let followState: ChatFollowState
     let viewport: ChatViewport
     let idleMood: ChatIdleMood
     let awayState: ChatAwayState
@@ -2015,9 +2014,20 @@ private struct ChatSecondaryObservers: View {
                 Hitches.shared.doing(now ? "打字" : nil, as: "typing")
                 onStir()
             }
-            .onChange(of: chat.lines.last?.id) { _, _ in
+            .onChange(of: followState.following) { _, now in
+                if now { chrome.unreadCount = 0 }
+            }
+            .onChange(of: chrome.farFromEnd) { _, far in
+                if !far { chrome.unreadCount = 0 }
+            }
+            .onChange(of: chat.lines.last?.id) { oldID, newID in
                 if chat.lines.isEmpty { onClearedLines() }
                 if chat.lines.last?.kind == .bot { Haptics.tick(0.45) }
+                if let oldID, let newID, oldID != newID,
+                   !followState.following, chrome.farFromEnd,
+                   let last = chat.lines.last, last.kind == .bot || last.kind == .note {
+                    chrome.unreadCount += 1
+                }
                 onFollowToEnd()
             }
             .onChange(of: chat.lines.count) { onFollowToEnd() }
@@ -2042,6 +2052,61 @@ private struct ChatSecondaryObservers: View {
                 let estimate = await team.contextEstimate(chat.key)
                 if !Task.isCancelled { contextMetrics.estimate = estimate }
             }
+    }
+}
+
+private struct ChatToastClearanceObserver: View {
+    let dockTopY: CGFloat?
+    let nonKeyboardSafeMaxY: CGFloat?
+    let petPerch: PetPerch
+    let face: String?
+    let viewport: CGSize
+    @Environment(\.displayScale) private var displayScale
+
+    private var petClearance: CGFloat {
+        let library = PetLibrary.shared
+        guard library.shown, !petPerch.suppressed else { return 0 }
+        if petPerch.replyStand > 0 { return petPerch.replyStand }
+        guard let pack = library.pack(for: face), viewport.width > 0, viewport.height > 0 else { return 0 }
+        let unit = PetSize.unit(
+            for: pack,
+            factor: library.factor,
+            displayScale: displayScale,
+            maxWidth: max(1, viewport.width - Ink.Space.page * 2),
+            maxHeight: viewport.height / 3
+        )
+        return CGFloat(pack.baseline) * unit
+    }
+
+    private var clearanceKey: String {
+        let dock = dockTopY.map { String(format: "%.1f", $0) } ?? "nil"
+        let safe = nonKeyboardSafeMaxY.map { String(format: "%.1f", $0) } ?? "nil"
+        return "\(dock)|\(safe)|\(String(format: "%.1f", petClearance))|\(String(format: "%.1f", petPerch.foot))"
+    }
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: clearanceKey, initial: true) { _, _ in
+                syncClearance()
+            }
+            .onDisappear {
+                ToastCenter.shared.bottomClearance = 0
+            }
+    }
+
+    private func syncClearance() {
+        guard let dockTopY, let nonKeyboardSafeMaxY, nonKeyboardSafeMaxY > 0 else {
+            ToastCenter.shared.bottomClearance = 0
+            return
+        }
+        let dockAboveSafe = max(0, nonKeyboardSafeMaxY - dockTopY)
+        let target = dockAboveSafe + petClearance + Ink.Space.m
+        if abs(ToastCenter.shared.bottomClearance - target) > 0.5 {
+            ToastCenter.shared.bottomClearance = target
+        }
     }
 }
 

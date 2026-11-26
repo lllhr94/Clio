@@ -52,7 +52,7 @@ struct DenPage: View {
                 outfitting = false
                 if let command { queue(command) }
             }
-            .presentationDetents([.medium, .large])
+            .detentPaperBackdrop()
         }
     }
 

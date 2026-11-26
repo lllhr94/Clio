@@ -28,6 +28,7 @@ struct ApproveView: View {
     @State private var note: String?
     /// 0...1: how far the stamp is pressing the slip down.
     @State private var press: CGFloat = 0
+    @State private var sealBounce: CGFloat = 1
     @State private var slideResetToken: UInt64 = 0
     @State private var shown = false
     @State private var viewport = CGSize.zero
@@ -173,7 +174,7 @@ struct ApproveView: View {
             VStack(spacing: Ink.Space.s) {
                 if prefersTapConfirm {
                     Button {
-                        Haptics.lock()
+                        Haptics.thud()
                         answer(allow: true)
                     } label: {
                         Text(L.t("actions.approveConfirm"))
@@ -314,6 +315,7 @@ struct ApproveView: View {
                     // Approved: Clio's own seal, pressed beside your name, with when.
                     VStack(spacing: Ink.Space.xs) {
                         ClioSeal(size: stampSide * 0.61, tilt: -8)
+                            .scaleEffect(sealBounce)
                         Text(Self.clock(stampedAt, "MM-dd HH:mm"))
                             .font(Ink.mono(Ink.Size.micro, weight: .semibold))
                             .foregroundStyle(Ink.seal)
@@ -449,10 +451,25 @@ struct ApproveView: View {
     /// The stamp falls, lands with a thud, and the slip gives under it.
     private func stamp(_ result: Verdict) {
         stampedAt = Date()
-        withAnimation(.spring(response: 0.24, dampingFraction: 0.62)) { verdict = result }
+        let calm = Ink.Motion.prefersReduced(reduceMotion)
+        if result == .allowed && !calm {
+            sealBounce = 1.24
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.45)) {
+                verdict = result
+                sealBounce = 0.92
+            }
+        } else {
+            sealBounce = 1
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.62)) { verdict = result }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.11) {
             if result == .allowed { Haptics.thud() } else { Haptics.lock() }
             withAnimation(.spring(response: 0.1, dampingFraction: 0.7)) { press = 1 }
+            if result == .allowed && !calm {
+                withAnimation(.spring(response: 0.44, dampingFraction: 0.42)) {
+                    sealBounce = 1
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) {
                 withAnimation(.spring(response: 0.55, dampingFraction: 0.38)) { press = 0 }
             }
@@ -470,6 +487,7 @@ struct ApproveView: View {
         withAnimation(.spring(response: 0.55, dampingFraction: 0.8)) {
             current = next
             verdict = nil
+            sealBounce = 1
             note = nil
             busy = false
             always = false

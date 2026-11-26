@@ -8,6 +8,7 @@ import UIKit
 final class ChatChrome {
     var jumpVisible = false
     var farFromEnd = false
+    var unreadCount = 0
     var minimapScrub: Int?
     var activeTurnID: String?
     var scrolling = false
@@ -80,75 +81,70 @@ struct ChatFloatingJumpOverlay: View {
     let inHistory: Bool
     let following: Bool
     var suppressed: Bool = false
-    let onPrevious: () -> Void
-    let onNext: () -> Void
     let onLatest: () -> Void
 
     private var latestIsFloating: Bool {
-        chrome.jumpVisible && (inHistory || (chrome.farFromEnd && !following))
+        inHistory || (chrome.farFromEnd && !following)
     }
 
     private func updateKeepOut() {
         let width = ChatChromeCoordinator.jumpKeepOutWidth(
-            jumpVisible: !suppressed && chrome.jumpVisible,
             latestVisible: !suppressed && latestIsFloating
         )
         withAnimation(Ink.Motion.settle) { petPerch.keepOutRight = width }
     }
 
     var body: some View {
-        let controlHeight = 32 * UIScale.factor
-        let showGroup = !suppressed && chrome.jumpVisible
         let showLatest = !suppressed && latestIsFloating
-        HStack(spacing: Ink.Space.xs) {
-            HStack(spacing: 0) {
-                jumpButton("arrow.up", title: "chat.previousQuestion", action: onPrevious)
-                Rectangle()
-                    .fill(Ink.rule.opacity(0.7))
-                    .frame(width: 0.5, height: 14 * UIScale.factor)
-                jumpButton("arrow.down", title: "chat.nextQuestion", action: onNext)
-            }
-            .frame(height: controlHeight)
-            .glassBacking(in: Capsule())
-            .opacity(showGroup ? 1 : 0)
-            .allowsHitTesting(showGroup)
-            .accessibilityHidden(!showGroup)
-
+        HStack {
+            Spacer(minLength: 0)
             if showLatest {
-                let latestSize = 38 * UIScale.factor
-                Button(action: onLatest) {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: Ink.Size.small, weight: .semibold))
-                        .foregroundStyle(Ink.ink)
-                        .frame(width: latestSize, height: latestSize)
-                        .glassFace(in: Circle())
-                        .frame(minWidth: 44, minHeight: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PressStyle())
-                .accessibilityLabel(L.t("chat.latest"))
-                .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                latestButton
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .offset(y: -(38 * UIScale.factor + Ink.Space.s))
-        .onChange(of: chrome.jumpVisible, initial: true) { _, _ in updateKeepOut() }
         .onChange(of: latestIsFloating, initial: true) { _, _ in updateKeepOut() }
         .onChange(of: suppressed, initial: true) { _, _ in updateKeepOut() }
-        .animation(Ink.Motion.settle, value: showGroup)
         .animation(Ink.Motion.settle, value: showLatest)
     }
 
-    private func jumpButton(_ symbol: String, title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
+    private var latestButton: some View {
+        let latestSize = 38 * UIScale.factor
+        return Button(action: onLatest) {
+            Image(systemName: "chevron.down")
                 .font(.system(size: Ink.Size.small, weight: .semibold))
-                .foregroundStyle(Ink.inkSoft)
-                .frame(width: 34 * UIScale.factor, height: 32 * UIScale.factor)
+                .foregroundStyle(Ink.ink)
+                .frame(width: latestSize, height: latestSize)
+                .glassFace(in: Circle())
+                .overlay(alignment: .topTrailing) {
+                    if chrome.unreadCount > 0 {
+                        unreadBadge(count: chrome.unreadCount)
+                    }
+                }
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
-        .accessibilityLabel(L.t(title))
+        .accessibilityLabel(
+            chrome.unreadCount > 0
+                ? "\(L.t("chat.latest"))，\(chrome.unreadCount)"
+                : L.t("chat.latest")
+        )
+    }
+
+    private func unreadBadge(count: Int) -> some View {
+        let label = count > 99 ? "99+" : "\(count)"
+        return Text(label)
+            .font(.system(size: Ink.Size.micro, weight: .bold).monospacedDigit())
+            .foregroundStyle(Ink.onAccent)
+            .padding(.horizontal, 5 * UIScale.factor)
+            .frame(minWidth: 18 * UIScale.factor, height: 18 * UIScale.factor)
+            .background(Ink.accent, in: Capsule(style: .continuous))
+            .offset(x: 4 * UIScale.factor, y: -4 * UIScale.factor)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 

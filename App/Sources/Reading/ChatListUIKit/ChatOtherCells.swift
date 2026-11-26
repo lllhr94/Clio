@@ -81,6 +81,7 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
         currentEntry = nil
         actions = nil
         richTextView.resetForReuse()
+        meAvatar.resetBounce()
         photoViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         onQuoteExcerpt = nil
         onSaveNoteExcerpt = nil
@@ -132,7 +133,6 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
 
         if row.faces && row.opens {
             meAvatar.isHidden = false
-            meAvatar.hostViewController = hostViewController
             meAvatar.refreshDisplay()
         } else {
             meAvatar.isHidden = true
@@ -1360,6 +1360,7 @@ final class ChatTraceSummaryCell: UICollectionViewCell {
         timeGapLabel.isHidden = true
         contentView.addSubview(timeGapLabel)
 
+        speakerAvatar.isTapBounceEnabled = true
         speakerAvatar.isHidden = true
         contentView.addSubview(speakerAvatar)
 
@@ -1406,6 +1407,7 @@ final class ChatTraceSummaryCell: UICollectionViewCell {
         litBackdrop.isHidden = true
         timeGapLabel.isHidden = true
         speakerAvatar.isHidden = true
+        speakerAvatar.resetBounce()
         speakerLabel.isHidden = true
         currentRow = nil
         currentEntry = nil

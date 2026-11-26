@@ -188,7 +188,11 @@ struct FormSheet: View {
                 if typeSize.isAccessibilitySize {
                     choices(for: field).pickerStyle(.menu)
                 } else {
-                    choices(for: field).pickerStyle(.segmented)
+                    SlidingCapsuleControl(
+                        selection: binding(field.key),
+                        items: field.effectiveOptions.map { (value: $0.value, title: $0.label) }
+                    )
+                    .accessibilityLabel(field.label)
                 }
             } else if field.effectiveKind != .text {
                 AskFieldControl(

@@ -42,7 +42,6 @@ struct UsageSheet: View {
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
             }
-            .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("settings.usage"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
@@ -70,17 +69,26 @@ struct UsageSheet: View {
             Text("预计下次请求").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             if let estimate {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(Self.percent(estimate.share)).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
+                    Text(Self.percent(estimate.share))
+                        .font(Ink.serif(Ink.Size.title, bold: true))
+                        .foregroundStyle(Ink.ink)
+                        .monospacedDigit()
+                        .contentTransition(.numericText(value: estimate.share))
+                        .animation(Ink.Motion.quick, value: estimate.share)
                     Spacer()
                     Text("\(Tokens.short(estimate.total)) / \(Tokens.short(estimate.window))")
                         .font(.system(size: Ink.Size.sub, weight: .medium).monospacedDigit())
                         .foregroundStyle(Ink.inkSoft)
+                        .contentTransition(.numericText(value: Double(estimate.total)))
+                        .animation(Ink.Motion.quick, value: estimate.total)
                 }
                 ProgressView(value: min(1, estimate.share))
                     .tint(Self.color(estimate.share))
                 Text("系统 \(Tokens.short(estimate.system)) · 工具 \(Tokens.short(estimate.tools)) · 消息 \(Tokens.short(estimate.messages))")
                     .font(.system(size: Ink.Size.small).monospacedDigit())
                     .foregroundStyle(Ink.inkSoft)
+                    .contentTransition(.numericText(value: Double(estimate.total)))
+                    .animation(Ink.Motion.quick, value: estimate.total)
                 Text(explanation(estimate))
                     .font(Ink.footnote)
                     .foregroundStyle(Ink.inkFaint)
@@ -133,23 +141,30 @@ struct UsageSheet: View {
     private var spendCard: some View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
             HStack(alignment: .top, spacing: 0) {
-                stat(Tokens.short(currentSpend.input), "累计输入")
-                stat(Tokens.short(currentSpend.output), "输出")
-                stat("\(Int((currentSpend.cacheShare * 100).rounded()))%", "缓存命中")
+                stat(Tokens.short(currentSpend.input), "累计输入", value: Double(currentSpend.input))
+                stat(Tokens.short(currentSpend.output), "输出", value: Double(currentSpend.output))
+                stat("\(Int((currentSpend.cacheShare * 100).rounded()))%", "缓存命中", value: currentSpend.cacheShare)
             }
             Text(currentSpend.turns == 0 && currentSpend.input == 0
                  ? Words.t("从 0.27 起开始记，这段絮语之后的每一轮都会算进来。")
                  : "共 \(currentSpend.turns) 轮 · 输入含缓存命中的部分，命中越多越省钱")
                 .font(Ink.footnote)
                 .foregroundStyle(Ink.inkFaint)
+                .contentTransition(.numericText(value: Double(currentSpend.turns)))
+                .animation(Ink.Motion.quick, value: currentSpend.turns)
         }
         .padding(Ink.Space.l)
         .paperCard()
     }
 
-    private func stat(_ value: String, _ label: String) -> some View {
+    private func stat(_ shown: String, _ label: String, value: Double) -> some View {
         VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-            Text(value).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink).monospacedDigit()
+            Text(shown)
+                .font(Ink.serif(Ink.Size.title, bold: true))
+                .foregroundStyle(Ink.ink)
+                .monospacedDigit()
+                .contentTransition(.numericText(value: value))
+                .animation(Ink.Motion.quick, value: value)
             Text(label).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -161,7 +176,12 @@ struct UsageSheet: View {
         if allSpendRows.count > 1 {
             let total = allSpendRows.reduce(0) { $0 + $1.spend.input + $1.spend.output }
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                Text("全部对话 · 共 \(Tokens.short(total))").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                Text("全部对话 · 共 \(Tokens.short(total))")
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkSoft)
+                    .monospacedDigit()
+                    .contentTransition(.numericText(value: Double(total)))
+                    .animation(Ink.Motion.quick, value: total)
                 ForEach(Array(allSpendRows.prefix(8).enumerated()), id: \.offset) { _, item in
                     let used = item.spend.input + item.spend.output
                     HStack(spacing: Ink.Space.s) {
@@ -171,7 +191,12 @@ struct UsageSheet: View {
                                 .frame(width: max(4, box.size.width * CGFloat(used) / CGFloat(max(total, 1))))
                         }
                         .frame(height: 8)
-                        Text(Tokens.short(used)).font(.system(size: Ink.Size.small).monospacedDigit()).foregroundStyle(Ink.inkSoft).frame(width: 52, alignment: .trailing)
+                        Text(Tokens.short(used))
+                            .font(.system(size: Ink.Size.small).monospacedDigit())
+                            .foregroundStyle(Ink.inkSoft)
+                            .contentTransition(.numericText(value: Double(used)))
+                            .animation(Ink.Motion.quick, value: used)
+                            .frame(width: 52, alignment: .trailing)
                     }
                 }
             }
@@ -253,7 +278,12 @@ struct UsageSheet: View {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                     if let reading {
-                        Text(reading.shown).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(floor > 0 && reading.amount < floor ? Ink.stop : Ink.ink)
+                        Text(reading.shown)
+                            .font(Ink.serif(Ink.Size.title, bold: true))
+                            .foregroundStyle(floor > 0 && reading.amount < floor ? Ink.stop : Ink.ink)
+                            .monospacedDigit()
+                            .contentTransition(.numericText(value: reading.amount))
+                            .animation(Ink.Motion.quick, value: reading.amount)
                         if let detail = reading.detail { Text(detail).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                     } else if loadingBalance {
                         ProgressView()
@@ -342,6 +372,8 @@ struct ContextRing: View {
                 Text(UsageSheet.percent(share))
                     .font(.system(size: Ink.Size.micro, weight: .medium).monospacedDigit())
                     .foregroundStyle(Ink.inkSoft)
+                    .contentTransition(.numericText(value: share))
+                    .animation(Ink.Motion.quick, value: share)
                     .fixedSize()
             }
         }

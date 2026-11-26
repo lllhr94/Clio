@@ -764,6 +764,13 @@ final class TeamModel: ObservableObject {
                     Diag.note(text)
                     notify(key, .failed(text))
                     PetNews.shared.post(.failed, chat: key, title: chatName(key))
+                    if PetNews.shared.focused != key, UIApplication.shared.applicationState == .active {
+                        ToastCenter.shared.show(
+                            "\(chatName(key)) · \(L.t("pet.failed"))",
+                            symbol: "exclamationmark.triangle.fill",
+                            tint: Ink.stop
+                        )
+                    }
                 } else {
                     fail(key, "没能翻回这一段：存不进手机（\(error.localizedDescription)）。它还在絮语页里。")
                 }
@@ -1539,6 +1546,13 @@ final class TeamModel: ObservableObject {
                 return false
             }
             PetNews.shared.post(.done, chat: key, title: chatName(key))
+            if PetNews.shared.focused != key, UIApplication.shared.applicationState == .active {
+                ToastCenter.shared.show(
+                    "\(chatName(key)) · \(L.t("pet.done"))",
+                    symbol: "checkmark.circle.fill",
+                    tint: Ink.ok
+                )
+            }
             if Pref.notifyDone, UIApplication.shared.applicationState != .active,
                let last = history(key).last(where: { $0.message.role == .assistant && !$0.message.text.isEmpty && $0.note != true }) {
                 Notify.now(bot.name, last.message.text, chat: key)
@@ -1578,6 +1592,13 @@ final class TeamModel: ObservableObject {
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(text), note: true, next: next?.rawValue), to: key)
         notify(key, .failed(text))
         PetNews.shared.post(.failed, chat: key, title: chatName(key))
+        if PetNews.shared.focused != key, UIApplication.shared.applicationState == .active {
+            ToastCenter.shared.show(
+                "\(chatName(key)) · \(L.t("pet.failed"))",
+                symbol: "exclamationmark.triangle.fill",
+                tint: Ink.stop
+            )
+        }
         WidgetFeed.publish(self)
         if Pref.notifyDone, UIApplication.shared.applicationState != .active {
             Notify.now("\(chatName(key))出了点问题", text.replacingOccurrences(of: "\n", with: "。"), chat: key)

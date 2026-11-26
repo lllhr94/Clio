@@ -42,6 +42,7 @@ struct SourcesRow: View {
                 Text("\(urls.count) 个来源")
                     .font(.system(size: Ink.Size.micro, weight: .medium))
                     .foregroundStyle(Ink.inkSoft)
+                    .lineLimit(1)
                 Image(systemName: "chevron.right")
                     .font(.system(size: Ink.Size.micro, weight: .semibold))
                     .foregroundStyle(Ink.inkFaint)
@@ -50,6 +51,7 @@ struct SourcesRow: View {
             .padding(.leading, 6 * UIScale.factor)
             .padding(.trailing, 10 * UIScale.factor)
             .frame(height: 28 * UIScale.factor)
+            .frame(maxWidth: 190 * UIScale.factor)
             .background(Ink.paperRaised, in: .capsule)
             .overlay(Capsule().strokeBorder(Ink.rule.opacity(0.85), lineWidth: 0.5))
         }
@@ -60,7 +62,7 @@ struct SourcesRow: View {
                 listing = false
                 open(url)
             }
-            .presentationDetents([.medium, .large])
+            .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
         }
     }
 
@@ -139,7 +141,11 @@ struct SourcesSheet: View {
                         }
                         .buttonStyle(PressStyle(haptic: false))
                         .contextMenu {
-                            Button("复制链接", systemImage: "doc.on.doc") { UIPasteboard.general.string = url.absoluteString }
+                            Button("复制链接", systemImage: "doc.on.doc") {
+                                UIPasteboard.general.string = url.absoluteString
+                                Haptics.tick(0.5)
+                                ToastCenter.shared.show(L.t("actions.copied"), symbol: "doc.on.doc")
+                            }
                             ShareLink(item: url) { Label("分享", systemImage: "square.and.arrow.up") }
                         }
                     }
@@ -147,7 +153,7 @@ struct SourcesSheet: View {
                 .paperCard()
                 .padding(Ink.Space.page)
             }
-            .background(Ink.paper.ignoresSafeArea())
+            .scrollContentBackground(.hidden)
             .navigationTitle("\(urls.count) 个" + L.t("chat.source"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }

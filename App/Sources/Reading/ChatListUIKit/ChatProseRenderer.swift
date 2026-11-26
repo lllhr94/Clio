@@ -2135,6 +2135,9 @@ final class ChatLayoutCache: @unchecked Sendable {
             if idx > 0 { total += metrics.botBlockGap }
             total += h
         }
+        if thinkingRendered != nil && bodyItems.count > 1 {
+            total += 6 * metrics.scale
+        }
         total += metrics.rowSpacing
 
         let entry = AssistantLayoutEntry(

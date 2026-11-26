@@ -79,6 +79,7 @@ struct ClioRoot: View {
         .animation(Ink.Motion.settle, value: introSeen)
         .tint(Ink.accent)
         .clioScheme(scheme)
+        .floatingToastHost()
         .modifier(FormPresenter(inBrowser: false))
         .onOpenURL { url in
             handleIncomingURL(url)
@@ -199,16 +200,8 @@ struct Desk: View {
     @State private var pendingCompanionAction: CompanionSheetAction?
     @AppStorage("desk.threadFilter") private var listFilter = 0
     @AppStorage("desk.threadColorFilter") private var labelFilter = ""
-    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var addingService = false
-    @State private var archiveUndo: ArchiveUndo?
-
-    private struct ArchiveUndo: Equatable {
-        let key: String
-        let expires: Date
-        let epoch: Int
-    }
 
     /// The sidebar is out, the conversation pushed to the right.
     @State private var sideOpen = Shots.name == "sidebar" || Shots.name == "sidebar-past"
@@ -245,10 +238,21 @@ struct Desk: View {
     private func changeArchive(_ key: String, archived: Bool) {
         withAnimation(Ink.Motion.settle) {
             team.archive(key, archived)
-            if archived {
-                archiveUndo = ArchiveUndo(key: key, expires: Date().addingTimeInterval(4), epoch: team.epochs[key, default: 0])
-            } else if archiveUndo?.key == key {
-                archiveUndo = nil
+        }
+        if archived {
+            let epoch = team.epochs[key, default: 0]
+            ToastCenter.shared.show(
+                L.t("homeThreads.archived"),
+                symbol: "archivebox",
+                tint: Ink.inkSoft,
+                actionTitle: L.t("homeThreads.undo"),
+                duration: 4
+            ) {
+                guard team.archived.contains(key),
+                      team.epochs[key, default: 0] == epoch else { return }
+                withAnimation(Ink.Motion.settle) {
+                    team.archive(key, false)
+                }
             }
         }
     }
@@ -285,30 +289,6 @@ struct Desk: View {
         guard team.turnLeaf(target.id) else { return }
         team.setAbility(.memory, on: memory, in: target.id)
         withAnimation(sideMotion) { opened = target }
-    }
-
-    @ViewBuilder
-    private var archiveBanner: some View {
-        if let undo = archiveUndo {
-            HStack(spacing: Ink.Space.m) {
-                Text(L.t("homeThreads.archived")).font(Ink.secondary).foregroundStyle(Ink.ink)
-                Spacer()
-                Button(L.t("homeThreads.undo")) {
-                    guard Date() < undo.expires, team.archived.contains(undo.key),
-                          team.epochs[undo.key, default: 0] == undo.epoch else { archiveUndo = nil; return }
-                    changeArchive(undo.key, archived: false)
-                }
-                .buttonStyle(PressStyle())
-            }
-            .padding(Ink.Space.l)
-            .paperCard()
-            .padding(.horizontal, Ink.Space.page)
-            .padding(.bottom, Ink.Space.s)
-            .task(id: undo.expires) {
-                do { try await Task.sleep(for: .seconds(4)) } catch { return }
-                if archiveUndo == undo { archiveUndo = nil }
-            }
-        }
     }
 
     private var deskContent: some View {
@@ -377,10 +357,6 @@ struct Desk: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { deskWidth = $0 }
-        .overlay(alignment: .bottom) { archiveBanner }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { archiveUndo = nil }
-        }
         .sheet(isPresented: $addingService) { SetupView(team: team) { addingService = false } }
         .sheet(item: $freshRequest, onDismiss: { sideControl.choosingFresh = false }) { request in
             NewChatSheet(team: team, first: request.first) { id, memory in
@@ -444,8 +420,7 @@ struct Desk: View {
                 }
             }) {
                 DrawerSheet { picked = $0 }
-                    .presentationDetents([.large])
-                    .presentationDragIndicator(.visible)
+                    .detentPaperBackdrop(initial: .large, detents: [.large])
             }
             .sheet(item: $editing) { target in BotEditor(team: team, bot: target.bot) }
             .sheet(isPresented: $gathering) { RoomEditor(team: team) }
@@ -766,7 +741,7 @@ struct DeskFilterChips: View {
                             .padding(.vertical, Ink.Space.s)
                             .background(listFilter == index ? Ink.accentWash : Ink.mine, in: .capsule)
                     }
-                    .buttonStyle(PressStyle())
+                    .buttonStyle(PressStyle(elevated: true))
                     .accessibilityAddTraits(listFilter == index ? .isSelected : [])
                 }
                 Menu {
@@ -780,6 +755,7 @@ struct DeskFilterChips: View {
                         .background(labelFilter.isEmpty ? Ink.mine : Ink.accentWash, in: .capsule)
                 }
             }
+            .padding(.vertical, Ink.Space.xs)
         }
         .scrollIndicators(.hidden)
         // The last chip fades out at the edge instead of being cut by a hard line, so it reads as 「more this way」.

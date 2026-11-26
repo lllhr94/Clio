@@ -32,10 +32,12 @@ struct OutfitSheet: View {
             Form {
                 PaperRows {
                 Section {
-                    Picker("软件源", selection: Binding(get: { mirror }, set: { mirror = $0; pickedByHand = true })) {
-                        ForEach(Self.mirrors, id: \.1) { Text(label($0)).tag($0.1) }
-                    }
-                    .pickerStyle(.segmented)
+                    SlidingCapsuleControl(
+                        selection: Binding(get: { mirror }, set: { mirror = $0; pickedByHand = true }),
+                        items: Self.mirrors.map { (value: $0.1, title: label($0)) },
+                        compact: true
+                    )
+                    .accessibilityLabel("软件源")
                 } header: { Text("软件源") } footer: {
                     Text(measuring ? L.t("loading.measuringMirrors") : "测过了：数字是毫秒，越小越快，已经替你选了最快的。没有数字的是连不上。")
                 }
@@ -58,7 +60,9 @@ struct OutfitSheet: View {
                 }
             }
             }
-            .paperForm()
+            .scrollContentBackground(.hidden)
+            .tint(Ink.accent)
+            .environment(\.defaultMinListRowHeight, 48)
             .task { await measure() }
             .navigationTitle(L.t("terminal.installSoftware"))
             .navigationBarTitleDisplayMode(.inline)

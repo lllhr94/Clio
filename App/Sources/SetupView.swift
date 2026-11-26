@@ -256,12 +256,13 @@ struct SetupView: View {
         if choice.addresses.count > 1 {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 FieldTitle(text: L.t("settings.chooseAddress"), note: "账号在哪边注册的就选哪边，密钥不通用")
-                Picker("地址", selection: $region) {
-                    ForEach(choice.addresses.indices, id: \.self) { index in
-                        Text(choice.addresses[index].label).tag(index)
-                    }
+                SlidingCapsuleControl(
+                    selection: $region,
+                    options: Array(choice.addresses.indices)
+                ) { index in
+                    choice.addresses[index].label
                 }
-                .pickerStyle(.segmented)
+                .accessibilityLabel("地址")
             }
             .transition(.opacity)
         }

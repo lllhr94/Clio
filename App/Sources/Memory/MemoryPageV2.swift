@@ -132,7 +132,6 @@ struct MemoryPageV2: View {
     @State private var deletingRecord: MemoryRecord?
     @State private var showingImport = false
     @State private var showingMirrors = false
-    @State private var importFeedback: String?
     @State private var refreshRevision = 0
 
     @State private var cachedSnapshotByID: [String: MemoryRecord] = [:]
@@ -279,7 +278,11 @@ struct MemoryPageV2: View {
         .sheet(isPresented: $showingImport) {
             MemoryImportSheet(team: team) { importedCount in
                 refreshRevision &+= 1
-                importFeedback = L.format("memoryV2.importedToast", importedCount)
+                ToastCenter.shared.show(
+                    L.format("memoryV2.importedToast", importedCount),
+                    symbol: "checkmark.circle.fill",
+                    tint: Ink.ok
+                )
             }
         }
         .sheet(isPresented: $showingMirrors) {
@@ -347,10 +350,6 @@ struct MemoryPageV2: View {
                     noticeBanner(mutationError, tint: Ink.stop)
                 }
 
-                if let importFeedback {
-                    feedbackBanner(importFeedback)
-                }
-
                 layerFilterSection(recordsSnapshot, effectiveFilter: effectiveFilter)
                 quickAddAndToolsSection
                 memoryListSection(
@@ -365,6 +364,7 @@ struct MemoryPageV2: View {
             .padding(.horizontal, Ink.Space.page)
             .padding(.vertical, Ink.Space.l)
         }
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
     }
 
     // MARK: - Snapshot Sync
@@ -440,31 +440,6 @@ struct MemoryPageV2: View {
             .paperCard()
     }
 
-    private func feedbackBanner(_ text: String) -> some View {
-        HStack(spacing: Ink.Space.s) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(Ink.ok)
-            Text(text)
-                .font(.system(size: Ink.Size.sub, weight: .medium))
-                .foregroundStyle(Ink.ink)
-            Spacer(minLength: Ink.Space.s)
-            Button {
-                withAnimation(Ink.Motion.settle) {
-                    importFeedback = nil
-                }
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: Ink.Size.small, weight: .semibold))
-                    .foregroundStyle(Ink.inkFaint)
-            }
-            .buttonStyle(TapStyle(grow: Ink.Space.xs))
-            .accessibilityLabel(L.t("actions.close"))
-        }
-        .padding(.horizontal, Ink.Space.l)
-        .padding(.vertical, Ink.Space.m)
-        .paperCard()
-    }
-
     // MARK: - Filter & Quick-Add
 
     private func layerFilterSection(_ records: [MemoryRecord], effectiveFilter: LayerFilter) -> some View {
@@ -489,12 +464,11 @@ struct MemoryPageV2: View {
                     }
                 }
             } else {
-                Picker(L.t("memoryV2.layerLabel"), selection: $filter) {
-                    ForEach(availableFilters) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
+                SlidingCapsuleControl(
+                    selection: $filter,
+                    options: availableFilters
+                ) { $0.title }
+                .accessibilityLabel(L.t("memoryV2.layerLabel"))
             }
 
             let surfaceCount = count(for: .surface, in: records)
@@ -502,14 +476,20 @@ struct MemoryPageV2: View {
             if team.keeping {
                 let pinnedCount = count(for: .pinned, in: records)
                 let archivedCount = count(for: .archived, in: records)
+                let totalCount = pinnedCount + surfaceCount + deepCount + archivedCount
                 Text(L.format("memoryV2.countsSummary", pinnedCount, surfaceCount, deepCount, archivedCount))
-                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .font(.system(size: Ink.Size.small, weight: .medium).monospacedDigit())
                     .foregroundStyle(Ink.inkSoft)
+                    .contentTransition(.numericText(value: Double(totalCount)))
+                    .animation(Ink.Motion.quick, value: [pinnedCount, surfaceCount, deepCount, archivedCount])
                     .padding(.horizontal, Ink.Space.l)
             } else {
+                let totalCount = surfaceCount + deepCount
                 Text(L.format("settings.memoryCounts", surfaceCount, deepCount))
-                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .font(.system(size: Ink.Size.small, weight: .medium).monospacedDigit())
                     .foregroundStyle(Ink.inkSoft)
+                    .contentTransition(.numericText(value: Double(totalCount)))
+                    .animation(Ink.Motion.quick, value: [surfaceCount, deepCount])
                     .padding(.horizontal, Ink.Space.l)
             }
 
@@ -570,54 +550,59 @@ struct MemoryPageV2: View {
                     memoryRow(record)
                 }
             }
+            .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
             .paperCard()
         }
     }
 
     private func memoryRow(_ record: MemoryRecord) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.xs) {
-            Text(record.text)
-                .font(.system(size: Ink.Size.sub))
-                .foregroundStyle(record.layer == .archived ? Ink.inkSoft : Ink.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            WrapLayout(spacing: Ink.Space.xs) {
-                MemoryBadgePill(
-                    text: MemoryV2Copy.layerTitle(record.layer),
-                    foreground: MemoryV2Copy.layerTint(record.layer),
-                    background: MemoryV2Copy.layerWash(record.layer)
-                )
-
-                MemoryBadgePill(
-                    text: MemoryV2Copy.provenanceText(for: record, bots: team.bots),
-                    foreground: Ink.inkSoft,
-                    background: Ink.rule.opacity(0.5)
-                )
-
-                if !record.kind.isEmpty && record.kind != "fact" {
-                    MemoryBadgePill(
-                        text: MemoryV2Copy.kindTitle(record.kind),
-                        foreground: Ink.inkSoft,
-                        background: Ink.rule.opacity(0.45)
-                    )
-                }
-
-                if !record.topic.isEmpty {
-                    MemoryBadgePill(
-                        text: record.topic,
-                        foreground: Ink.inkSoft,
-                        background: Ink.rule.opacity(0.4)
-                    )
-                }
-            }
-        }
-        .padding(.horizontal, Ink.Space.l)
-        .padding(.vertical, Ink.Space.m)
-        .contentShape(Rectangle())
-        .onTapGesture {
+        Button {
             Haptics.light()
             editingRecord = record
+        } label: {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                Text(record.text)
+                    .font(.system(size: Ink.Size.sub))
+                    .foregroundStyle(record.layer == .archived ? Ink.inkSoft : Ink.ink)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                WrapLayout(spacing: Ink.Space.xs) {
+                    MemoryBadgePill(
+                        text: MemoryV2Copy.layerTitle(record.layer),
+                        foreground: MemoryV2Copy.layerTint(record.layer),
+                        background: MemoryV2Copy.layerWash(record.layer)
+                    )
+
+                    MemoryBadgePill(
+                        text: MemoryV2Copy.provenanceText(for: record, bots: team.bots),
+                        foreground: Ink.inkSoft,
+                        background: Ink.rule.opacity(0.5)
+                    )
+
+                    if !record.kind.isEmpty && record.kind != "fact" {
+                        MemoryBadgePill(
+                            text: MemoryV2Copy.kindTitle(record.kind),
+                            foreground: Ink.inkSoft,
+                            background: Ink.rule.opacity(0.45)
+                        )
+                    }
+
+                    if !record.topic.isEmpty {
+                        MemoryBadgePill(
+                            text: record.topic,
+                            foreground: Ink.inkSoft,
+                            background: Ink.rule.opacity(0.4)
+                        )
+                    }
+                }
+            }
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
+            .background(Ink.paperRaised)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(PressStyle(haptic: false, elevated: true))
         .contextMenu {
             rowContextMenu(record)
         }
@@ -764,6 +749,17 @@ struct MemoryPageV2: View {
                     refreshRevision &+= 1
                 }
                 Haptics.tick(0.5)
+                if layer == .archived {
+                    ToastCenter.shared.show(
+                        L.t("homeThreads.archived"),
+                        symbol: "archivebox",
+                        tint: Ink.inkSoft,
+                        actionTitle: L.t("homeThreads.undo"),
+                        duration: 4
+                    ) {
+                        restoreRecord(id)
+                    }
+                }
             } catch {
                 Haptics.lock()
                 mutationError = error.localizedDescription
@@ -860,8 +856,9 @@ private struct MemoryQuickAddCard: View {
                     title: L.t("memoryV2.importActionTitle"),
                     line: L.t("memoryV2.importActionLine")
                 )
+                .background(Ink.paperRaised)
             }
-            .buttonStyle(PressStyle(haptic: false))
+            .buttonStyle(PressStyle(haptic: false, elevated: true))
 
             Kit.divider
 
@@ -875,9 +872,11 @@ private struct MemoryQuickAddCard: View {
                     title: L.t("memoryV2.mirrorsActionTitle"),
                     line: L.t("memoryV2.mirrorsActionLine")
                 )
+                .background(Ink.paperRaised)
             }
-            .buttonStyle(PressStyle(haptic: false))
+            .buttonStyle(PressStyle(haptic: false, elevated: true))
         }
+        .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
         .paperCard()
     }
 
@@ -971,6 +970,7 @@ private struct MemoryDetailSheet: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .scrollIndicators(.hidden)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .scrollDismissesKeyboard(.interactively)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("memoryV2.detailTitle"))
@@ -1038,8 +1038,10 @@ private struct MemoryDetailSheet: View {
                 .paperCard()
 
             Text(L.format("memoryV2.byteCount", utf8Count, 450))
-                .font(.system(size: Ink.Size.small))
+                .font(.system(size: Ink.Size.small).monospacedDigit())
                 .foregroundStyle(utf8Count > 450 ? Ink.stop : Ink.inkFaint)
+                .contentTransition(.numericText(value: Double(utf8Count)))
+                .animation(Ink.Motion.quick, value: utf8Count)
                 .padding(.horizontal, Ink.Space.l)
         }
     }
@@ -1067,12 +1069,11 @@ private struct MemoryDetailSheet: View {
                     }
                 }
             } else {
-                Picker(L.t("memoryV2.layerLabel"), selection: $layer) {
-                    ForEach(availableLayers, id: \.self) { option in
-                        Text(MemoryV2Copy.layerTitle(option)).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
+                SlidingCapsuleControl(
+                    selection: $layer,
+                    options: availableLayers
+                ) { MemoryV2Copy.layerTitle($0) }
+                .accessibilityLabel(L.t("memoryV2.layerLabel"))
             }
 
             Text(MemoryV2Copy.layerHint(layer))
@@ -1258,11 +1259,14 @@ private struct MemoryMirrorViewerSheet: View {
     }
 
     private var fontPicker: some View {
-        Picker(L.t("memoryV2.mirrorFontLabel"), selection: $useMonospace) {
-            Text(L.t("memoryV2.mirrorFontCode")).tag(true)
-            Text(L.t("memoryV2.mirrorFontSerif")).tag(false)
-        }
-        .pickerStyle(.segmented)
+        SlidingCapsuleControl(
+            selection: $useMonospace,
+            items: [
+                (value: true, title: L.t("memoryV2.mirrorFontCode")),
+                (value: false, title: L.t("memoryV2.mirrorFontSerif")),
+            ],
+            compact: true
+        )
         .fixedSize()
         .accessibilityLabel(L.t("memoryV2.mirrorFontLabel"))
     }
@@ -1271,11 +1275,14 @@ private struct MemoryMirrorViewerSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.l) {
-                    Picker(L.t("memoryV2.mirrorsTitle"), selection: $tab) {
-                        Text(L.t("memoryV2.mirrorDanganTab")).tag(MirrorTab.dangan)
-                        Text(L.t("memoryV2.mirrorZhenzhiTab")).tag(MirrorTab.zhenzhi)
-                    }
-                    .pickerStyle(.segmented)
+                    SlidingCapsuleControl(
+                        selection: $tab,
+                        items: [
+                            (value: MirrorTab.dangan, title: L.t("memoryV2.mirrorDanganTab")),
+                            (value: MirrorTab.zhenzhi, title: L.t("memoryV2.mirrorZhenzhiTab")),
+                        ]
+                    )
+                    .accessibilityLabel(L.t("memoryV2.mirrorsTitle"))
 
                     if typeSize.isAccessibilitySize {
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
@@ -1319,6 +1326,7 @@ private struct MemoryMirrorViewerSheet: View {
                 .padding(.vertical, Ink.Space.l)
             }
             .scrollIndicators(.hidden)
+            .scrollEdgeEffectStyle(.soft, for: .vertical)
             .background(Ink.paper.ignoresSafeArea())
             .navigationTitle(L.t("memoryV2.mirrorsTitle"))
             .navigationBarTitleDisplayMode(.inline)

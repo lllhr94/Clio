@@ -321,6 +321,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.backgroundColor = .clear
         collectionView.alwaysBounceVertical = true
         collectionView.showsVerticalScrollIndicator = false
+        collectionView.topEdgeEffect.isHidden = true
+        collectionView.bottomEdgeEffect.isHidden = true
         collectionView.keyboardDismissMode = .interactive
         collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.delegate = self

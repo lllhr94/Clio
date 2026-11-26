@@ -46,7 +46,9 @@ struct NewChatSheet: View {
                     }
                 }
             }
-            .paperForm()
+            .scrollContentBackground(.hidden)
+            .tint(Ink.accent)
+            .environment(\.defaultMinListRowHeight, 48)
             .navigationTitle(L.t("chat.newConversation"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -60,6 +62,6 @@ struct NewChatSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium, .large], selection: $detent)
+        .detentPaperBackdrop(detent: $detent, detents: [.medium, .large])
     }
 }

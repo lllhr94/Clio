@@ -228,21 +228,21 @@ struct GrantsPage: View {
                 }
                 Spacer(minLength: 0)
             }
-            Picker(grant.title, selection: Binding(get: { policies[grant] ?? grant.policy }, set: { value in
-                Haptics.tick(0.5)
-                grant.policy = value
-                policies[grant] = value
-                team.reconcilePendingApprovals()
-                if value != .off, systems[grant] == .notAsked {
-                    Task {
-                        await grant.requestSystem()
-                        systems[grant] = await grant.readSystem()
+            SlidingCapsuleControl(
+                selection: Binding(get: { policies[grant] ?? grant.policy }, set: { value in
+                    grant.policy = value
+                    policies[grant] = value
+                    team.reconcilePendingApprovals()
+                    if value != .off, systems[grant] == .notAsked {
+                        Task {
+                            await grant.requestSystem()
+                            systems[grant] = await grant.readSystem()
+                        }
                     }
-                }
-            })) {
-                ForEach(grant.availablePolicies, id: \.self) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
+                }),
+                options: grant.availablePolicies
+            ) { $0.title }
+            .accessibilityLabel(grant.title)
             .padding(.leading, Kit.badge + Ink.Space.m)
         }
         .padding(.horizontal, Ink.Space.l)

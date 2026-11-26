@@ -99,6 +99,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         timeGapLabel.isHidden = true
         contentView.addSubview(timeGapLabel)
 
+        speakerAvatar.isTapBounceEnabled = true
         speakerAvatar.isHidden = true
         contentView.addSubview(speakerAvatar)
 
@@ -242,6 +243,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         formulaBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         fileCardBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         pictureBlockViews.forEach { $0.resetForReuse(); $0.isHidden = true }
+        speakerAvatar.resetBounce()
         sourcesPill.resetForReuse()
         footerView.resetForReuse()
     }
@@ -1030,6 +1032,9 @@ final class ChatAssistantCell: UICollectionViewCell {
         if entry.thinkingText != nil {
             advanceGap()
             layoutThinking(x: contentX, y: &y, width: contentWidth, entry: entry)
+            if entry.pulseText != nil || entry.lookbackHeight > 0 || !entry.slices.isEmpty || entry.hasSources || entry.hasContinueButton || entry.hasFooter {
+                y += 6 * style.scale
+            }
         }
 
         if entry.pulseText != nil {
@@ -1053,8 +1058,9 @@ final class ChatAssistantCell: UICollectionViewCell {
 
         if entry.hasSources {
             advanceGap()
-            let pillSize = sourcesPill.sizeThatFits(CGSize(width: contentWidth, height: ChatCellMetrics.sourcesPillHeight))
-            sourcesPill.frame = CGRect(x: contentX, y: y, width: pillSize.width, height: ChatCellMetrics.sourcesPillHeight)
+            let maxPillWidth = min(contentWidth, 190 * style.scale)
+            let pillSize = sourcesPill.sizeThatFits(CGSize(width: maxPillWidth, height: ChatCellMetrics.sourcesPillHeight))
+            sourcesPill.frame = CGRect(x: contentX, y: y, width: min(maxPillWidth, pillSize.width), height: ChatCellMetrics.sourcesPillHeight)
             y += ChatCellMetrics.sourcesPillHeight
         }
 

@@ -23,12 +23,9 @@ extension ChatPage {
         Self.postComposerNotice(text, to: notice)
     }
 
-    static func postComposerNotice(_ text: String, to notice: ChatComposerNotice) {
-        withAnimation(Ink.Motion.settle) { notice.text = text }
-        let said = text
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.2) {
-            if notice.text == said { withAnimation(Ink.Motion.settle) { notice.text = nil } }
-        }
+    static func postComposerNotice(_ text: String, to notice: ChatComposerNotice, symbol: String? = nil, tint: Color = Ink.ink) {
+        notice.text = nil
+        ToastCenter.shared.show(text, symbol: symbol, tint: tint)
     }
 
     var modelSpeaker: BotInfo { Self.speakerForModel(in: chat, team: team, fallback: bot) }
@@ -39,57 +36,7 @@ extension ChatPage {
 
     /// Strips routing prefixes, date stamps, and noisy suffixes into compact readable model badges.
     static func shortModelName(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return raw }
-        var name = trimmed
-        if let slash = name.lastIndex(of: "/") {
-            let tail = String(name[name.index(after: slash)...])
-            if !tail.isEmpty { name = tail }
-        }
-        for tag in [":free", ":thinking", ":exacto", ":extended"] {
-            if name.lowercased().hasSuffix(tag), name.count > tag.count {
-                name = String(name.dropLast(tag.count))
-            }
-        }
-        if name.count > 9 {
-            let suffix = name.suffix(9)
-            if suffix.first == "-", suffix.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) {
-                let base = String(name.dropLast(9))
-                if !base.isEmpty { name = base }
-            }
-        }
-        for suffix in ["-latest", "-preview"] {
-            if name.lowercased().hasSuffix(suffix), name.count > suffix.count {
-                name = String(name.dropLast(suffix.count))
-            }
-        }
-
-        let lower = name.lowercased()
-        if lower == "deepseek-reasoner" || lower == "deepseek-r1" { return "DeepSeek R1" }
-        if lower == "deepseek-chat" || lower == "deepseek-v3" { return "DeepSeek V3" }
-
-        let parts = name.split(separator: "-").map(String.init)
-        if parts.first?.lowercased() == "claude", parts.count >= 2 {
-            let rest = parts.dropFirst()
-            if let familyIdx = rest.firstIndex(where: { ["sonnet", "opus", "haiku"].contains($0.lowercased()) }) {
-                let family = rest[familyIdx].capitalized
-                let versionParts = rest.indices
-                    .filter { $0 != familyIdx }
-                    .map { rest[$0] }
-                    .filter { $0.allSatisfy { $0.isASCII && $0.isNumber } }
-                if !versionParts.isEmpty {
-                    return "\(family) \(versionParts.joined(separator: "."))"
-                }
-                return family
-            }
-        }
-        if parts.first?.lowercased() == "gpt", parts.count >= 2 {
-            return "GPT-" + parts.dropFirst().joined(separator: "-")
-        }
-        if parts.first?.lowercased() == "gemini", parts.count >= 2 {
-            return "Gemini " + parts.dropFirst().joined(separator: " ")
-        }
-        return name
+        Endpoint.shortName(raw)
     }
 
     var modelPillMaxWidth: CGFloat {
@@ -123,7 +70,7 @@ extension ChatPage {
     }
 
     static func selectModel(_ reference: String?, in chat: ChatModel, team: TeamModel, bot: BotInfo, notice: ChatComposerNotice) {
-        Haptics.tick(0.5)
+        Haptics.selection()
         team.setModel(reference, in: chat.key)
         let offered = offeredThinkingLevels(in: chat, team: team, fallback: bot)
         if let selection = team.options(chat.key).thinking, !offered.contains(selection) {
@@ -131,8 +78,8 @@ extension ChatPage {
         }
         let speaker = speakerForModel(in: chat, team: team, fallback: bot)
         if let current = team.current(chat.key, bot: speaker) {
-            let sight = current.traits.sees ? "能看图" : "不能看图，发的照片会改用 photo_text 读字"
-            postComposerNotice(Words.t("这段絮语用 \(current.model)（\(sight)），别处的絮语不变。"), to: notice)
+            let displayName = current.endpoint.distinguishableDisplayName(for: current.model)
+            postComposerNotice(L.format("chatHub.modelSwitched", displayName), to: notice, symbol: "sparkles")
         }
     }
 

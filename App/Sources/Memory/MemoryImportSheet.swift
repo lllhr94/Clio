@@ -229,11 +229,11 @@ struct MemoryImportSheet: View {
                     }
                 }
             } else {
-                Picker(L.t("memoryImport.defaultLayerLabel"), selection: $defaultLayer) {
-                    Text(MemoryV2Copy.layerTitle(.surface)).tag(MemoryLayer.surface)
-                    Text(MemoryV2Copy.layerTitle(.deep)).tag(MemoryLayer.deep)
-                }
-                .pickerStyle(.segmented)
+                SlidingCapsuleControl(
+                    selection: $defaultLayer,
+                    options: [MemoryLayer.surface, MemoryLayer.deep]
+                ) { MemoryV2Copy.layerTitle($0) }
+                .accessibilityLabel(L.t("memoryImport.defaultLayerLabel"))
             }
 
             if team.keeping {

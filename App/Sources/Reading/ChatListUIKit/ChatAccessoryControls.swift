@@ -1,15 +1,42 @@
 import AgentKit
 import ImageIO
-import PhotosUI
 import SwiftUI
 import UIKit
+
+@MainActor
+private enum ChatAvatarTapBounce {
+    static func play(on view: UIView) {
+        Haptics.light()
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        view.layer.removeAllAnimations()
+        view.transform = CGAffineTransform(scaleX: 0.86, y: 0.86)
+        UIView.animate(
+            withDuration: 0.36,
+            delay: 0,
+            usingSpringWithDamping: 0.45,
+            initialSpringVelocity: 0.85,
+            options: [.allowUserInteraction, .beginFromCurrentState]
+        ) {
+            view.transform = .identity
+        }
+    }
+}
 
 /// Pure UIKit pet/companion avatar view matching `PetStill`.
 @MainActor
 final class ChatPetAvatarView: UIView {
+    private let bounceView = UIView()
     private let bgLayer = CALayer()
     private let imageView = UIImageView()
     private let fallbackView = UIImageView()
+    private lazy var tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleAvatarTap))
+
+    var isTapBounceEnabled = false {
+        didSet {
+            isUserInteractionEnabled = isTapBounceEnabled
+            tapGesture.isEnabled = isTapBounceEnabled
+        }
+    }
 
     private var isAvatarCircle = true
     private var currentWash: Color?
@@ -27,20 +54,35 @@ final class ChatPetAvatarView: UIView {
 
     private func setup() {
         isUserInteractionEnabled = false
-        layer.addSublayer(bgLayer)
+        bounceView.isUserInteractionEnabled = false
+        addSubview(bounceView)
+
+        bounceView.layer.addSublayer(bgLayer)
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
-        addSubview(imageView)
+        bounceView.addSubview(imageView)
 
         fallbackView.image = UIImage(systemName: "person.crop.circle")
         fallbackView.contentMode = .scaleAspectFit
         fallbackView.isHidden = true
-        addSubview(fallbackView)
+        bounceView.addSubview(fallbackView)
+
+        tapGesture.isEnabled = false
+        addGestureRecognizer(tapGesture)
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: ChatPetAvatarView, _) in
             view.lastConfiguredSignature = ""
             view.refreshColors()
         }
+    }
+
+    @objc private func handleAvatarTap() {
+        ChatAvatarTapBounce.play(on: bounceView)
+    }
+
+    func resetBounce() {
+        bounceView.layer.removeAllAnimations()
+        bounceView.transform = .identity
     }
 
     func configure(bot: BotInfo?, state: String = "idle", wash: Color? = nil, avatar: Bool = true) {
@@ -139,6 +181,9 @@ final class ChatPetAvatarView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        bounceView.bounds = bounds
+        bounceView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+
         let side = min(bounds.width, bounds.height)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -160,16 +205,13 @@ final class ChatPetAvatarView: UIView {
     }
 }
 
-/// Pure UIKit user avatar matching `MeAvatar` (with menu to choose character 「我」, pet pack, or photo).
+/// Pure UIKit user avatar: renders ONLY user's photo or crisp "我" circular badge, with spring micro-bounce on tap.
 @MainActor
-final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
-    weak var hostViewController: UIViewController?
-    var onAvatarChanged: (() -> Void)?
-
-    private let button = UIButton(type: .system)
+final class ChatMeAvatarView: UIView {
+    private let bounceView = UIView()
+    private let button = UIButton(type: .custom)
     private let circleLayer = CAGradientLayer()
     private let charLabel = UILabel()
-    private let petView = ChatPetAvatarView()
     private let photoView = UIImageView()
     private var lastRenderedSignature = ""
 
@@ -184,32 +226,28 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
     }
 
     private func setup() {
+        bounceView.isUserInteractionEnabled = false
+        addSubview(bounceView)
+
         circleLayer.startPoint = CGPoint(x: 0.5, y: 0)
         circleLayer.endPoint = CGPoint(x: 0.5, y: 1)
-        layer.addSublayer(circleLayer)
+        bounceView.layer.addSublayer(circleLayer)
 
         charLabel.text = "我"
         charLabel.textAlignment = .center
         charLabel.isUserInteractionEnabled = false
-        addSubview(charLabel)
-
-        addSubview(petView)
+        bounceView.addSubview(charLabel)
 
         photoView.contentMode = .scaleAspectFill
         photoView.clipsToBounds = true
         photoView.isUserInteractionEnabled = false
-        addSubview(photoView)
+        bounceView.addSubview(photoView)
 
-        button.showsMenuAsPrimaryAction = true
-        button.accessibilityLabel = "我的头像，点一下换"
-        button.menu = UIMenu(children: [
-            UIDeferredMenuElement.uncached { [weak self] completion in
-                let items = MainActor.assumeIsolated {
-                    self?.makeMenuElements() ?? []
-                }
-                completion(items)
-            }
-        ])
+        button.accessibilityLabel = "我的头像"
+        button.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            ChatAvatarTapBounce.play(on: self.bounceView)
+        }, for: .touchUpInside)
         addSubview(button)
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: ChatMeAvatarView, _) in
@@ -218,50 +256,44 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
         refreshDisplay()
     }
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { refreshDisplay() }
+    }
+
+    func resetBounce() {
+        bounceView.layer.removeAllAnimations()
+        bounceView.transform = .identity
+    }
+
     func refreshDisplay() {
         let face = UserDefaults.standard.string(forKey: "me.avatar") ?? ""
+        let photoPicture: UIImage?
         let photoID: Int
         if face == "photo", let img = Avatars.image("me") {
+            photoPicture = img
             photoID = ObjectIdentifier(img).hashValue
         } else {
+            photoPicture = nil
             photoID = 0
         }
-        let resolvedPackPath: String
-        if face.hasPrefix("pet:") {
-            let targetID = String(face.dropFirst(4))
-            resolvedPackPath = PetLibrary.shared.packs.first(where: { $0.id == targetID })?.dir.path ?? "missing"
-        } else {
-            resolvedPackPath = PetLibrary.shared.pack?.dir.path ?? "none"
-        }
         let theme = Theme.shared
-        let signature = "\(face)|\(PetLibrary.shared.choice)|\(PetLibrary.shared.packs.count)|\(resolvedPackPath)|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
+        let signature = "\(photoID > 0 ? "photo" : "char")|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
         guard signature != lastRenderedSignature else { return }
         lastRenderedSignature = signature
 
-        if face == "photo", let photo = Avatars.image("me") {
+        if let photo = photoPicture {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             circleLayer.isHidden = true
             CATransaction.commit()
             charLabel.isHidden = true
-            petView.isHidden = true
             photoView.isHidden = false
             photoView.image = photo
-        } else if face.hasPrefix("pet:") {
-            let packID = String(face.dropFirst(4))
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            circleLayer.isHidden = true
-            CATransaction.commit()
-            charLabel.isHidden = true
-            photoView.isHidden = true
-            petView.isHidden = false
-            let standIn = BotInfo(id: "me", name: "我", avatar: "pet:\(packID)")
-            petView.configure(bot: standIn, state: "idle", wash: Ink.accentWash, avatar: true)
         } else {
             charLabel.isHidden = false
-            petView.isHidden = true
             photoView.isHidden = true
+            photoView.image = nil
             let accent = UIColor(Ink.accent).resolvedColor(with: traitCollection)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -272,65 +304,11 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
         }
     }
 
-    private func makeMenuElements() -> [UIMenuElement] {
-        let currentFace = UserDefaults.standard.string(forKey: "me.avatar") ?? ""
-        var actions: [UIMenuElement] = []
-        actions.append(UIAction(
-            title: "用一个字「我」",
-            state: currentFace.isEmpty ? .on : .off
-        ) { [weak self] _ in
-            UserDefaults.standard.set("", forKey: "me.avatar")
-            self?.refreshDisplay()
-            self?.onAvatarChanged?()
-        })
-
-        for pack in PetLibrary.shared.packs {
-            let target = "pet:\(pack.id)"
-            actions.append(UIAction(
-                title: pack.name,
-                state: currentFace == target ? .on : .off
-            ) { [weak self] _ in
-                UserDefaults.standard.set(target, forKey: "me.avatar")
-                self?.refreshDisplay()
-                self?.onAvatarChanged?()
-            })
-        }
-
-        actions.append(UIAction(
-            title: "从相册选一张",
-            image: UIImage(systemName: "photo")
-        ) { [weak self] _ in
-            self?.presentPhotoPicker()
-        })
-        return actions
-    }
-
-    private func presentPhotoPicker() {
-        var config = PHPickerConfiguration()
-        config.filter = .images
-        config.selectionLimit = 1
-        let picker = PHPickerViewController(configuration: config)
-        picker.delegate = self
-        hostViewController?.present(picker, animated: true)
-    }
-
-    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-        picker.dismiss(animated: true)
-        guard let provider = results.first?.itemProvider,
-              provider.canLoadObject(ofClass: UIImage.self) else { return }
-        provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
-            guard let image = object as? UIImage else { return }
-            DispatchQueue.main.async {
-                Avatars.save(image, for: "me")
-                UserDefaults.standard.set("photo", forKey: "me.avatar")
-                self?.refreshDisplay()
-                self?.onAvatarChanged?()
-            }
-        }
-    }
-
     override func layoutSubviews() {
         super.layoutSubviews()
+        bounceView.bounds = bounds
+        bounceView.center = CGPoint(x: bounds.midX, y: bounds.midY)
+
         let side = min(bounds.width, bounds.height)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -339,7 +317,6 @@ final class ChatMeAvatarView: UIView, PHPickerViewControllerDelegate {
         CATransaction.commit()
         charLabel.font = UIFont.systemFont(ofSize: side * 0.45, weight: .semibold)
         charLabel.frame = bounds
-        petView.frame = bounds
         photoView.frame = bounds
         photoView.layer.cornerRadius = side * 0.5
         button.frame = bounds
@@ -534,6 +511,7 @@ final class ChatSourcesPillView: UIView {
     private var urls: [URL] = []
     private var titles: [URL: String] = [:]
     private var iconTasks: [Task<Void, Never>] = []
+    private var detentObserver: SourcesDetentObserver?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -566,6 +544,7 @@ final class ChatSourcesPillView: UIView {
             badgeLetters.append(letter)
         }
 
+        label.numberOfLines = 1
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
 
@@ -631,7 +610,10 @@ final class ChatSourcesPillView: UIView {
         label.text = "\(urls.count) 个来源"
         accessibilityLabel = "\(urls.count) 个来源，点开看"
         refreshColors()
+        invalidateIntrinsicContentSize()
         setNeedsLayout()
+        superview?.setNeedsLayout()
+        superview?.superview?.setNeedsLayout()
     }
 
     func resetForReuse() {
@@ -640,22 +622,31 @@ final class ChatSourcesPillView: UIView {
         urls = []
         titles = [:]
         onOpenURL = nil
+        detentObserver = nil
     }
 
     private func presentSourcesSheet() {
         guard !urls.isEmpty, let host = hostViewController else { return }
         Haptics.light()
         let onOpen = onOpenURL
+        let observer = SourcesDetentObserver { [weak self] in
+            self?.detentObserver = nil
+        }
+        detentObserver = observer
         var sheetHolder: UIViewController?
-        let sheet = SourcesSheet(urls: urls, titles: titles) { url in
+        let sheet = SourcesHostedSheet(detent: observer, urls: urls, titles: titles) { url in
             sheetHolder?.dismiss(animated: true) {
                 onOpen?(url)
             }
         }
         let vc = UIHostingController(rootView: sheet)
+        vc.view.backgroundColor = .clear
         sheetHolder = vc
         if let presentation = vc.sheetPresentationController {
             presentation.detents = [.medium(), .large()]
+            presentation.selectedDetentIdentifier = .medium
+            presentation.prefersGrabberVisible = true
+            presentation.delegate = observer
         }
         host.present(vc, animated: true)
     }
@@ -697,7 +688,8 @@ final class ChatSourcesPillView: UIView {
             + Ink.Space.s
             + 10
             + (10 * UIScale.factor)
-        return CGSize(width: min(size.width, ceil(totalW)), height: ChatCellMetrics.sourcesPillHeight)
+        let maxAllowed = min(size.width, 190 * UIScale.factor)
+        return CGSize(width: min(maxAllowed, ceil(totalW)), height: ChatCellMetrics.sourcesPillHeight)
     }
 
     override func layoutSubviews() {
@@ -946,5 +938,35 @@ final class ChatBotFooterView: UIView {
             let statsW = max(0, bounds.width - statsX)
             statsLabel.frame = CGRect(x: statsX, y: 0, width: statsW, height: h)
         }
+    }
+}
+
+@MainActor
+private final class SourcesDetentObserver: NSObject, UISheetPresentationControllerDelegate, ObservableObject {
+    @Published var isFull = false
+    private let onDismiss: () -> Void
+
+    init(onDismiss: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+    }
+
+    func sheetPresentationControllerDidChangeSelectedDetentIdentifier(_ sheetPresentationController: UISheetPresentationController) {
+        isFull = sheetPresentationController.selectedDetentIdentifier == .large
+    }
+
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        onDismiss()
+    }
+}
+
+private struct SourcesHostedSheet: View {
+    @ObservedObject var detent: SourcesDetentObserver
+    let urls: [URL]
+    let titles: [URL: String]
+    let open: (URL) -> Void
+
+    var body: some View {
+        SourcesSheet(urls: urls, titles: titles, open: open)
+            .background { DetentPaperSurface(isFull: detent.isFull) }
     }
 }

@@ -40,12 +40,13 @@ struct WorkingBar: View {
     }
 
     var body: some View {
+        let statusKey = "\(icon)|\(words)"
         Button(action: tap) {
             HStack(spacing: Ink.Space.s) {
                 Image(systemName: icon)
                     .font(.system(size: Ink.Size.small, weight: .semibold))
                     .foregroundStyle(Ink.accent)
-                    .symbolEffect(.pulse)
+                    .symbolEffect(.bounce, value: statusKey)
                     .contentTransition(.symbolEffect(.replace))
                     .frame(width: 18)
                 Text(Words.t(words))
@@ -64,11 +65,14 @@ struct WorkingBar: View {
                     }
                 }
                 .layoutPriority(-1)
-                Spacer(minLength: Ink.Space.s)
                 if free {
-                    Text("放手").font(.system(size: Ink.Size.micro, weight: .semibold)).foregroundStyle(Ink.warn)
-                        .padding(.horizontal, 6).frame(height: 18)
+                    Text("放手")
+                        .font(.system(size: Ink.Size.micro, weight: .semibold))
+                        .foregroundStyle(Ink.warn)
+                        .padding(.horizontal, 6)
+                        .frame(height: 18)
                         .background(Ink.warn.opacity(0.14), in: .capsule)
+                        .fixedSize()
                 }
                 TimelineView(.periodic(from: since, by: 1)) { context in
                     let seconds = max(0, Int(context.date.timeIntervalSince(since)))
@@ -76,14 +80,19 @@ struct WorkingBar: View {
                         .font(.system(size: Ink.Size.small).monospacedDigit())
                         .foregroundStyle(Ink.inkSoft)
                         .contentTransition(.numericText())
+                        .fixedSize()
                 }
             }
             .padding(.horizontal, Ink.Space.l)
             .frame(height: 40)
+            .frame(maxWidth: 260 * UIScale.factor)
             .glassFace(in: Capsule())
-            .animation(Ink.Motion.settle, value: words)
+            .animation(Ink.Motion.quick, value: words)
+            .animation(Ink.Motion.quick, value: icon)
+            .animation(Ink.Motion.quick, value: tools)
         }
         .buttonStyle(PressStyle(haptic: false))
+        .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityElement(children: .combine)
         .accessibilityHint("回到对话最底下")
     }

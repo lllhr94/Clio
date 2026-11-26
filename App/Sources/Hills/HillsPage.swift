@@ -61,6 +61,7 @@ struct HillsPage: View {
                                     UIPasteboard.general.string = publicKey
                                     Haptics.tick(0.6)
                                     copied = true
+                                    ToastCenter.shared.show(L.t("actions.copied"), symbol: "checkmark.circle.fill", tint: Ink.ok)
                                 } label: {
                                     Label(copied ? "复制好了" : "复制公钥", systemImage: copied ? "checkmark" : "doc.on.doc")
                                         .font(.system(size: Ink.Size.sub, weight: .medium))
@@ -422,11 +423,14 @@ private struct HostEditor: View {
                     TextField("用户名", text: $host.user).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
                 Section {
-                    Picker("登录方式", selection: $host.useKey) {
-                        Text("密码").tag(false)
-                        Text("用钥匙").tag(true)
-                    }
-                    .pickerStyle(.segmented)
+                    SlidingCapsuleControl(
+                        selection: $host.useKey,
+                        items: [
+                            (value: false, title: "密码"),
+                            (value: true, title: "用钥匙"),
+                        ]
+                    )
+                    .accessibilityLabel("登录方式")
                     if !host.useKey {
                         SecureField(hasPassword ? "密码（已存，不改就留空）" : "密码", text: $password)
                     }
@@ -531,6 +535,7 @@ private struct ServerEditor: View {
                         Button("复制这条命令", systemImage: "doc.on.doc") {
                             UIPasteboard.general.string = Hills.browserCommand
                             Haptics.tick(0.5)
+                            ToastCenter.shared.show(L.t("actions.copied"), symbol: "checkmark.circle.fill", tint: Ink.ok)
                         }
                     } header: { Text(L.t("remote.startBrowser")) } footer: {
                         Text(Words.t("在那台电脑上跑这条命令（要先装 Node.js 18 以上），浏览器就只在它自己的 8931 端口上听。也可以回到远山页点那台主机的「装浏览器」，一键装好、开机自启。"))

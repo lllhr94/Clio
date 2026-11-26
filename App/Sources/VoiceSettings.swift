@@ -536,12 +536,15 @@ struct VoiceSettingsPage: View {
     private var languageSection: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.t("voiceSettings.languageSection"))
-            Picker(L.t("voiceSettings.languageSection"), selection: $language) {
-                Text(L.t("voiceSettings.languageAuto")).tag("")
-                Text(L.t("voiceSettings.languageZh")).tag("zh")
-                Text(L.t("voiceSettings.languageEn")).tag("en")
-            }
-            .pickerStyle(.segmented)
+            SlidingCapsuleControl(
+                selection: $language,
+                items: [
+                    (value: "", title: L.t("voiceSettings.languageAuto")),
+                    (value: "zh", title: L.t("voiceSettings.languageZh")),
+                    (value: "en", title: L.t("voiceSettings.languageEn")),
+                ]
+            )
+            .accessibilityLabel(L.t("voiceSettings.languageSection"))
             .padding(Ink.Space.l)
             .paperCard()
         }
