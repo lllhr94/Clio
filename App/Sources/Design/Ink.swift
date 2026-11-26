@@ -807,6 +807,37 @@ extension View {
         background { shape.fill(Color.white.opacity(0.001)) }
             .glassEffect(.regular, in: shape)
     }
+
+    /// Anti-bleed Liquid Glass backing for the bottom composer shell so scrolled chat text
+    /// cannot read through into the input prompt while preserving glass depth.
+    func composerGlassBacking<S: InsettableShape>(in shape: S) -> some View {
+        modifier(ComposerGlassBackingModifier(shape: shape))
+    }
+}
+
+private struct ComposerGlassBackingModifier<S: InsettableShape>: ViewModifier {
+    let shape: S
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content
+                .background { shape.fill(Ink.paperRaised) }
+                .overlay {
+                    shape.strokeBorder(Ink.rule.opacity(0.65), lineWidth: 0.5)
+                        .allowsHitTesting(false)
+                }
+        } else {
+            content
+                .background { shape.fill(Ink.paper.opacity(0.92)) }
+                .background { shape.fill(Color.white.opacity(0.001)) }
+                .glassEffect(.regular, in: shape)
+                .overlay {
+                    shape.strokeBorder(Ink.rule.opacity(0.45), lineWidth: 0.5)
+                        .allowsHitTesting(false)
+                }
+        }
+    }
 }
 
 /// A plain button whose whole frame takes the tap (not only its glyphs), dimming while pressed.
