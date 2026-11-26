@@ -115,12 +115,15 @@ struct ChatFloatingJumpOverlay: View {
             .accessibilityHidden(!showGroup)
 
             if showLatest {
+                let latestSize = 38 * UIScale.factor
                 Button(action: onLatest) {
-                    Image(systemName: "arrow.down.to.line")
+                    Image(systemName: "chevron.down")
                         .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.ink)
-                        .frame(width: 32 * UIScale.factor, height: 32 * UIScale.factor)
+                        .frame(width: latestSize, height: latestSize)
                         .glassFace(in: Circle())
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressStyle())
                 .accessibilityLabel(L.t("chat.latest"))
@@ -128,7 +131,7 @@ struct ChatFloatingJumpOverlay: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
-        .offset(y: -(controlHeight + Ink.Space.s))
+        .offset(y: -(38 * UIScale.factor + Ink.Space.s))
         .onChange(of: chrome.jumpVisible, initial: true) { _, _ in updateKeepOut() }
         .onChange(of: latestIsFloating, initial: true) { _, _ in updateKeepOut() }
         .onChange(of: suppressed, initial: true) { _, _ in updateKeepOut() }
@@ -234,7 +237,7 @@ struct ChatMinimapOverlay: View {
             )
         }
         .frame(width: 16)
-        .padding(.vertical, Ink.Bar.height * 2)
+        .padding(.vertical, Ink.Space.m)
         .padding(.trailing, 2)
         .transition(.opacity)
     }

@@ -410,6 +410,7 @@
     "hapticStandard": "标准",
     "hapticCrisp": "清脆",
     "fadeReply": "回复逐字淡入",
+    "immersiveChrome": "翻阅时收起顶底栏",
     "showReplyStats": "回复下显示耗时和用量",
     "expandSteps": "默认展开行迹",
     "chatFaces": "聊天里显示头像",

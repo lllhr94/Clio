@@ -905,7 +905,8 @@ final class ChatListActions {
     var onVisibleIDsChanged: ([String]) -> Void = { _ in }
     var onActiveTurnChanged: (String?) -> Void = { _ in }
     var onScrollPhaseChanged: (String) -> Void = { _ in }
-    var onScrollDelta: (CGFloat, CGFloat, Bool) -> Void = { _, _, _ in }
+    var onScrollDelta: (CGFloat, CGFloat, CGFloat, CGFloat, Bool, Bool) -> Void = { _, _, _, _, _, _ in }
+    var onChromeDragEnded: () -> Void = {}
     var onKeyboardVisibilityChanged: (Bool) -> Void = { _ in }
     var onProgrammaticScroll: () -> Void = {}
     var onDragStarted: () -> Void = {}

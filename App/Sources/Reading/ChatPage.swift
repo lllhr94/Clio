@@ -620,12 +620,17 @@ struct ChatPage: View {
                 }
             }
             .scrollIndicators(.hidden)
-            .overlay(alignment: .trailing) { minimap }
+            .overlay(alignment: .trailing) {
+                minimap
+                    .padding(.vertical, Ink.Bar.height)
+            }
             .scrollDismissesKeyboard(.interactively)
-            // The header is a bar the conversation scrolls under: iOS blurs and fades the text beneath it, so nothing
-            // reads through between the buttons, and the glass no longer picks up colours from the page.
-            .scrollEdgeEffectStyle(.soft, for: .top)
-            .safeAreaBar(edge: .top) { header }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Color.clear.frame(height: max(headerHeight, Ink.Bar.height + Ink.Space.s))
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Color.clear.frame(height: Ink.Bar.height + Ink.Space.l)
+            }
             .onAppear { scroller = ChatScroller(proxy: proxy) }
             .task { await playShot() }
         }
@@ -1044,31 +1049,35 @@ struct ChatPage: View {
         ZStack(alignment: .top) {
             Ink.paper.ignoresSafeArea()
             conversation
+            ChatTopEdgeFadeOverlay(chromeCoordinator: chromeCoordinator, headerHeight: headerHeight)
+            ChatBottomEdgeFadeOverlay()
             if !roaming {
-                let roamTop = chromeCoordinator.isImmersive
-                    ? (headerHeight > 0 ? headerHeight : 52) + Ink.Space.xs
-                    : (headerHeight > 0 ? headerHeight : Ink.Bar.height + Ink.Space.s) + Ink.Space.s
-                HStack {
-                    Spacer()
-                    ChatRoamThumbOverlay(browser: team.browser, chrome: chrome) {
-                        typing = false
-                        roaming = true
-                    }
+                ChatRoamThumbHost(
+                    browser: team.browser,
+                    chrome: chrome,
+                    chromeCoordinator: chromeCoordinator,
+                    headerHeight: headerHeight
+                ) {
+                    typing = false
+                    roaming = true
                 }
-                .padding(.top, roamTop)
-                .padding(.trailing, Ink.Bar.edge)
-                .zIndex(3)
             }
         }
-        .background {
-            observers
-            chromeLockObserver
+        .overlay(alignment: .top) {
+            header
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY.rounded(.up) } action: {
+                    headerBottomY = $0
+                }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .overlay(alignment: .bottom) {
             bottomStack
                 .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY.rounded(.down) } action: {
                     dockTopY = $0
                 }
+        }
+        .background {
+            observers
+            chromeLockObserver
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
             if chatViewport != newSize { chatViewport = newSize }
@@ -1511,6 +1520,55 @@ struct ChatPage: View {
     @State var petSettingsOpen = false
 }
 
+private struct ChatBottomEdgeFadeOverlay: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            LinearGradient(
+                stops: [
+                    .init(color: Ink.paper.opacity(0), location: 0),
+                    .init(color: Ink.paper.opacity(0.65), location: 0.55),
+                    .init(color: Ink.paper.opacity(0.98), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 16 * UIScale.factor)
+            Ink.paper.opacity(0.98)
+                .frame(height: 1)
+                .background {
+                    Ink.paper.opacity(0.98).ignoresSafeArea(edges: .bottom)
+                }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ChatRoamThumbHost: View {
+    let browser: BrowserSession
+    let chrome: ChatChrome
+    let chromeCoordinator: ChatChromeCoordinator
+    let headerHeight: CGFloat
+    let open: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let p = chromeCoordinator.visualProgress
+        let expandedTop = (headerHeight > 0 ? headerHeight : Ink.Bar.height + Ink.Space.s) + Ink.Space.s
+        let collapsedTop = Ink.Space.m
+        let roamTop = expandedTop + (collapsedTop - expandedTop) * p
+        HStack {
+            Spacer()
+            ChatRoamThumbOverlay(browser: browser, chrome: chrome, open: open)
+        }
+        .padding(.top, roamTop)
+        .padding(.trailing, Ink.Space.page)
+        .zIndex(3)
+        .animation(reduceMotion ? .easeOut(duration: 0.18) : nil, value: p)
+    }
+}
+
 private struct ChatChromeLockObserver: View {
     let coordinator: ChatChromeCoordinator
     let chatKey: String
@@ -1521,6 +1579,7 @@ private struct ChatChromeLockObserver: View {
     let activeSelection: Bool
     let quoteOrEdit: Bool
     let finding: Bool
+    @AppStorage("look.immersiveChrome") private var immersiveChrome = false
 
     private var hasPendingApproval: Bool {
         team.approvals.contains { $0.chat == chatKey }
@@ -1551,6 +1610,9 @@ private struct ChatChromeLockObserver: View {
         .frame(width: 0, height: 0)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        .onChange(of: immersiveChrome, initial: true) { _, next in
+            coordinator.setEnabled(next)
+        }
         .onChange(of: syncSignal, initial: true) { _, _ in
             coordinator.syncLocks(
                 composerFocused: composerFocused,

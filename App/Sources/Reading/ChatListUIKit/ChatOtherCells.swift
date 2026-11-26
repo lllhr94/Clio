@@ -572,7 +572,7 @@ final class ChatNoteCell: UICollectionViewCell {
 
         case .plain:
             let h = currentEntry?.titleHeight ?? 20
-            plainLabel.frame = CGRect(x: pageMargin, y: 0, width: contentWidth, height: h)
+            plainLabel.frame = CGRect(x: pageMargin, y: Ink.Space.s, width: contentWidth, height: h)
         }
     }
 }

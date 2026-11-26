@@ -106,6 +106,41 @@ extension ChatPage {
     }
 }
 
+/// Wide velvety Hana-style top paper fade melting scrolling prose gently before the status bar.
+struct ChatTopEdgeFadeOverlay: View {
+    let chromeCoordinator: ChatChromeCoordinator
+    let headerHeight: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let p = chromeCoordinator.visualProgress
+        let baseHeader = headerHeight > 0 ? headerHeight : Ink.Bar.height + Ink.Space.xs * 2
+        let fadeTail = max(14 * UIScale.factor, baseHeader * (1 - 0.72 * p) + Ink.Space.s * (1 - p))
+        VStack(spacing: 0) {
+            Ink.paper
+                .frame(height: 1)
+                .background {
+                    Ink.paper.ignoresSafeArea(edges: .top)
+                }
+            LinearGradient(
+                stops: [
+                    .init(color: Ink.paper, location: 0),
+                    .init(color: Ink.paper.opacity(0.92), location: 0.42),
+                    .init(color: Ink.paper.opacity(0.55), location: 0.74),
+                    .init(color: Ink.paper.opacity(0), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: fadeTail)
+            Spacer(minLength: 0)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .animation(reduceMotion ? .easeOut(duration: 0.18) : nil, value: p)
+    }
+}
+
 /// Top floating navigation chrome isolated from message streaming and composer typing.
 struct ChatTopBarView: View {
     let chat: ChatModel
@@ -147,75 +182,52 @@ struct ChatTopBarView: View {
     let onLoadOutlinePairs: () async -> [OutlineSheet.Pair]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.xs) {
-            if chromeCoordinator.isImmersive {
-                ChatImmersiveTopPill(
-                    chat: chat,
-                    team: team,
-                    bot: bot,
-                    onRestore: {
-                        Haptics.selection()
-                        chromeCoordinator.restore()
-                    }
-                )
-                .frame(maxWidth: .infinity)
-                .transition(.opacity.animation(reduceMotion ? nil : Ink.Motion.quick))
-            } else if largeText {
-                HStack(alignment: .top, spacing: Ink.Space.s) {
-                    ChatHeaderBackButton(onLeave: onLeave)
-                        .layoutPriority(2)
-                    identityView
-                        .layoutPriority(0)
-                    Spacer(minLength: 0)
-                    controlsView
-                        .layoutPriority(1)
-                }
-                ChatModelMenuView(
-                    chat: chat,
-                    team: team,
-                    bot: bot,
-                    notice: notice,
-                    viewportWidth: viewportWidth,
-                    compact: false
-                )
-                .glassBacking(in: Capsule())
-            } else {
-                HStack(alignment: .center, spacing: Ink.Space.s) {
-                    ChatHeaderBackButton(onLeave: onLeave)
-                        .layoutPriority(2)
-                    identityView
-                        .layoutPriority(0)
-                    Spacer(minLength: Ink.Space.xs)
-                    controlsView
-                        .layoutPriority(1)
-                }
-            }
+        let p = chromeCoordinator.visualProgress
+        ZStack {
+            innerBar
+                .offset(y: reduceMotion ? 0 : -60 * p)
+                .scaleEffect(reduceMotion ? 1 : (1 - 0.03 * p), anchor: .top)
+                .opacity(max(0, 1 - Double(p) * 1.18))
+                .allowsHitTesting(p < 0.5)
+                .accessibilityHidden(p >= 0.5)
         }
-        .padding(.horizontal, Ink.Bar.edge)
+        .padding(.horizontal, Ink.Space.page)
         .padding(.top, Ink.Space.xs)
         .padding(.bottom, Ink.Space.xs)
-        .background {
-            if !chromeCoordinator.isImmersive {
-                Ink.paper.ignoresSafeArea(edges: .top)
-                    .allowsHitTesting(false)
-            }
-        }
-        .background(alignment: .bottom) {
-            if !chromeCoordinator.isImmersive {
-                LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
-                    .frame(height: Ink.Space.s)
-                    .offset(y: Ink.Space.s)
-                    .allowsHitTesting(false)
-            }
-        }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
-    private var identityView: some View {
-        ChatTopBarIdentityView(
+    @ViewBuilder
+    private var innerBar: some View {
+        if largeText {
+            HStack(alignment: .center, spacing: Ink.Space.s) {
+                ChatHeaderBackButton(onLeave: onLeave)
+                    .layoutPriority(2)
+                centeredIdentityPill
+                    .layoutPriority(0)
+                Spacer(minLength: 0)
+                controlsView
+                    .layoutPriority(1)
+            }
+        } else {
+            ZStack {
+                HStack(spacing: Ink.Space.xs) {
+                    ChatHeaderBackButton(onLeave: onLeave)
+                    Spacer(minLength: 0)
+                    controlsView
+                }
+                centeredIdentityPill
+                    .padding(.horizontal, Ink.Bar.height + Ink.Space.s)
+            }
+        }
+    }
+
+    private var centeredIdentityPill: some View {
+        ChatCenteredIdentityPill(
             chat: chat,
             team: team,
             bot: bot,
+            notice: notice,
             dictationSlot: dictationSlot,
             idleMood: idleMood,
             viewportWidth: viewportWidth,
@@ -277,10 +289,12 @@ private struct ChatHeaderBackButton: View {
     }
 }
 
-private struct ChatTopBarIdentityView: View {
+/// Hana-style ultra-tight centered pill: avatar opens glance card, name opens model/thinking & chat details.
+private struct ChatCenteredIdentityPill: View {
     let chat: ChatModel
     @ObservedObject var team: TeamModel
     let bot: BotInfo
+    let notice: ChatComposerNotice
     let dictationSlot: ChatDictationSlot
     let idleMood: ChatIdleMood
     let viewportWidth: CGFloat
@@ -291,17 +305,26 @@ private struct ChatTopBarIdentityView: View {
     @Binding var glancing: Bool
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isRoom: Bool { chat.roomId != nil }
     private var doing: String? { team.workDetail(for: chat.key).words }
     private var working: Bool { doing != nil || chat.hasStreaming }
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
+    private var active: Bool { working || waiting != nil }
 
     private var headerLine: String {
         ChatPage.companionStatus(waiting: waiting, doing: doing, streaming: chat.hasStreaming)
     }
 
     var body: some View {
+        let options = team.options(chat.key)
+        let own = team.resolveActive(options.model) != nil ? options.model : nil
+        let speaker = ChatPage.speakerForModel(in: chat, team: team, fallback: bot)
+        let rawName = team.current(chat.key, bot: speaker)?.model ?? L.t("settings.models")
+        let offered = ChatPage.offeredThinkingLevels(in: chat, team: team, fallback: bot)
+        let level = offered.contains(options.thinking ?? .auto) ? (options.thinking ?? .auto) : .auto
+
         HStack(spacing: Ink.Space.s) {
             ChatTopBarPetFace(
                 dictationSlot: dictationSlot,
@@ -321,89 +344,88 @@ private struct ChatTopBarIdentityView: View {
                 Haptics.light()
                 glancing = true
             }
-                .popover(isPresented: $glancing) {
-                    GlanceCard(
-                        team: team,
-                        bot: bot,
-                        key: chat.key,
-                        availableWidth: viewportWidth,
-                        openCard: { glancing = false; cardOpen = true },
-                        openDetail: { glancing = false; detailOpen = true }
-                    )
-                    .presentationCompactAdaptation(.popover)
+            .popover(isPresented: $glancing) {
+                GlanceCard(
+                    team: team,
+                    bot: bot,
+                    key: chat.key,
+                    availableWidth: viewportWidth,
+                    openCard: { glancing = false; cardOpen = true },
+                    openDetail: { glancing = false; detailOpen = true }
+                )
+                .presentationCompactAdaptation(.popover)
+            }
+
+            Menu {
+                Section(rawName) {
+                    if isRoom {
+                        Text("\(L.t("settings.models"))：\(rawName)")
+                    } else {
+                        Button {
+                            ChatPage.selectModel(nil, in: chat, team: team, bot: bot, notice: notice)
+                        } label: {
+                            let label = "跟着\(bot.name)走"
+                            if own == nil { Label(label, systemImage: "checkmark") } else { Text(label) }
+                        }
+                        ModelChoices(team: team, current: own) { ref in
+                            ChatPage.selectModel(ref, in: chat, team: team, bot: bot, notice: notice)
+                        }
+                    }
                 }
-            Button {
-                Haptics.light()
-                typing.wrappedValue = false
-                detailOpen = true
+                ChatThinkingChoicesSection(chat: chat, team: team, bot: bot, notice: notice)
+                Section {
+                    Button(L.t("chat.details"), systemImage: "info.circle") {
+                        typing.wrappedValue = false
+                        detailOpen = true
+                    }
+                    if !isRoom {
+                        Button(L.t("chat.openCard"), systemImage: "person.text.rectangle") {
+                            typing.wrappedValue = false
+                            cardOpen = true
+                        }
+                    }
+                }
             } label: {
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text(bot.name)
-                        .font(.system(size: Ink.Size.sub * (largeText ? textScale : 1), weight: .semibold))
+                        .font(.system(
+                            size: (active && !largeText ? Ink.Size.small : Ink.Size.sub) * (largeText ? textScale : 1),
+                            weight: .semibold
+                        ))
                         .foregroundStyle(Ink.ink)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    HStack(spacing: Ink.Space.xs) {
-                        Circle()
-                            .fill(working ? Ink.accent : Ink.ok)
-                            .frame(width: 5.5, height: 5.5)
-                        Text(headerLine)
-                            .font(largeText ? .footnote : .system(size: Ink.Size.micro, weight: .medium))
-                            .foregroundStyle(Ink.inkSoft)
-                            .lineLimit(largeText ? 2 : 1)
-                            .truncationMode(.tail)
-                            .fixedSize(horizontal: false, vertical: largeText)
-                            .contentTransition(.opacity)
+                    if active {
+                        HStack(spacing: Ink.Space.xs) {
+                            Circle()
+                                .fill(waiting != nil ? Ink.warn : Ink.accent)
+                                .frame(width: 5, height: 5)
+                            Text(headerLine)
+                                .font(largeText ? .footnote : .system(size: Ink.Size.micro, weight: .medium))
+                                .foregroundStyle(Ink.inkSoft)
+                                .lineLimit(largeText ? 2 : 1)
+                                .truncationMode(.tail)
+                                .fixedSize(horizontal: false, vertical: largeText)
+                                .contentTransition(.opacity)
+                        }
+                        .transition(.opacity)
                     }
-                    .animation(.easeInOut(duration: 0.5), value: headerLine)
                 }
+                .animation(reduceMotion ? .easeOut(duration: 0.16) : Ink.Motion.quick, value: active)
+                .animation(.easeInOut(duration: 0.35), value: headerLine)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .menuOrder(.fixed)
+            .accessibilityLabel("\(bot.name)，\(headerLine)")
+            .accessibilityValue("\(rawName)，\(level.title)")
             .accessibilityHint(L.t("chat.details"))
         }
-        .padding(.leading, Ink.Space.s)
+        .padding(.leading, 6 * UIScale.factor)
         .padding(.trailing, Ink.Space.m)
-        .padding(.vertical, largeText ? Ink.Space.s : 0)
+        .padding(.vertical, largeText ? Ink.Space.xs : 0)
+        .frame(height: largeText ? nil : Ink.Bar.height)
         .frame(minHeight: Ink.Bar.height, alignment: .leading)
         .glassBacking(in: Capsule())
-    }
-}
-
-private struct ChatImmersiveTopPill: View {
-    let chat: ChatModel
-    @ObservedObject var team: TeamModel
-    let bot: BotInfo
-    let onRestore: () -> Void
-
-    private var doing: String? { team.workDetail(for: chat.key).words }
-    private var working: Bool { doing != nil || chat.hasStreaming }
-    private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
-
-    var body: some View {
-        let status = ChatPage.companionStatus(waiting: waiting, doing: doing, streaming: chat.hasStreaming)
-        Button(action: onRestore) {
-            HStack(spacing: Ink.Space.xs) {
-                Circle()
-                    .fill(working ? Ink.accent : Ink.ok)
-                    .frame(width: 6, height: 6)
-                Text("\(bot.name) · \(status)")
-                    .font(.system(size: Ink.Size.small, weight: .medium))
-                    .foregroundStyle(Ink.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: Ink.Size.micro, weight: .semibold))
-                    .foregroundStyle(Ink.accent)
-            }
-            .padding(.horizontal, Ink.Space.s)
-            .padding(.vertical, Ink.Space.xs)
-            .glassFace(in: Capsule())
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PressStyle(haptic: false))
-        .accessibilityLabel("\(bot.name)，\(status)，\(L.t("chat.restoreControls"))")
     }
 }
 
@@ -448,29 +470,9 @@ private struct ChatTopBarControlsView: View {
                 typing.wrappedValue = false
                 roaming = true
             }
-            if largeText {
-                headerMoreMenu
-                    .frame(width: Ink.Bar.height, height: Ink.Bar.height)
-                    .glassBacking(in: Circle())
-            } else {
-                HStack(spacing: 0) {
-                    ChatModelMenuView(
-                        chat: chat,
-                        team: team,
-                        bot: bot,
-                        notice: notice,
-                        viewportWidth: viewportWidth,
-                        compact: true
-                    )
-                    Rectangle()
-                        .fill(Ink.rule.opacity(0.75))
-                        .frame(width: 0.5, height: 18 * UIScale.factor)
-                    headerMoreMenu
-                        .frame(width: 40 * UIScale.factor, height: Ink.Bar.height)
-                }
-                .frame(height: Ink.Bar.height)
-                .glassBacking(in: Capsule())
-            }
+            headerMoreMenu
+                .frame(width: Ink.Bar.height, height: Ink.Bar.height)
+                .glassFace(in: Circle())
         }
         .onChange(of: offeredThinking, initial: true) { _, offered in
             if let selection = team.options(chat.key).thinking, !offered.contains(selection) {

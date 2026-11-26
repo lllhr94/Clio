@@ -2509,6 +2509,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        actions.onChromeDragEnded()
         if decelerate {
             actions.onScrollPhaseChanged("惯性")
         } else {
@@ -2596,12 +2597,25 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 }
             }
             if touching {
-                let deltaY = currentY - prevY
-                if abs(deltaY) > 0.25 {
-                    let distanceFromBottom = max(0, bottomY - currentY)
+                let rawDeltaY = currentY - prevY
+                if abs(rawDeltaY) > 0.01 {
+                    let minY = -scrollView.contentInset.top
+                    let trueBottomY = bottomOffsetY(for: scrollView)
+                    let clampedPrev = min(trueBottomY, max(minY, prevY))
+                    let clampedCurr = min(trueBottomY, max(minY, currentY))
+                    let clampedDeltaY = clampedCurr - clampedPrev
+                    let trueDistanceFromBottom = max(0, trueBottomY - currentY)
+                    let distanceFromTop = currentY - minY
                     let totalContentH = scrollView.contentSize.height + scrollView.contentInset.top + scrollView.contentInset.bottom
                     let isScrollable = totalContentH > scrollView.bounds.height + 60
-                    actions.onScrollDelta(deltaY, distanceFromBottom, isScrollable)
+                    actions.onScrollDelta(
+                        rawDeltaY,
+                        clampedDeltaY,
+                        trueDistanceFromBottom,
+                        distanceFromTop,
+                        scrollView.isDragging,
+                        isScrollable
+                    )
                 }
             }
         }

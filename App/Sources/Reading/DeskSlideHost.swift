@@ -119,18 +119,14 @@ struct DeskSlideHost<Sidebar: View>: View {
     }
 
     private func openedConversationLayer(for target: Opened, progress: CGFloat) -> some View {
-        let corner: CGFloat = shift > 0 ? Ink.Radius.card : 0
-        return page(for: target)
+        page(for: target)
             .overlay {
                 sidebarDimVeil(progress: progress)
             }
-            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-            // The shadow is cast by a plain rounded sheet of paper under the page, not by the page itself:
-            // shadowing the page made iOS trace every word and button for each frame of the slide.
             .background {
-                RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .fill(Ink.paper)
+                Ink.paper
                     .shadow(color: Ink.Artwork.black.opacity(0.22 * Double(progress)), radius: 20, x: -4)
+                    .ignoresSafeArea()
             }
             .offset(x: shift)
             .zIndex(1)

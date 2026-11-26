@@ -340,6 +340,7 @@ extension ChatPage {
                     .font(Ink.footnote)
                     .foregroundStyle(Ink.inkFaint)
                     .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, Ink.Space.s)
             }
         }
     }
@@ -443,12 +444,6 @@ extension ChatPage {
             timeGap: { line in timeGap(before: line) },
             minimap: { minimap }
         )
-        .safeAreaInset(edge: .top, spacing: 0) {
-            header
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY.rounded(.up) } action: {
-                    headerBottomY = $0
-                }
-        }
         .onAppear { scroller = ChatScroller(listProxy: listProxy) }
         .task { await playShot() }
     }

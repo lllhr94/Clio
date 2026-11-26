@@ -2164,6 +2164,10 @@ final class TeamModel: ObservableObject {
         if taint.isTainted(helperKey) { taint.mark(key) }
         if isTurnMemoryTainted(helperKey) { markTurnMemoryTainted(key) }
         let answer = history(helperKey).last { $0.message.role == .assistant && $0.note != true && !$0.message.text.isEmpty }?.message.text ?? ""
+        if !answer.isEmpty {
+            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("收到了 \(helper.name) 的回信"), note: true), to: key)
+            notify(key, .changed)
+        }
         return ToolOutput(answer.isEmpty ? "\(helper.name)做完了，但没写回复。" : "\(helper.name)的回复（它的完整过程在它自己的絮语里）：\n\n\(answer)")
     }
 

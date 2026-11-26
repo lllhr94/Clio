@@ -545,6 +545,7 @@ struct ChatDisplayPage: View {
     @AppStorage("look.haptics") private var haptics = true
     @AppStorage("look.hapticIntensity") private var hapticIntensityRaw = Pref.HapticIntensity.standard.rawValue
     @AppStorage("look.fade") private var fade = true
+    @AppStorage("look.immersiveChrome") private var immersiveChrome = false
     @AppStorage("look.stats") private var stats = true
     @AppStorage("look.traceOpen") private var traceOpen = false
     @AppStorage("look.thinking") private var showThinking = true
@@ -589,6 +590,7 @@ struct ChatDisplayPage: View {
                 Toggle(L.t("settings.expandSteps"), isOn: $traceOpen)
                 Toggle(L.t("settings.preReplyThought"), isOn: $pulseOn)
                 Toggle(L.t("settings.fadeReply"), isOn: $fade)
+                Toggle(L.t("settings.immersiveChrome"), isOn: $immersiveChrome)
                 Toggle(L.t("settings.haptics"), isOn: $haptics)
                 if haptics {
                     StopRow(
@@ -631,6 +633,7 @@ struct ChatDisplayPage: View {
         haptics = true
         hapticIntensityRaw = Pref.HapticIntensity.standard.rawValue
         fade = true
+        immersiveChrome = false
         stats = true
         traceOpen = false
         showThinking = true

@@ -751,7 +751,13 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 } action: { metrics in
                     safeVertical = metrics
                 }
-                .overlay(alignment: .trailing) { minimap() }
+                .overlay(alignment: .trailing) {
+                    let topPad = max(0, (headerBottomY ?? safeVertical.minY) - safeVertical.minY)
+                    let bottomPad = max(0, safeVertical.maxY - (dockTopY ?? safeVertical.maxY))
+                    minimap()
+                        .padding(.top, topPad)
+                        .padding(.bottom, bottomPad)
+                }
 
         }
         .onAppear {
@@ -1107,13 +1113,21 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             }
         }
 
-        actions.onScrollDelta = { [weak coordinator] deltaY, distanceFromBottom, isScrollable in
+        actions.onScrollDelta = { [weak coordinator] rawDeltaY, clampedDeltaY, distanceFromBottom, distanceFromTop, isDragging, isScrollable in
             guard let coordinator, !coordinator.isDismantled else { return }
             chromeCoordinator.handleUserScroll(
-                deltaY: deltaY,
+                rawDeltaY: rawDeltaY,
+                clampedDeltaY: clampedDeltaY,
                 distanceFromBottom: distanceFromBottom,
+                distanceFromTop: distanceFromTop,
+                isDragging: isDragging,
                 isScrollable: isScrollable
             )
+        }
+
+        actions.onChromeDragEnded = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            chromeCoordinator.handleUserDragEnded()
         }
 
         actions.onKeyboardVisibilityChanged = { [weak coordinator] isOpen in

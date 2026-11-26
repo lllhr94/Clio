@@ -239,6 +239,8 @@ enum Pref {
     static var notifyDone: Bool { bool("notify.done", true) }
     /// Under a reply, a folded line with what the model thought on the way.
     static var showThinking: Bool { bool("look.thinking", true) }
+    /// Scroll-driven collapsing of chat header and composer while browsing history (default off).
+    static var immersiveChrome: Bool { bool("look.immersiveChrome", false) }
     /// The frame-rate meter in the corner, for checking smoothness.
     static var fpsMeter: Bool { bool("look.fps", false) }
     static var morningHour: Int { int("morning.hour", 7) }

@@ -2423,7 +2423,8 @@ final class ChatLayoutCache: @unchecked Sendable {
             entry = NoteLayoutEntry(titleHeight: titleH, detailHeight: detailH, cellHeight: ceil(total + metrics.rowSpacing))
         } else {
             let h = Self.measureNSStringHeight(line.text, font: fonts.notePlain, maxWidth: contentWidth)
-            entry = NoteLayoutEntry(titleHeight: h, detailHeight: 0, cellHeight: ceil(h + metrics.rowSpacing))
+            let verticalPad = metrics.spaceS * 2
+            entry = NoteLayoutEntry(titleHeight: h, detailHeight: 0, cellHeight: ceil(h + verticalPad + metrics.rowSpacing))
         }
         noteCache.set(entry, for: key)
         return entry

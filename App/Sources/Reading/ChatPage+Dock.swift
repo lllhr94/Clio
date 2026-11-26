@@ -424,128 +424,146 @@ struct ChatBottomStackView<FindBar: View>: View {
     }
 
     var body: some View {
-        let suppressPet = coveredByPage || chromeCoordinator.isImmersive
-        VStack(spacing: 0) {
-            if !chromeCoordinator.isImmersive {
+        let p = chromeCoordinator.visualProgress
+        let fabAlpha = max(0, min(1, (Double(p) - 0.45) / 0.55))
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
                 PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: viewportMetrics.size)
-            }
-            Group {
-                if chromeCoordinator.isImmersive {
-                    ChatImmersiveBottomBar(
-                        chat: chat,
+                VStack(spacing: 0) {
+                    ChatDockedFormSlot(
+                        chatKey: chat.key,
+                        viewportMetrics: viewportMetrics,
+                        calmPetMotion: calmPetMotion,
                         team: team,
-                        confirmStop: confirmStop,
-                        askingStop: $askingStop,
-                        onRestore: { chromeCoordinator.restore() },
-                        onLatest: onReturnToLatest
+                        asker: asker
                     )
-                    .padding(.horizontal, Ink.Bar.edge)
-                    .transition(.opacity.animation(calmPetMotion ? nil : Ink.Motion.quick))
-                } else {
-                    VStack(spacing: 0) {
-                        ChatDockedFormSlot(
-                            chatKey: chat.key,
-                            viewportMetrics: viewportMetrics,
-                            calmPetMotion: calmPetMotion,
+                    if finding {
+                        findBar()
+                    } else {
+                        ChatComposerBarView(
+                            chat: chat,
                             team: team,
-                            asker: asker
-                        )
-                        if finding {
-                            findBar()
-                        } else {
-                            ChatComposerBarView(
-                                chat: chat,
-                                team: team,
-                                bot: bot,
-                                chrome: chrome,
-                                petPerch: petPerch,
-                                dictationSlot: dictationSlot,
-                                draftState: draftState,
-                                followState: followState,
-                                notice: notice,
-                                awayState: awayState,
-                                contextMetrics: contextMetrics,
-                                workTimer: workTimer,
-                                historyInView: historyInView,
-                                largeText: largeText,
-                                confirmStop: confirmStop,
-                                calmPetMotion: calmPetMotion,
-                                viewportMetrics: viewportMetrics,
-                                typing: typing,
-                                usageOpen: $usageOpen,
-                                pickerShown: $pickerShown,
-                                importingFile: $importingFile,
-                                picks: $picks,
-                                attaching: $attaching,
-                                dockOpen: $dockOpen,
-                                askingStop: $askingStop,
-                                detailOpen: $detailOpen,
-                                roaming: $roaming,
-                                editing: $editing,
-                                quote: $quote,
-                                photos: $photos,
-                                files: $files,
-                                onPresentApproval: onPresentApproval,
-                                onToEnd: onToEnd,
-                                onPreviousQuestion: onPreviousQuestion,
-                                onNextQuestion: onNextQuestion,
-                                onReturnToLatest: onReturnToLatest,
-                                onClearComposer: onClearComposer,
-                                onListen: onListen,
-                                onRedoFrom: onRedoFrom,
-                                onPasteChange: onPasteChange,
-                                onReceiveURLs: onReceiveURLs,
-                                fileNote: fileNote,
-                                outgoingText: outgoingText
-                            )
-                        }
-                    }
-                    .overlay(alignment: .top) {
-                        ChatDockedJumpOverlaySlot(
-                            chatKey: chat.key,
-                            team: team,
-                            asker: asker,
+                            bot: bot,
                             chrome: chrome,
                             petPerch: petPerch,
-                            inHistory: historyInView,
+                            dictationSlot: dictationSlot,
+                            draftState: draftState,
                             followState: followState,
-                            onPrevious: onPreviousQuestion,
-                            onNext: onNextQuestion,
-                            onLatest: onReturnToLatest
+                            notice: notice,
+                            awayState: awayState,
+                            contextMetrics: contextMetrics,
+                            workTimer: workTimer,
+                            historyInView: historyInView,
+                            largeText: largeText,
+                            confirmStop: confirmStop,
+                            calmPetMotion: calmPetMotion,
+                            viewportMetrics: viewportMetrics,
+                            typing: typing,
+                            usageOpen: $usageOpen,
+                            pickerShown: $pickerShown,
+                            importingFile: $importingFile,
+                            picks: $picks,
+                            attaching: $attaching,
+                            dockOpen: $dockOpen,
+                            askingStop: $askingStop,
+                            detailOpen: $detailOpen,
+                            roaming: $roaming,
+                            editing: $editing,
+                            quote: $quote,
+                            photos: $photos,
+                            files: $files,
+                            onPresentApproval: onPresentApproval,
+                            onToEnd: onToEnd,
+                            onPreviousQuestion: onPreviousQuestion,
+                            onNextQuestion: onNextQuestion,
+                            onReturnToLatest: onReturnToLatest,
+                            onClearComposer: onClearComposer,
+                            onListen: onListen,
+                            onRedoFrom: onRedoFrom,
+                            onPasteChange: onPasteChange,
+                            onReceiveURLs: onReceiveURLs,
+                            fileNote: fileNote,
+                            outgoingText: outgoingText
                         )
-                    }
-                    .background(alignment: .top) {
-                        LinearGradient(
-                            colors: [Ink.paper.opacity(0), Ink.paper.opacity(0.96)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: Ink.Space.s)
-                        .offset(y: -Ink.Space.s)
-                        .allowsHitTesting(false)
-                    }
-                    .background {
-                        Ink.paper.opacity(0.96)
-                            .ignoresSafeArea(edges: .bottom)
-                            .allowsHitTesting(false)
                     }
                 }
+                .overlay(alignment: .top) {
+                    ChatDockedJumpOverlaySlot(
+                        chatKey: chat.key,
+                        team: team,
+                        asker: asker,
+                        chrome: chrome,
+                        petPerch: petPerch,
+                        inHistory: historyInView,
+                        followState: followState,
+                        onPrevious: onPreviousQuestion,
+                        onNext: onNextQuestion,
+                        onLatest: onReturnToLatest
+                    )
+                }
+                .background(alignment: .top) {
+                    LinearGradient(
+                        colors: [Ink.paper.opacity(0), Ink.paper.opacity(0.96)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: Ink.Space.m)
+                    .offset(y: -Ink.Space.m)
+                    .allowsHitTesting(false)
+                }
+                .background {
+                    Ink.paper.opacity(0.96)
+                        .ignoresSafeArea(edges: .bottom)
+                        .allowsHitTesting(false)
+                }
+                .background(alignment: .top) {
+                    ChatPetPerchAnchorView(
+                        chat: chat,
+                        team: team,
+                        asker: asker,
+                        dictationSlot: dictationSlot,
+                        petPerch: petPerch,
+                        face: isRoom ? nil : bot.avatar,
+                        baseSheetOpen: baseSheetOpen,
+                        coveredByPage: coveredByPage,
+                        quiet: p > 0.15,
+                        onOpenSettings: { petSettingsOpen = true }
+                    )
+                }
             }
-            .background(alignment: .top) {
-                ChatPetPerchAnchorView(
-                    chat: chat,
-                    team: team,
-                    asker: asker,
-                    dictationSlot: dictationSlot,
-                    petPerch: petPerch,
-                    face: isRoom ? nil : bot.avatar,
-                    baseSheetOpen: baseSheetOpen,
-                    coveredByPage: suppressPet,
-                    onOpenSettings: { petSettingsOpen = true }
-                )
-            }
+            .offset(y: calmPetMotion ? 0 : 96 * p)
+            .opacity(max(0, 1 - Double(p) * 1.18))
+            .allowsHitTesting(p < 0.5)
+            .accessibilityHidden(p >= 0.5)
+
+            ChatImmersiveBottomBar(
+                chat: chat,
+                team: team,
+                confirmStop: confirmStop,
+                askingStop: $askingStop,
+                onRestore: { chromeCoordinator.restore() },
+                onLatest: onReturnToLatest
+            )
+            .padding(.trailing, Ink.Space.page)
+            .padding(.bottom, Ink.Space.xs)
+            .opacity(fabAlpha)
+            .offset(y: calmPetMotion ? 0 : CGFloat(1 - fabAlpha) * 12)
+            .scaleEffect(calmPetMotion ? 1 : CGFloat(0.88 + 0.12 * fabAlpha))
+            .allowsHitTesting(p >= 0.5)
+            .accessibilityHidden(p < 0.5)
         }
         .animation(petDockMotion, value: finding)
+        .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
+            Button(L.t("chat.stopNow"), role: .destructive) {
+                Haptics.lock()
+                if team.workDetail(for: chat.key).words != nil || chat.hasStreaming {
+                    chat.stop()
+                }
+            }
+            Button(L.t("actions.cancel"), role: .cancel) {}
+        } message: {
+            Text(L.t("chat.stopAskNote"))
+        }
     }
 }
 
@@ -589,6 +607,7 @@ private struct ChatPetPerchAnchorView: View {
     let face: String?
     let baseSheetOpen: Bool
     let coveredByPage: Bool
+    let quiet: Bool
     let onOpenSettings: () -> Void
 
     private var doing: String? { team.workDetail(for: chat.key).words }
@@ -616,6 +635,7 @@ private struct ChatPetPerchAnchorView: View {
                 face: face,
                 showingSheet: showingSheet,
                 coveredByPage: coveredByPage,
+                quiet: quiet,
                 onOpenSettings: onOpenSettings
             )
         } else {
@@ -625,7 +645,7 @@ private struct ChatPetPerchAnchorView: View {
                 face: face,
                 showingSheet: showingSheet,
                 covered: coveredByPage,
-                quiet: false,
+                quiet: quiet,
                 enabled: PetLibrary.shared.visible,
                 openSettings: onOpenSettings
             )
@@ -644,6 +664,7 @@ private struct ChatActivePetPerchAnchorView: View {
     let face: String?
     let showingSheet: Bool
     let coveredByPage: Bool
+    let quiet: Bool
     let onOpenSettings: () -> Void
 
     var body: some View {
@@ -653,7 +674,7 @@ private struct ChatActivePetPerchAnchorView: View {
             face: face,
             showingSheet: showingSheet,
             covered: coveredByPage,
-            quiet: dictation.listening,
+            quiet: quiet || dictation.listening,
             enabled: PetLibrary.shared.visible,
             openSettings: onOpenSettings
         )
@@ -729,7 +750,9 @@ struct ChatComposerBarView: View {
                 onPresentApproval: onPresentApproval,
                 onToEnd: onToEnd
             )
+            .padding(.horizontal, Ink.Space.page)
             ChatDictationProblemView(dictationSlot: dictationSlot)
+                .padding(.horizontal, Ink.Space.page)
             ChatComposerMainCard(
                 chat: chat,
                 team: team,
@@ -761,9 +784,9 @@ struct ChatComposerBarView: View {
                 outgoingText: outgoingText
             )
             ChatComposerHintToast(notice: notice)
+                .padding(.horizontal, Ink.Space.page)
         }
-        .padding(.horizontal, Ink.Bar.edge)
-        .padding(.bottom, Ink.Space.s)
+        .padding(.bottom, Ink.Space.xs)
     }
 }
 
@@ -1008,8 +1031,28 @@ private struct ChatComposerMainCard: View {
     let fileNote: () -> String
     let outgoingText: () -> String
 
+    private var baseComposing: Bool {
+        typing.wrappedValue
+            || draftState.hasText
+            || !photos.isEmpty
+            || !files.isEmpty
+            || editing != nil
+            || quote != nil
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
+        if let dictation = dictationSlot.instance {
+            ChatActiveComposerMainCardContainer(dictation: dictation, baseComposing: baseComposing) { composing in
+                cardBody(composing: composing)
+            }
+        } else {
+            cardBody(composing: baseComposing)
+        }
+    }
+
+    private func cardBody(composing: Bool) -> some View {
+        let sidePadding = composing ? Ink.Space.page : 26 * UIScale.factor
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
             ChatComposerQuoteBanner(quote: $quote)
             ChatComposerEditingBanner(editing: $editing, draftState: draftState)
             ChatComposerPhotosRow(photos: $photos)
@@ -1063,9 +1106,21 @@ private struct ChatComposerMainCard: View {
                 outgoingText: outgoingText
             )
         }
-        .padding(.horizontal, Ink.Space.s)
-        .padding(.vertical, 6 * UIScale.factor)
-        .composerGlassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet, style: .continuous))
+        .padding(.horizontal, 7 * UIScale.factor)
+        .padding(.vertical, 5 * UIScale.factor)
+        .composerGlassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
+        .padding(.horizontal, sidePadding)
+        .animation(Ink.Motion.quick, value: composing)
+    }
+}
+
+private struct ChatActiveComposerMainCardContainer<Content: View>: View {
+    @ObservedObject var dictation: Dictation
+    let baseComposing: Bool
+    @ViewBuilder let content: (Bool) -> Content
+
+    var body: some View {
+        content(baseComposing || dictation.listening || dictation.transcribing)
     }
 }
 
@@ -1511,13 +1566,17 @@ private struct ChatComposerAccessoryCore: View {
                 ChatPlaceChipView(chatKey: chat.key, team: team, notice: notice)
                     .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
-            ChatContextRingButton(
-                contextMetrics: contextMetrics,
-                composing: composing
-            ) {
-                Haptics.light()
-                typing.wrappedValue = false
-                usageOpen = true
+            let ringShare = contextMetrics.estimate?.share ?? 0
+            if composing || ringShare >= 0.5 {
+                ChatContextRingButton(
+                    contextMetrics: contextMetrics,
+                    composing: composing
+                ) {
+                    Haptics.light()
+                    typing.wrappedValue = false
+                    usageOpen = true
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.8)))
             }
             ChatActionButtonView(
                 chat: chat,
@@ -1872,15 +1931,6 @@ private struct ChatActionButtonCore: View {
         }
         .disabled(mode == 2 && sendingBlocked)
         .buttonStyle(PressStyle(haptic: false))
-        .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
-            Button(L.t("chat.stopNow"), role: .destructive) {
-                Haptics.lock()
-                if working { chat.stop() }
-            }
-            Button(L.t("actions.cancel"), role: .cancel) {}
-        } message: {
-            Text(L.t("chat.stopAskNote"))
-        }
         .animation(Ink.Motion.press, value: mode)
         .accessibilityLabel(label)
         .contextMenu {
@@ -1951,7 +2001,7 @@ private struct ChatDockedJumpOverlaySlot: View {
             onNext: onNext,
             onLatest: onLatest
         )
-        .padding(.horizontal, Ink.Bar.edge)
+        .padding(.horizontal, Ink.Space.page)
     }
 }
 
@@ -1968,13 +2018,12 @@ private struct ChatImmersiveBottomBar: View {
     }
 
     var body: some View {
-        HStack(spacing: Ink.Space.s) {
-            Spacer(minLength: 0)
+        let fabSize = 40 * UIScale.factor
+        HStack(spacing: Ink.Space.xs) {
             if working {
                 Button {
                     if confirmStop {
                         Haptics.light()
-                        onRestore()
                         askingStop = true
                     } else {
                         Haptics.lock()
@@ -1984,7 +2033,7 @@ private struct ChatImmersiveBottomBar: View {
                     Image(systemName: "stop.fill")
                         .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.stop)
-                        .padding(Ink.Space.s)
+                        .frame(width: fabSize, height: fabSize)
                         .glassFace(in: Circle())
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
@@ -1994,30 +2043,35 @@ private struct ChatImmersiveBottomBar: View {
             }
 
             Button {
+                Haptics.selection()
+                onRestore()
+            } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                    .foregroundStyle(Ink.inkSoft)
+                    .frame(width: fabSize, height: fabSize)
+                    .glassFace(in: Circle())
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle(haptic: false))
+            .accessibilityLabel(L.t("chat.restoreControls"))
+
+            Button {
                 Haptics.light()
                 onRestore()
                 onLatest()
             } label: {
-                Image(systemName: "arrow.down.to.line")
+                Image(systemName: "chevron.down")
                     .font(.system(size: Ink.Size.small, weight: .semibold))
                     .foregroundStyle(Ink.ink)
-                    .padding(Ink.Space.s)
+                    .frame(width: fabSize, height: fabSize)
                     .glassFace(in: Circle())
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle(haptic: false))
             .accessibilityLabel(L.t("chat.latest"))
-        }
-        .padding(.top, Ink.Space.xs)
-        .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
-            Button(L.t("chat.stopNow"), role: .destructive) {
-                Haptics.lock()
-                if working { chat.stop() }
-            }
-            Button(L.t("actions.cancel"), role: .cancel) {}
-        } message: {
-            Text(L.t("chat.stopAskNote"))
         }
     }
 }
