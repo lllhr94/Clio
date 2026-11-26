@@ -242,10 +242,16 @@ extension ChatPage {
                 }
                 if !line.text.isEmpty {
                     let isEditing = editing == line.id
+                    let userBox = SafeLineBox.resolve(
+                        userSize: CGFloat(Pref.size),
+                        contentMultiplier: SafeLineBox.userBubbleMultiplier(for: CGFloat(Pref.lineHeight)),
+                        face: Pref.face
+                    )
                     Text(line.text)
-                        .font(.system(size: Ink.Size.body))
+                        .font(Ink.face(Pref.face, userBox.effectivePointSize))
                         .foregroundStyle(Ink.ink)
-                        .lineSpacing(4)
+                        .lineSpacing(userBox.swiftUILineSpacing)
+                        .tracking(userBox.trackingPoints)
                         .padding(.horizontal, Ink.Space.l)
                         .padding(.vertical, 10 * UIScale.factor)
                         .glassBubble(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous),
@@ -770,10 +776,16 @@ struct ChatSettledRowView: View, Equatable {
                 }
             }
             if !line.text.isEmpty {
+                let userBox = SafeLineBox.resolve(
+                    userSize: CGFloat(Pref.size),
+                    contentMultiplier: SafeLineBox.userBubbleMultiplier(for: CGFloat(Pref.lineHeight)),
+                    face: Pref.face
+                )
                 Text(line.text)
-                    .font(.system(size: Ink.Size.body))
+                    .font(Ink.face(Pref.face, userBox.effectivePointSize))
                     .foregroundStyle(Ink.ink)
-                    .lineSpacing(4)
+                    .lineSpacing(userBox.swiftUILineSpacing)
+                    .tracking(userBox.trackingPoints)
                     .padding(.horizontal, Ink.Space.l)
                     .padding(.vertical, 10 * UIScale.factor)
                     .glassBubble(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous), tint: bubbleTint)

@@ -35,6 +35,7 @@ struct ChatResolvedColors: Equatable, @unchecked Sendable {
         let rule = pick(Ink.rule)
         let paperRaised = pick(Ink.paperRaised)
         let accent = pick(Ink.accent)
+        let surfaceSubtle = pick(Ink.surfaceSubtle)
         return ChatResolvedColors(
             ink: pick(Ink.ink),
             inkSoft: pick(Ink.inkSoft),
@@ -50,11 +51,11 @@ struct ChatResolvedColors: Equatable, @unchecked Sendable {
             codeFunction: pick(Ink.Code.function),
             codeNumber: pick(Ink.Code.number),
             codeString: pick(Ink.Code.string),
-            inlineCodeFill: mine.withAlphaComponent(0.85),
+            inlineCodeFill: surfaceSubtle,
             ruleFill: rule.withAlphaComponent(0.85),
-            quoteBackground: paperRaised.withAlphaComponent(0.75),
-            quoteBorder: rule.withAlphaComponent(0.55),
-            quoteStripe: accent.withAlphaComponent(0.52)
+            quoteBackground: surfaceSubtle.withAlphaComponent(0.35),
+            quoteBorder: .clear,
+            quoteStripe: accent.withAlphaComponent(0.55)
         )
     }
 }
@@ -105,13 +106,77 @@ struct ChatResolvedMetrics: Equatable, Sendable {
     let codeHeaderHeight: CGFloat
     let codeFoldButtonHeight: CGFloat
     let inlineCodeCorner: CGFloat
+    let opticalProfile: FontOpticalProfile
+    let bodyBox: SafeLineBoxMetrics
+    let userBox: SafeLineBoxMetrics
+    let listBox: SafeLineBoxMetrics
+    let quoteBox: SafeLineBoxMetrics
+    let h1Box: SafeLineBoxMetrics
+    let h2Box: SafeLineBoxMetrics
+    let h3Box: SafeLineBoxMetrics
+    let h4Box: SafeLineBoxMetrics
+    let tableBox: SafeLineBoxMetrics
+    let codeBox: SafeLineBoxMetrics
+    let headingWeight: Pref.HeadingWeight
+    let clreqSqueeze: Bool
+    let readingWidth: CGFloat
 
     @MainActor
-    static func resolve(size: Double, lineHeight: Double, face: Pref.Face, uiScale: Double) -> ChatResolvedMetrics {
+    static func resolve(
+        size: Double,
+        lineHeight: Double,
+        paragraphGap: Double,
+        headingWeight: Pref.HeadingWeight,
+        clreqSqueeze: Bool,
+        readingWidth: Double,
+        face: Pref.Face,
+        code: Pref.Code,
+        uiScale: Double
+    ) -> ChatResolvedMetrics {
         let scale = CGFloat(uiScale)
         let readingSize = CGFloat(size)
+        let userLH = CGFloat(lineHeight)
         let codeSize = max(CGFloat(12), readingSize - 3)
         let inlineCodeSize = max(CGFloat(12), readingSize - 2)
+        let profile = FontOpticalProfile.resolve(for: face)
+
+        let bodyBox = SafeLineBox.resolve(userSize: readingSize, contentMultiplier: userLH, face: face)
+        let userBox = SafeLineBox.resolve(userSize: readingSize, contentMultiplier: SafeLineBox.userBubbleMultiplier(for: userLH), face: face)
+        let listBox = SafeLineBox.resolve(userSize: readingSize, contentMultiplier: SafeLineBox.listMultiplier(for: userLH), face: face)
+        let quoteBox = SafeLineBox.resolve(userSize: max(13, readingSize - 0.5), contentMultiplier: SafeLineBox.quoteMultiplier(for: userLH), face: face)
+
+        func makeHeadingBox(_ level: Int, weight: UIFont.Weight) -> SafeLineBoxMetrics {
+            let hUserSize = SafeLineBox.headingSize(level: level, readingSize: readingSize)
+            let hEffectivePt = SafeLineBox.effectivePointSize(for: hUserSize, face: face)
+            let hFont = Ink.uiFace(hEffectivePt, weight: weight, face: face)
+            return SafeLineBox.resolve(
+                userSize: hUserSize,
+                contentMultiplier: SafeLineBox.headingMultiplier(level: level),
+                face: face,
+                font: hFont
+            )
+        }
+
+        let h1Box = makeHeadingBox(1, weight: headingWeight.uiWeight)
+        let h2Box = makeHeadingBox(2, weight: headingWeight.uiWeight)
+        let h3Box = makeHeadingBox(3, weight: headingWeight.uiWeight)
+        let h4Box = makeHeadingBox(4, weight: .medium)
+        let tableBox = SafeLineBox.resolve(userSize: inlineCodeSize, contentMultiplier: SafeLineBox.tableMultiplier, face: face)
+
+        let codeFont = Ink.uiMono(codeSize, preference: code)
+        let codeNatural = ceil(codeFont.ascender - codeFont.descender)
+        let codeTarget = codeSize * SafeLineBox.codeMultiplier
+        let codeBox = SafeLineBoxMetrics(
+            userReadingSize: codeSize,
+            effectivePointSize: codeSize,
+            naturalBoxHeight: codeNatural,
+            targetLineHeight: codeTarget,
+            minimumLineHeight: max(codeTarget, codeNatural),
+            maximumLineHeight: 0,
+            lineSpacing: 0,
+            trackingPoints: 0
+        )
+
         return ChatResolvedMetrics(
             scale: scale,
             spaceXS: Ink.Space.xs,
@@ -149,29 +214,53 @@ struct ChatResolvedMetrics: Equatable, Sendable {
             continueButtonHeight: ChatCellMetrics.continueButtonHeight,
             footerHeight: ChatCellMetrics.footerHeight,
             queuedActionsHeight: 24 * scale,
-            leading: Ink.leading(size: size, lineHeight: lineHeight, face: face),
-            paragraphGap: readingSize * 0.72,
-            listSpacing: readingSize * 0.42,
-            headingBottom: readingSize * 0.35,
+            leading: bodyBox.swiftUILineSpacing,
+            paragraphGap: CGFloat(paragraphGap),
+            listSpacing: readingSize * 0.25,
+            headingBottom: SafeLineBox.headingBottom(level: 1, readingSize: readingSize),
             codeLineSpacing: max(1.5, codeSize * 0.13),
             codeHeaderHeight: 32 * scale,
             codeFoldButtonHeight: 34 * scale,
-            inlineCodeCorner: 5 * scale
+            inlineCodeCorner: 5 * scale,
+            opticalProfile: profile,
+            bodyBox: bodyBox,
+            userBox: userBox,
+            listBox: listBox,
+            quoteBox: quoteBox,
+            h1Box: h1Box,
+            h2Box: h2Box,
+            h3Box: h3Box,
+            h4Box: h4Box,
+            tableBox: tableBox,
+            codeBox: codeBox,
+            headingWeight: headingWeight,
+            clreqSqueeze: clreqSqueeze,
+            readingWidth: CGFloat(readingWidth)
         )
     }
 
+    nonisolated func headingBox(level: Int) -> SafeLineBoxMetrics {
+        if level <= 1 { return h1Box }
+        if level == 2 { return h2Box }
+        if level == 3 { return h3Box }
+        return h4Box
+    }
+
     nonisolated func headingSize(level: Int) -> CGFloat {
-        let base = readingSize
-        if level <= 1 { return (base * 1.24).rounded() }
-        if level == 2 { return (base * 1.13).rounded() }
-        return (base * 1.05).rounded()
+        SafeLineBox.headingSize(level: level, readingSize: readingSize)
     }
 
     nonisolated func headingTop(level: Int) -> CGFloat {
-        let base = readingSize
-        if level <= 1 { return base * 1.1 }
-        if level == 2 { return base * 0.85 }
-        return base * 0.55
+        SafeLineBox.headingTop(level: level, readingSize: readingSize)
+    }
+
+    nonisolated func headingBottom(level: Int) -> CGFloat {
+        SafeLineBox.headingBottom(level: level, readingSize: readingSize)
+    }
+
+    nonisolated func effectiveContentWidth(for collectionWidth: CGFloat) -> CGFloat {
+        let available = max(120, collectionWidth - spacePage * 2)
+        return available > readingWidth ? readingWidth : available
     }
 }
 
@@ -184,9 +273,15 @@ struct ChatFontGroup: Equatable, @unchecked Sendable {
     let inlineCode: UIFont
 
     @MainActor
-    static func resolve(size: CGFloat, face: Pref.Face, code: Pref.Code) -> ChatFontGroup {
-        let regular = Ink.uiFace(size, bold: false, face: face)
-        let bold = Ink.uiFace(size, bold: true, face: face)
+    static func resolve(
+        size: CGFloat,
+        face: Pref.Face,
+        code: Pref.Code,
+        regularWeight: UIFont.Weight = .regular,
+        boldWeight: UIFont.Weight = .semibold
+    ) -> ChatFontGroup {
+        let regular = Ink.uiFace(size, weight: regularWeight, face: face)
+        let bold = Ink.uiFace(size, weight: boldWeight, face: face)
         let italic = ChatResolvedFonts.italicized(regular, size: size)
         let boldItalic = ChatResolvedFonts.italicized(bold, size: size)
         let inlineCode = Ink.uiMono(max(CGFloat(12), size - 2), preference: code)
@@ -219,7 +314,11 @@ struct ChatResolvedFonts: Equatable, @unchecked Sendable {
     let heading1: ChatFontGroup
     let heading2: ChatFontGroup
     let heading3: ChatFontGroup
+    let heading4: ChatFontGroup
+    let quote: ChatFontGroup
     let table: ChatFontGroup
+    let tableNumericRegular: UIFont
+    let tableNumericBold: UIFont
     let userBody: UIFont
     let disclosureSmall: UIFont
     let ruleMicro: UIFont
@@ -242,7 +341,8 @@ struct ChatResolvedFonts: Equatable, @unchecked Sendable {
     nonisolated func headingGroup(level: Int) -> ChatFontGroup {
         if level <= 1 { return heading1 }
         if level == 2 { return heading2 }
-        return heading3
+        if level == 3 { return heading3 }
+        return heading4
     }
 
     nonisolated static func italicized(_ font: UIFont, size: CGFloat) -> UIFont {
@@ -252,6 +352,18 @@ struct ChatResolvedFonts: Equatable, @unchecked Sendable {
         return font
     }
 
+    nonisolated static func tabularDigits(_ font: UIFont, size: CGFloat) -> UIFont {
+        let descriptor = font.fontDescriptor.addingAttributes([
+            .featureSettings: [
+                [
+                    UIFontDescriptor.FeatureKey.type: kNumberSpacingType,
+                    UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector,
+                ],
+            ],
+        ])
+        return UIFont(descriptor: descriptor, size: size)
+    }
+
     @MainActor
     private static func alignedCodeFonts(size: CGFloat, preference: Pref.Code, italic: Bool) -> AlignedPair {
         let key = AlignedPairKey(sizeKey: Int((size * 2).rounded()), codePref: preference, italic: italic)
@@ -259,25 +371,28 @@ struct ChatResolvedFonts: Equatable, @unchecked Sendable {
 
         let baseMono = Ink.uiMono(size, preference: preference)
         let targetMono = italic ? italicized(baseMono, size: size) : baseMono
-        let wideBase = UIFont.systemFont(ofSize: size)
-        let targetWide = italic ? italicized(wideBase, size: size) : wideBase
-
-        let native = targetMono as CTFont
-        var zero: UniChar = 48
-        var glyph: CGGlyph = 0
         let pair: AlignedPair
-        if CTFontGetGlyphsForCharacters(native, &zero, &glyph, 1) {
-            let advance = CTFontGetAdvancesForGlyphs(native, .horizontal, &glyph, nil, 1)
-            if advance > 0 {
-                let matrix = CGAffineTransform(scaleX: size * 0.5 / advance, y: 1)
-                let scaledDescriptor = targetMono.fontDescriptor.withMatrix(matrix)
-                let halfFont = UIFont(descriptor: scaledDescriptor, size: size)
-                pair = AlignedPair(narrow: halfFont, wide: targetWide)
+        if preference == .maple && Ink.has("MapleMono-Regular") && Ink.has("ClioMonoCN-Regular") {
+            pair = AlignedPair(narrow: targetMono, wide: targetMono)
+        } else {
+            let wideBase = UIFont.systemFont(ofSize: size)
+            let targetWide = italic ? italicized(wideBase, size: size) : wideBase
+            let native = targetMono as CTFont
+            var zero: UniChar = 48
+            var glyph: CGGlyph = 0
+            if CTFontGetGlyphsForCharacters(native, &zero, &glyph, 1) {
+                let advance = CTFontGetAdvancesForGlyphs(native, .horizontal, &glyph, nil, 1)
+                if advance > 0 {
+                    let matrix = CGAffineTransform(scaleX: size * 0.5 / advance, y: 1)
+                    let scaledDescriptor = targetMono.fontDescriptor.withMatrix(matrix)
+                    let halfFont = UIFont(descriptor: scaledDescriptor, size: size)
+                    pair = AlignedPair(narrow: halfFont, wide: targetWide)
+                } else {
+                    pair = AlignedPair(narrow: targetMono, wide: targetWide)
+                }
             } else {
                 pair = AlignedPair(narrow: targetMono, wide: targetWide)
             }
-        } else {
-            pair = AlignedPair(narrow: targetMono, wide: targetWide)
         }
         alignedPairCache.set(pair, for: key)
         return pair
@@ -291,18 +406,25 @@ struct ChatResolvedFonts: Equatable, @unchecked Sendable {
         let alignedItalic = alignedCodeFonts(size: metrics.codeSize, preference: code, italic: true)
         let smallFont = UIFont.systemFont(ofSize: metrics.sizeSmall)
         let subFont = UIFont.systemFont(ofSize: metrics.sizeSub)
+        let hWeight = metrics.headingWeight.uiWeight
+        let bodyPt = metrics.bodyBox.effectivePointSize
+        let tableGroup = ChatFontGroup.resolve(size: metrics.tableBox.effectivePointSize, face: face, code: code)
         return ChatResolvedFonts(
-            reading: ChatFontGroup.resolve(size: metrics.readingSize, face: face, code: code),
-            heading1: ChatFontGroup.resolve(size: metrics.headingSize(level: 1), face: face, code: code),
-            heading2: ChatFontGroup.resolve(size: metrics.headingSize(level: 2), face: face, code: code),
-            heading3: ChatFontGroup.resolve(size: metrics.headingSize(level: 3), face: face, code: code),
-            table: ChatFontGroup.resolve(size: metrics.tableCellSize, face: face, code: code),
-            userBody: UIFont.systemFont(ofSize: metrics.sizeBody),
+            reading: ChatFontGroup.resolve(size: bodyPt, face: face, code: code),
+            heading1: ChatFontGroup.resolve(size: metrics.h1Box.effectivePointSize, face: face, code: code, regularWeight: hWeight, boldWeight: hWeight),
+            heading2: ChatFontGroup.resolve(size: metrics.h2Box.effectivePointSize, face: face, code: code, regularWeight: hWeight, boldWeight: hWeight),
+            heading3: ChatFontGroup.resolve(size: metrics.h3Box.effectivePointSize, face: face, code: code, regularWeight: hWeight, boldWeight: hWeight),
+            heading4: ChatFontGroup.resolve(size: metrics.h4Box.effectivePointSize, face: face, code: code, regularWeight: .medium, boldWeight: .medium),
+            quote: ChatFontGroup.resolve(size: metrics.quoteBox.effectivePointSize, face: face, code: code),
+            table: tableGroup,
+            tableNumericRegular: tabularDigits(tableGroup.regular, size: metrics.tableBox.effectivePointSize),
+            tableNumericBold: tabularDigits(tableGroup.bold, size: metrics.tableBox.effectivePointSize),
+            userBody: Ink.uiFace(metrics.userBox.effectivePointSize, weight: .regular, face: face),
             disclosureSmall: smallFont,
             ruleMicro: UIFont.systemFont(ofSize: metrics.sizeMicro),
-            listNumberMarker: Ink.uiFace(metrics.readingSize * 0.92, face: face),
-            listBulletDepth0: Ink.uiFace(metrics.readingSize * 0.95, face: face),
-            listBulletDepthNested: Ink.uiFace(metrics.readingSize * 0.78, face: face),
+            listNumberMarker: tabularDigits(Ink.uiFace(bodyPt * 0.92, weight: .regular, face: face), size: bodyPt * 0.92),
+            listBulletDepth0: Ink.uiFace(bodyPt * 0.95, face: face),
+            listBulletDepthNested: Ink.uiFace(bodyPt * 0.78, face: face),
             codePlainRegular: baseMono,
             codePlainItalic: plainItalic,
             codeAlignedRegularNarrow: alignedRegular.narrow,
@@ -325,6 +447,11 @@ struct ChatListStyle: Equatable, Sendable {
     let code: Pref.Code
     let size: Double
     let lineHeight: Double
+    let paragraphGapValue: Double
+    let headingWeight: Pref.HeadingWeight
+    let clreqSqueeze: Bool
+    let readingWidth: Double
+    let uiDensity: Pref.UIDensity
     let fade: Bool
     let reduceMotion: Bool
     let uiScale: Double
@@ -347,6 +474,11 @@ struct ChatListStyle: Equatable, Sendable {
         code: Pref.Code,
         size: Double,
         lineHeight: Double,
+        paragraphGapValue: Double,
+        headingWeight: Pref.HeadingWeight,
+        clreqSqueeze: Bool,
+        readingWidth: Double,
+        uiDensity: Pref.UIDensity,
         fade: Bool,
         reduceMotion: Bool,
         uiScale: Double,
@@ -366,6 +498,11 @@ struct ChatListStyle: Equatable, Sendable {
         self.code = code
         self.size = size
         self.lineHeight = lineHeight
+        self.paragraphGapValue = paragraphGapValue
+        self.headingWeight = headingWeight
+        self.clreqSqueeze = clreqSqueeze
+        self.readingWidth = readingWidth
+        self.uiDensity = uiDensity
         self.fade = fade
         self.reduceMotion = reduceMotion
         self.uiScale = uiScale
@@ -377,7 +514,7 @@ struct ChatListStyle: Equatable, Sendable {
         self.isDark = isDark
         self.contentSizeCategory = contentSizeCategory
         self.isPlainTone = isPlainTone
-        self.layoutStyleKey = "\(face.rawValue)|\(code.rawValue)|\(size)|\(lineHeight)|\(fade)|\(reduceMotion)|\(uiScale)|\(fontGeneration)|\(contentSizeCategory)"
+        self.layoutStyleKey = "\(face.rawValue)|\(code.rawValue)|\(size)|\(lineHeight)|\(paragraphGapValue)|\(headingWeight.rawValue)|\(clreqSqueeze)|\(readingWidth)|\(uiDensity.rawValue)|\(fade)|\(reduceMotion)|\(uiScale)|\(fontGeneration)|\(contentSizeCategory)"
         self.styleKey = "\(self.layoutStyleKey)|\(themeKey)|\(white)|\(oled)|\(bubble)|\(isDark)|\(isPlainTone ? 1 : 0)"
         self.colors = colors
         self.metrics = metrics
@@ -418,18 +555,38 @@ struct ChatListStyle: Equatable, Sendable {
         let code = theme.code
         let size = theme.size
         let lineHeight = theme.lineHeight
+        let paragraphGapValue = theme.paragraphGap
+        let headingWeight = theme.headingWeight
+        let clreqSqueeze = theme.clreqSqueeze
+        let readingWidth = theme.readingWidth
+        let uiDensity = theme.uiDensity
         let fade = theme.fade
         let uiScale = UIScale.shared.value
         let isDark = traits.userInterfaceStyle == .dark
         let resolvedTraits = isDark ? darkTraitCollection : lightTraitCollection
         let colors = ChatResolvedColors.resolve(traits: resolvedTraits)
-        let metrics = ChatResolvedMetrics.resolve(size: size, lineHeight: lineHeight, face: face, uiScale: uiScale)
+        let metrics = ChatResolvedMetrics.resolve(
+            size: size,
+            lineHeight: lineHeight,
+            paragraphGap: paragraphGapValue,
+            headingWeight: headingWeight,
+            clreqSqueeze: clreqSqueeze,
+            readingWidth: readingWidth,
+            face: face,
+            code: code,
+            uiScale: uiScale
+        )
         let fonts = ChatResolvedFonts.resolve(face: face, code: code, metrics: metrics)
         return ChatListStyle(
             face: face,
             code: code,
             size: size,
             lineHeight: lineHeight,
+            paragraphGapValue: paragraphGapValue,
+            headingWeight: headingWeight,
+            clreqSqueeze: clreqSqueeze,
+            readingWidth: readingWidth,
+            uiDensity: uiDensity,
             fade: fade,
             reduceMotion: reduceMotion,
             uiScale: uiScale,
@@ -453,6 +610,10 @@ struct ChatListStyle: Equatable, Sendable {
 
     func headingTop(level: Int) -> CGFloat {
         metrics.headingTop(level: level)
+    }
+
+    func headingBottom(level: Int) -> CGFloat {
+        metrics.headingBottom(level: level)
     }
 }
 

@@ -28,7 +28,7 @@ struct ChatTextRenderPalette: @unchecked Sendable {
             quoteRadius: style.metrics.radiusSmall,
             quotePadV: style.metrics.spaceM,
             quoteStripeX: style.metrics.spaceM,
-            quoteStripeWidth: 2.5
+            quoteStripeWidth: 2.0
         )
     }
 }
@@ -531,13 +531,15 @@ final class ChatTextTileRenderer: @unchecked Sendable {
                     ctx.fillPath()
                     ctx.restoreGState()
 
-                    let borderRect = quote.cardRect.insetBy(dx: 0.25, dy: 0.25)
-                    let borderR = max(0, r - 0.25)
-                    let borderPath = CGPath(roundedRect: borderRect, cornerWidth: borderR, cornerHeight: borderR, transform: nil)
-                    ctx.addPath(borderPath)
-                    ctx.setStrokeColor(req.palette.quoteBorder)
-                    ctx.setLineWidth(0.5)
-                    ctx.strokePath()
+                    if req.palette.quoteBorder.alpha > 0.01 {
+                        let borderRect = quote.cardRect.insetBy(dx: 0.25, dy: 0.25)
+                        let borderR = max(0, r - 0.25)
+                        let borderPath = CGPath(roundedRect: borderRect, cornerWidth: borderR, cornerHeight: borderR, transform: nil)
+                        ctx.addPath(borderPath)
+                        ctx.setStrokeColor(req.palette.quoteBorder)
+                        ctx.setLineWidth(0.5)
+                        ctx.strokePath()
+                    }
                 }
 
                 if !inlineCodeRects.isEmpty {

@@ -65,6 +65,55 @@ enum Pref {
         var note: String { self == .maple ? "圆头，柔和，已内置" : "SF Mono，苹果自带" }
     }
 
+    /// Quick starter bundles for typography; orthogonal to color palette/theme.
+    enum ReadingPreset: String, CaseIterable, Identifiable {
+        case standard, editorial, compact, comfortable
+        var id: String { rawValue }
+
+        var face: Face {
+            switch self {
+            case .standard: .sans
+            case .editorial: .serif
+            case .compact: .sans
+            case .comfortable: .wenkai
+            }
+        }
+
+        var size: Double {
+            switch self {
+            case .standard: 17
+            case .editorial: 17
+            case .compact: 15
+            case .comfortable: 19
+            }
+        }
+
+        var lineHeight: Double {
+            switch self {
+            case .standard: 1.65
+            case .editorial: 1.65
+            case .compact: 1.50
+            case .comfortable: 1.80
+            }
+        }
+
+        var paragraphGap: Double {
+            switch self {
+            case .standard: 13
+            case .editorial: 13
+            case .compact: 10
+            case .comfortable: 16
+            }
+        }
+
+        func matches(face: Face, size: Double, lineHeight: Double, paragraphGap: Double) -> Bool {
+            self.face == face
+                && abs(self.size - size) < 0.05
+                && abs(self.lineHeight - lineHeight) < 0.01
+                && abs(self.paragraphGap - paragraphGap) < 0.1
+        }
+    }
+
     static var face: Face { Theme.shared.face }
     static var code: Code { Theme.shared.code }
     /// Titles and inscriptions: the welcome pages, what a companion hands you, the line over an empty page.
@@ -75,12 +124,9 @@ enum Pref {
     static let defaultLineHeight = 1.65
     static var lineHeight: Double { Theme.shared.lineHeight }
 
-    /// The space added between lines, worked out so a line is `lineHeight` × the size tall whatever the face:
-    /// each face carries its own built-in gap (文楷's is large), which used to swallow the setting, so moving it
-    /// changed little. Now every face lands on the same line height.
+    /// Single-source SwiftUI `.lineSpacing(...)` computed from `SafeLineBox`.
     static var leading: Double {
-        let natural = Double(Ink.uiFace(CGFloat(size)).lineHeight)
-        return max(0, size * lineHeight - natural)
+        Double(SafeLineBox.resolve(userSize: CGFloat(size), contentMultiplier: CGFloat(lineHeight), face: face).swiftUILineSpacing)
     }
 
     /// Once: the new reading type replaces the old default (宋体, tight lines) for anyone who had not changed it.
@@ -124,35 +170,41 @@ enum Pref {
     enum HeadingWeight: String, CaseIterable, Identifiable {
         case medium, semibold, bold
         var id: String { rawValue }
-    }
-    static var headingWeight: HeadingWeight {
-        HeadingWeight(rawValue: store.string(forKey: "look.headingWeight") ?? "") ?? .semibold
-    }
 
-    /// Reading list density preference reserved for Wave 2–3 layout tuning.
+        nonisolated var uiWeight: UIFont.Weight {
+            switch self {
+            case .medium: .medium
+            case .semibold: .semibold
+            case .bold: .bold
+            }
+        }
+
+        nonisolated var swiftUIWeight: Font.Weight {
+            switch self {
+            case .medium: .medium
+            case .semibold: .semibold
+            case .bold: .bold
+            }
+        }
+    }
+    static var headingWeight: HeadingWeight { Theme.shared.headingWeight }
+
+    /// Reading list density preference reserved for Wave 3 layout tuning.
     enum UIDensity: String, CaseIterable, Identifiable {
         case comfortable, standard, compact
         var id: String { rawValue }
     }
-    static var uiDensity: UIDensity {
-        UIDensity(rawValue: store.string(forKey: "look.uiDensity") ?? "") ?? .standard
-    }
+    static var uiDensity: UIDensity { Theme.shared.uiDensity }
 
     static let paragraphGapStops: [Double] = [10, 13, 16, 20]
     static let defaultParagraphGap = 13.0
-    static var paragraphGap: Double {
-        let raw = double("look.paragraphGap", defaultParagraphGap)
-        return paragraphGapStops.min { abs($0 - raw) < abs($1 - raw) } ?? defaultParagraphGap
-    }
+    static var paragraphGap: Double { Theme.shared.paragraphGap }
 
     static let readingWidthStops: [Double] = [560, 640, 700]
     static let defaultReadingWidth = 640.0
-    static var readingWidth: Double {
-        let raw = double("look.readingWidth", defaultReadingWidth)
-        return readingWidthStops.min { abs($0 - raw) < abs($1 - raw) } ?? defaultReadingWidth
-    }
+    static var readingWidth: Double { Theme.shared.readingWidth }
 
-    static var clreqSqueeze: Bool { bool("look.clreqSqueeze", true) }
+    static var clreqSqueeze: Bool { Theme.shared.clreqSqueeze }
     static var fade: Bool { bool("look.fade", true) }
     static var stats: Bool { bool("look.stats", true) }
     static var traceOpen: Bool { bool("look.traceOpen", false) }

@@ -86,6 +86,65 @@ final class Theme {
         writeDefaults { UserDefaults.standard.set(value, forKey: "look.lineHeight") }
     }
 
+    func setParagraphGap(_ value: Double) {
+        let snapped = Stops.nearest(value, in: Pref.paragraphGapStops)
+        if paragraphGap != snapped { paragraphGap = snapped }
+        writeDefaults { UserDefaults.standard.set(snapped, forKey: "look.paragraphGap") }
+    }
+
+    func setHeadingWeight(_ value: Pref.HeadingWeight) {
+        if headingWeight != value { headingWeight = value }
+        writeDefaults { UserDefaults.standard.set(value.rawValue, forKey: "look.headingWeight") }
+    }
+
+    func setClreqSqueeze(_ value: Bool) {
+        if clreqSqueeze != value { clreqSqueeze = value }
+        writeDefaults { UserDefaults.standard.set(value, forKey: "look.clreqSqueeze") }
+    }
+
+    func setReadingWidth(_ value: Double) {
+        let snapped = Stops.nearest(value, in: Pref.readingWidthStops)
+        if readingWidth != snapped { readingWidth = snapped }
+        writeDefaults { UserDefaults.standard.set(snapped, forKey: "look.readingWidth") }
+    }
+
+    func setUIDensity(_ value: Pref.UIDensity) {
+        if uiDensity != value { uiDensity = value }
+        writeDefaults { UserDefaults.standard.set(value.rawValue, forKey: "look.uiDensity") }
+    }
+
+    func applyReadingPreset(_ preset: Pref.ReadingPreset) {
+        writeDefaults {
+            let defaults = UserDefaults.standard
+            defaults.set(preset.face.rawValue, forKey: "look.face")
+            defaults.set(preset.size, forKey: "look.size")
+            defaults.set(preset.lineHeight, forKey: "look.lineHeight")
+            defaults.set(preset.paragraphGap, forKey: "look.paragraphGap")
+        }
+        if face != preset.face { face = preset.face }
+        if abs(size - preset.size) > 0.05 { size = preset.size }
+        if abs(lineHeight - preset.lineHeight) > 0.01 { lineHeight = preset.lineHeight }
+        if abs(paragraphGap - preset.paragraphGap) > 0.1 { paragraphGap = preset.paragraphGap }
+    }
+
+    func resetReadingTypography() {
+        writeDefaults {
+            let defaults = UserDefaults.standard
+            defaults.set(17.0, forKey: "look.size")
+            defaults.set(Pref.defaultLineHeight, forKey: "look.lineHeight")
+            defaults.set(Pref.defaultParagraphGap, forKey: "look.paragraphGap")
+            defaults.set(Pref.HeadingWeight.semibold.rawValue, forKey: "look.headingWeight")
+            defaults.set(true, forKey: "look.clreqSqueeze")
+            defaults.set(Pref.defaultReadingWidth, forKey: "look.readingWidth")
+        }
+        if size != 17.0 { size = 17.0 }
+        if lineHeight != Pref.defaultLineHeight { lineHeight = Pref.defaultLineHeight }
+        if paragraphGap != Pref.defaultParagraphGap { paragraphGap = Pref.defaultParagraphGap }
+        if headingWeight != .semibold { headingWeight = .semibold }
+        if !clreqSqueeze { clreqSqueeze = true }
+        if readingWidth != Pref.defaultReadingWidth { readingWidth = Pref.defaultReadingWidth }
+    }
+
     func resetLook() {
         writeDefaults {
             let defaults = UserDefaults.standard
@@ -124,6 +183,11 @@ final class Theme {
     // text followed a new size, and other sheets kept the old light or dark until reopened.
     private(set) var size: Double = Theme.number("look.size", 17)
     private(set) var lineHeight: Double = Theme.number("look.lineHeight", Pref.defaultLineHeight)
+    private(set) var paragraphGap: Double = Theme.snappedNumber("look.paragraphGap", stops: Pref.paragraphGapStops, fallback: Pref.defaultParagraphGap)
+    private(set) var headingWeight: Pref.HeadingWeight = Pref.HeadingWeight(rawValue: UserDefaults.standard.string(forKey: "look.headingWeight") ?? "") ?? .semibold
+    private(set) var clreqSqueeze: Bool = UserDefaults.standard.object(forKey: "look.clreqSqueeze") as? Bool ?? true
+    private(set) var readingWidth: Double = Theme.snappedNumber("look.readingWidth", stops: Pref.readingWidthStops, fallback: Pref.defaultReadingWidth)
+    private(set) var uiDensity: Pref.UIDensity = Pref.UIDensity(rawValue: UserDefaults.standard.string(forKey: "look.uiDensity") ?? "") ?? .standard
     private(set) var fade: Bool = UserDefaults.standard.object(forKey: "look.fade") as? Bool ?? true
     private(set) var scheme: String = UserDefaults.standard.string(forKey: "look.scheme") ?? "system"
     @ObservationIgnored private var watching: NSObjectProtocol?
@@ -159,12 +223,27 @@ final class Theme {
         UserDefaults.standard.object(forKey: key) == nil ? fallback : UserDefaults.standard.double(forKey: key)
     }
 
+    private static func snappedNumber(_ key: String, stops: [Double], fallback: Double) -> Double {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return fallback }
+        return Stops.nearest(UserDefaults.standard.double(forKey: key), in: stops)
+    }
+
     private func refresh() {
         let defaults = UserDefaults.standard
         let size = Self.number("look.size", 17)
         if size != self.size { self.size = size }
         let line = Self.number("look.lineHeight", Pref.defaultLineHeight)
         if line != lineHeight { lineHeight = line }
+        let nextGap = Self.snappedNumber("look.paragraphGap", stops: Pref.paragraphGapStops, fallback: Pref.defaultParagraphGap)
+        if nextGap != paragraphGap { paragraphGap = nextGap }
+        let nextWeight = Pref.HeadingWeight(rawValue: defaults.string(forKey: "look.headingWeight") ?? "") ?? .semibold
+        if nextWeight != headingWeight { headingWeight = nextWeight }
+        let nextSqueeze = defaults.object(forKey: "look.clreqSqueeze") as? Bool ?? true
+        if nextSqueeze != clreqSqueeze { clreqSqueeze = nextSqueeze }
+        let nextWidth = Self.snappedNumber("look.readingWidth", stops: Pref.readingWidthStops, fallback: Pref.defaultReadingWidth)
+        if nextWidth != readingWidth { readingWidth = nextWidth }
+        let nextDensity = Pref.UIDensity(rawValue: defaults.string(forKey: "look.uiDensity") ?? "") ?? .standard
+        if nextDensity != uiDensity { uiDensity = nextDensity }
         let nextKey = defaults.string(forKey: "look.accent") ?? "dai"
         if nextKey != key { key = nextKey }
         let nextPlain = defaults.bool(forKey: "look.plainNames")
@@ -444,15 +523,20 @@ enum Ink {
 
     /// The reading face as a UIKit font, for native selectable text and line-height metrics.
     static func uiFace(_ size: CGFloat, bold: Bool = false, face: Pref.Face? = nil) -> UIFont {
+        uiFace(size, weight: bold ? .semibold : .regular, face: face)
+    }
+
+    static func uiFace(_ size: CGFloat, weight: UIFont.Weight, face: Pref.Face? = nil) -> UIFont {
         let current = face ?? Pref.face
         if current.downloads { _ = Theme.shared.fontsArrived }
-        let key = "\(current.rawValue)|\(bold ? 1 : 0)|\(size)" as NSString
+        let isBold = weight.rawValue >= UIFont.Weight.semibold.rawValue
+        let key = "\(current.rawValue)|\(String(format: "%.3f", weight.rawValue))|\(size)" as NSString
         if let cached = uiFaces.object(forKey: key) { return cached }
         let resolved: UIFont
-        if let name = current.postScript(bold: bold), has(name), let font = UIFont(name: name, size: size) {
+        if let name = current.postScript(bold: isBold), has(name), let font = UIFont(name: name, size: size) {
             resolved = font
         } else {
-            let base = UIFont.systemFont(ofSize: size, weight: bold ? .semibold : .regular)
+            let base = UIFont.systemFont(ofSize: size, weight: weight)
             let design: UIFontDescriptor.SystemDesign
             switch current {
             case .sans: design = .default
@@ -471,14 +555,19 @@ enum Ink {
 
     /// Any face at any size; a face not on the phone yet stands in as the system serif.
     static func face(_ face: Pref.Face, _ size: CGFloat, bold: Bool = false, relativeTo style: Font.TextStyle = .body) -> Font {
+        Self.face(face, size, weight: bold ? .semibold : .regular, relativeTo: style)
+    }
+
+    static func face(_ face: Pref.Face, _ size: CGFloat, weight: Font.Weight, relativeTo style: Font.TextStyle = .body) -> Font {
         if face.downloads { _ = Theme.shared.fontsArrived }
-        if let name = face.postScript(bold: bold), has(name) {
+        let isBold = weight == .semibold || weight == .bold || weight == .heavy || weight == .black
+        if let name = face.postScript(bold: isBold), has(name) {
             return .custom(name, size: size, relativeTo: style)
         }
         switch face {
-        case .sans: return .system(size: size, weight: bold ? .semibold : .regular)
-        case .rounded: return .system(size: size, weight: bold ? .semibold : .regular, design: .rounded)
-        default: return .system(size: size, weight: bold ? .semibold : .regular, design: .serif)
+        case .sans: return .system(size: size, weight: weight)
+        case .rounded: return .system(size: size, weight: weight, design: .rounded)
+        default: return .system(size: size, weight: weight, design: .serif)
         }
     }
 
@@ -580,14 +669,13 @@ enum Ink {
     /// Code, three points under the reading size, so it sits with the text around it at every size.
     static var code: Font { mono(max(12, Pref.size - 3)) }
 
-    /// The space between the lines of reading text.
+    /// The space between the lines of reading text (`SafeLineBox` single source of truth).
     static var leading: CGFloat { Pref.leading }
     static func leading(size: Double, lineHeight: Double, face: Pref.Face) -> CGFloat {
-        let natural = Double(uiFace(CGFloat(size), face: face).lineHeight)
-        return CGFloat(max(0, size * lineHeight - natural))
+        SafeLineBox.resolve(userSize: CGFloat(size), contentMultiplier: CGFloat(lineHeight), face: face).swiftUILineSpacing
     }
-    /// Between paragraphs: about 12 points at the usual size, as Open Minis sets it.
-    static var paragraphGap: CGFloat { CGFloat(Pref.size) * 0.72 }
+    /// Between paragraphs: configurable stop (`paragraphGap`), defaulting to `13pt` at standard reading scale.
+    static var paragraphGap: CGFloat { CGFloat(Theme.shared.paragraphGap) }
 
     private static func adaptiveWhite(_ light: CGFloat, dark: CGFloat) -> Color {
         Color(UIColor { traits in

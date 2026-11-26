@@ -30,6 +30,28 @@ struct ChatRenderedProse: @unchecked Sendable {
     let bottomInset: CGFloat
     let renderToken: UInt64
     let hasLinks: Bool
+    let liveTailIndex: Int?
+    let spacingAfter: CGFloat?
+
+    init(
+        attributed: NSAttributedString,
+        decorations: ChatBlockDecorations,
+        topInset: CGFloat,
+        bottomInset: CGFloat,
+        renderToken: UInt64,
+        hasLinks: Bool,
+        liveTailIndex: Int? = nil,
+        spacingAfter: CGFloat? = nil
+    ) {
+        self.attributed = attributed
+        self.decorations = decorations
+        self.topInset = topInset
+        self.bottomInset = bottomInset
+        self.renderToken = renderToken
+        self.hasLinks = hasLinks
+        self.liveTailIndex = liveTailIndex
+        self.spacingAfter = spacingAfter
+    }
 
     var isEmpty: Bool { attributed.length == 0 }
 
@@ -99,9 +121,7 @@ enum ChatCodeHighlighter {
         style: ChatListStyle
     ) -> NSAttributedString {
         let model = CodeTokenizer.prepare(text, language: language, isOutput: isOutput)
-        let pStyle = NSMutableParagraphStyle()
-        pStyle.lineSpacing = style.metrics.codeLineSpacing
-        let immutableParagraphStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
+        let immutableParagraphStyle = style.metrics.codeBox.makeParagraphStyle()
 
         let colors = style.colors
         let outputColor = isOutput ? colors.codeOutput : nil
@@ -157,6 +177,7 @@ enum ChatCodeHighlighter {
 /// Incremental + cached prose builder producing continuous rich-text runs and interactive block slices.
 final class ChatProseBuilder: @unchecked Sendable {
     private static let picturePattern = try? NSRegularExpression(pattern: #"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)"#)
+    private static let numericCellPattern = try? NSRegularExpression(pattern: #"^[\s±+\-$€¥£]*[\d,]+(?:\.\d+)?(?:\s*(?:%|ms|s|Hz|pt|em|px|KB|MB|GB|TB|Tokens|tokens|倍|次|行|:1))?\s*$"#)
 
     private struct BlockCacheEntry: @unchecked Sendable {
         let attributed: NSAttributedString
@@ -313,17 +334,25 @@ final class ChatProseBuilder: @unchecked Sendable {
     }
 
     func buildUserText(_ text: String, style: ChatListStyle) -> ChatRenderedProse {
-        let pStyle = NSMutableParagraphStyle()
-        pStyle.lineSpacing = 4
-        let immutableStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
-        let attr = NSAttributedString(string: text, attributes: [
+        let box = style.metrics.userBox
+        let pStyle = box.makeParagraphStyle()
+        var attrs: [NSAttributedString.Key: Any] = [
             .font: style.fonts.userBody,
             .foregroundColor: style.colors.ink,
-            .paragraphStyle: immutableStyle,
-        ])
+            .paragraphStyle: pStyle,
+        ]
+        if box.trackingPoints != 0 {
+            attrs[.kern] = NSNumber(value: Double(box.trackingPoints))
+        }
+        let mutable = NSMutableAttributedString(string: text, attributes: attrs)
+        ClioMixedScriptKerning.apply(
+            to: mutable,
+            fontSize: box.effectivePointSize,
+            squeezePunctuation: style.metrics.clreqSqueeze
+        )
         let token = allocateRenderToken()
         return ChatRenderedProse(
-            attributed: attr,
+            attributed: NSAttributedString(attributedString: mutable),
             decorations: .empty,
             topInset: 0,
             bottomInset: 0,
@@ -362,7 +391,7 @@ final class ChatProseBuilder: @unchecked Sendable {
         let blocks = parsed.blocks
         let sealedCount = parsed.sealedCount
         if blocks.isEmpty {
-            let pStyle = makeParagraphStyle(style: style)
+            let pStyle = style.metrics.bodyBox.makeParagraphStyle()
             let placeholder = NSAttributedString(string: isStreaming ? " " : "", attributes: [
                 .font: style.fonts.reading.regular,
                 .foregroundColor: style.colors.ink,
@@ -376,54 +405,64 @@ final class ChatProseBuilder: @unchecked Sendable {
                     topInset: 0,
                     bottomInset: 2,
                     renderToken: token,
-                    hasLinks: false
+                    hasLinks: false,
+                    liveTailIndex: isStreaming ? 0 : nil
                 ))
             ]
         }
 
         enum PendingSegment {
-            case proseRun([Prose.Block])
-            case block(Prose.Block, sealedIndex: Int?)
+            case proseRun(blocks: [Prose.Block], isMessageTop: Bool, containsLiveTail: Bool)
+            case block(Prose.Block, sealedIndex: Int?, isMessageTop: Bool)
         }
 
         var segments: [PendingSegment] = []
         var run: [Prose.Block] = []
-        func flushRun() {
+        var runStartIndex = 0
+        func flushRun(containsLiveTail: Bool) {
             if !run.isEmpty {
-                segments.append(.proseRun(run))
+                segments.append(.proseRun(blocks: run, isMessageTop: runStartIndex == 0, containsLiveTail: containsLiveTail))
                 run = []
             }
         }
 
         for blockIndex in blocks.indices {
+            if isStreaming && sealedCount > 0 && blockIndex == sealedCount {
+                flushRun(containsLiveTail: false)
+            }
             let block = blocks[blockIndex]
             if isProseRunBlock(block) {
+                if run.isEmpty { runStartIndex = blockIndex }
                 run.append(block)
             } else {
-                flushRun()
+                let runHasTail = isStreaming && runStartIndex >= sealedCount
+                flushRun(containsLiveTail: runHasTail)
                 let sealedIndex: Int? = blockIndex < sealedCount ? blockIndex : nil
-                segments.append(.block(block, sealedIndex: sealedIndex))
+                segments.append(.block(block, sealedIndex: sealedIndex, isMessageTop: blockIndex == 0))
             }
         }
-        flushRun()
+        flushRun(containsLiveTail: isStreaming && runStartIndex >= sealedCount)
 
         var slices: [ChatProseSlice] = []
         var sliceIdx = 0
         for segIndex in segments.indices {
             let isLastSegment = segIndex == segments.count - 1
-            let shouldFadeTail = isStreaming && isLastSegment && style.fade && !style.reduceMotion
+            let isFollowedBySegment = !isLastSegment
             switch segments[segIndex] {
-            case .proseRun(let runBlocks):
+            case .proseRun(let runBlocks, let isMessageTop, let containsLiveTail):
+                let hasLiveTail = isStreaming && containsLiveTail && isLastSegment
                 let rendered = buildRichTextSlice(
                     blocks: runBlocks,
                     style: style,
-                    isStreaming: isStreaming && isLastSegment,
-                    fadeTail: shouldFadeTail
+                    isStreaming: hasLiveTail,
+                    isMessageTop: isMessageTop,
+                    isFollowedBySegment: isFollowedBySegment,
+                    liveTailIndex: hasLiveTail ? sealedCount : nil
                 )
                 slices.append(.richText(rendered))
                 sliceIdx += 1
 
-            case .block(let block, let sealedIndex):
+            case .block(let block, let sealedIndex, let isMessageTop):
                 switch block {
                 case .code(let lang, let codeText, let closed):
                     let liveCode = isStreaming && isLastSegment && !closed
@@ -484,11 +523,14 @@ final class ChatProseBuilder: @unchecked Sendable {
                         let split = splitPictures(text)
                         let wordsProse: ChatRenderedProse?
                         if !split.words.isEmpty {
+                            let hasLiveWords = isStreaming && isLastSegment
                             wordsProse = buildRichTextSlice(
                                 blocks: [.paragraph(split.words)],
                                 style: style,
-                                isStreaming: isStreaming && isLastSegment,
-                                fadeTail: shouldFadeTail
+                                isStreaming: hasLiveWords,
+                                isMessageTop: isMessageTop,
+                                isFollowedBySegment: isFollowedBySegment,
+                                liveTailIndex: hasLiveWords ? sealedCount : nil
                             )
                         } else {
                             wordsProse = nil
@@ -497,22 +539,28 @@ final class ChatProseBuilder: @unchecked Sendable {
                         slices.append(.pictures(words: wordsProse, pics: pics, sliceIndex: sliceIdx))
                         sliceIdx += 1
                     } else {
+                        let hasLiveWords = isStreaming && isLastSegment
                         let rendered = buildRichTextSlice(
                             blocks: [block],
                             style: style,
-                            isStreaming: isStreaming && isLastSegment,
-                            fadeTail: shouldFadeTail
+                            isStreaming: hasLiveWords,
+                            isMessageTop: isMessageTop,
+                            isFollowedBySegment: isFollowedBySegment,
+                            liveTailIndex: hasLiveWords ? sealedCount : nil
                         )
                         slices.append(.richText(rendered))
                         sliceIdx += 1
                     }
 
                 default:
+                    let hasLiveWords = isStreaming && isLastSegment
                     let rendered = buildRichTextSlice(
                         blocks: [block],
                         style: style,
-                        isStreaming: isStreaming && isLastSegment,
-                        fadeTail: shouldFadeTail
+                        isStreaming: hasLiveWords,
+                        isMessageTop: isMessageTop,
+                        isFollowedBySegment: isFollowedBySegment,
+                        liveTailIndex: hasLiveWords ? sealedCount : nil
                     )
                     slices.append(.richText(rendered))
                     sliceIdx += 1
@@ -622,7 +670,7 @@ final class ChatProseBuilder: @unchecked Sendable {
         let body = trimmed.isEmpty ? " " : trimmed
         let count = CodeTokenizer.lineCount(body)
         let isOutput = CodeTokenizer.isOutputBlock(language: language, text: body)
-        let folds = !isLive && count > 20
+        let folds = !isLive && count > 18
 
         let foldedAttr: NSAttributedString
         let foldedSize: CGSize
@@ -725,14 +773,23 @@ final class ChatProseBuilder: @unchecked Sendable {
 
         let prepared = TablePreparer.prepare(table)
         let columns = max(table.header.count, table.rows.map(\.count).max() ?? 0)
+        var numericColumns = Array(repeating: false, count: columns)
+        var resolvedAligns = Array(repeating: Prose.Table.Align.leading, count: columns)
+        for column in 0..<columns {
+            let declared = column < table.aligns.count ? table.aligns[column] : .leading
+            let isNumeric = Self.isNumericColumn(column: column, in: table.rows)
+            numericColumns[column] = isNumeric
+            resolvedAligns[column] = (declared == .leading && isNumeric) ? .trailing : declared
+        }
         var headerCells: [NSAttributedString] = []
         var headerHasLinks: [Bool] = []
         headerCells.reserveCapacity(columns)
         headerHasLinks.reserveCapacity(columns)
         for column in 0..<columns {
-            let align = column < table.aligns.count ? table.aligns[column] : .leading
+            let align = resolvedAligns[column]
+            let isNumeric = numericColumns[column]
             let source = column < prepared.header.count ? prepared.header[column] : AttributedString("")
-            let built = buildTableCellAttributed(source, isHeader: true, align: align, style: style)
+            let built = buildTableCellAttributed(source, isHeader: true, align: align, isNumeric: isNumeric, style: style)
             headerCells.append(built.attributed)
             headerHasLinks.append(built.hasLink)
         }
@@ -747,9 +804,10 @@ final class ChatProseBuilder: @unchecked Sendable {
             cells.reserveCapacity(columns)
             links.reserveCapacity(columns)
             for column in 0..<columns {
-                let align = column < table.aligns.count ? table.aligns[column] : .leading
+                let align = resolvedAligns[column]
+                let isNumeric = numericColumns[column]
                 let source = column < row.count ? row[column] : AttributedString("")
-                let built = buildTableCellAttributed(source, isHeader: false, align: align, style: style)
+                let built = buildTableCellAttributed(source, isHeader: false, align: align, isNumeric: isNumeric, style: style)
                 cells.append(built.attributed)
                 links.append(built.hasLink)
             }
@@ -790,26 +848,45 @@ final class ChatProseBuilder: @unchecked Sendable {
         return ceil(rect.width)
     }
 
+    private static func isNumericColumn(column: Int, in rows: [[String]]) -> Bool {
+        guard let pattern = numericCellPattern else { return false }
+        var nonEmpty = 0
+        var numeric = 0
+        for row in rows where column < row.count {
+            let stripped = row[column]
+                .replacingOccurrences(of: "**", with: "")
+                .replacingOccurrences(of: "`", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !stripped.isEmpty else { continue }
+            nonEmpty += 1
+            let range = NSRange(stripped.startIndex..., in: stripped)
+            if pattern.firstMatch(in: stripped, range: range) != nil {
+                numeric += 1
+            }
+        }
+        return nonEmpty > 0 && numeric * 10 >= nonEmpty * 7
+    }
+
     private func buildTableCellAttributed(
         _ source: AttributedString,
         isHeader: Bool,
         align: Prose.Table.Align,
+        isNumeric: Bool,
         style: ChatListStyle
     ) -> (attributed: NSAttributedString, hasLink: Bool) {
-        let cellSize = style.tableCellSize
-        let pStyle = NSMutableParagraphStyle()
-        pStyle.lineSpacing = cellSize * 0.25
+        let alignment: NSTextAlignment
         switch align {
-        case .center: pStyle.alignment = .center
-        case .trailing: pStyle.alignment = .right
-        case .leading: pStyle.alignment = .left
+        case .center: alignment = .center
+        case .trailing: alignment = .right
+        case .leading: alignment = .left
         }
-        let immutableParagraphStyle = (pStyle.copy() as? NSParagraphStyle) ?? pStyle
+        let immutableParagraphStyle = style.metrics.tableBox.makeParagraphStyle(alignment: alignment)
 
         let ink = style.colors.ink
         let accent = style.colors.accent
         let tableFonts = style.fonts.table
         let monoFont = tableFonts.inlineCode
+        let tableStroke = style.metrics.opticalProfile.tableBoldStroke
         var hasLink = false
         let out = NSMutableAttributedString()
         out.beginEditing()
@@ -822,7 +899,9 @@ final class ChatProseBuilder: @unchecked Sendable {
             let isStrike = intent.contains(.strikethrough)
 
             let font: UIFont
-            if isBold {
+            if isNumeric && !isItalic && !isCode {
+                font = isBold ? style.fonts.tableNumericBold : style.fonts.tableNumericRegular
+            } else if isBold {
                 font = isItalic ? tableFonts.boldItalic : tableFonts.bold
             } else {
                 font = isItalic ? tableFonts.italic : tableFonts.regular
@@ -832,8 +911,8 @@ final class ChatProseBuilder: @unchecked Sendable {
                 .foregroundColor: ink,
                 .paragraphStyle: immutableParagraphStyle,
             ]
-            if style.face == .wenkai, isBold {
-                attrs[.strokeWidth] = -3.0
+            if tableStroke != 0, isBold, !isCode {
+                attrs[.strokeWidth] = Double(tableStroke)
                 attrs[.strokeColor] = ink
             }
             if isCode {
@@ -852,6 +931,11 @@ final class ChatProseBuilder: @unchecked Sendable {
             out.append(NSAttributedString(string: chunk, attributes: attrs))
         }
         out.endEditing()
+        ClioMixedScriptKerning.apply(
+            to: out,
+            fontSize: style.metrics.tableBox.effectivePointSize,
+            squeezePunctuation: style.metrics.clreqSqueeze
+        )
         return (NSAttributedString(attributedString: out), hasLink)
     }
 
@@ -859,11 +943,14 @@ final class ChatProseBuilder: @unchecked Sendable {
         blocks: [Prose.Block],
         style: ChatListStyle,
         isStreaming: Bool,
-        fadeTail: Bool
+        isMessageTop: Bool = true,
+        isFollowedBySegment: Bool = false,
+        liveTailIndex: Int? = nil
     ) -> ChatRenderedProse {
         let sliceCacheKey: RichTextSliceKey?
-        if !isStreaming && !fadeTail {
-            let keys = blocks.map { cacheKeyString(for: $0) }
+        if !isStreaming && liveTailIndex == nil {
+            var keys = blocks.map { cacheKeyString(for: $0) }
+            keys.append("meta:\(isMessageTop ? 1 : 0)|\(isFollowedBySegment ? 1 : 0)")
             var hasher = Hasher()
             for key in keys { hasher.combine(key) }
             let candidate = RichTextSliceKey(styleKey: style.styleKey, blockHash: hasher.finalize(), keys: keys)
@@ -884,7 +971,7 @@ final class ChatProseBuilder: @unchecked Sendable {
 
         for index in blocks.indices {
             let block = blocks[index]
-            let isFirst = index == 0
+            let isFirst = isMessageTop && index == 0
             let isLast = index == blocks.count - 1
             let entry = renderedBlock(
                 block,
@@ -915,15 +1002,13 @@ final class ChatProseBuilder: @unchecked Sendable {
                 out.append(NSAttributedString(string: "\n", attributes: separatorAttrs))
             }
         }
-
-        if fadeTail && out.length > 0 {
-            applyStreamingTailFade(to: out)
-        }
         out.endEditing()
 
         let topInset: CGFloat
         if case .quote = blocks.first {
             topInset = style.metrics.spaceM
+        } else if !isMessageTop, case .heading(let level, _) = blocks.first {
+            topInset = style.headingTop(level: level)
         } else {
             topInset = 0
         }
@@ -932,7 +1017,20 @@ final class ChatProseBuilder: @unchecked Sendable {
         if case .quote = blocks.last {
             bottomInset = style.metrics.spaceM
         } else {
-            bottomInset = 2
+            bottomInset = isFollowedBySegment ? 0 : 2
+        }
+
+        let spacingAfter: CGFloat?
+        if isFollowedBySegment {
+            if case .heading(let level, _) = blocks.last {
+                spacingAfter = style.headingBottom(level: level)
+            } else if case .quote = blocks.last {
+                spacingAfter = style.metrics.spaceM + style.paragraphGap
+            } else {
+                spacingAfter = style.paragraphGap
+            }
+        } else {
+            spacingAfter = nil
         }
 
         let token = allocateRenderToken()
@@ -947,7 +1045,9 @@ final class ChatProseBuilder: @unchecked Sendable {
             topInset: topInset,
             bottomInset: bottomInset,
             renderToken: token,
-            hasLinks: Self.containsLinks(immutable)
+            hasLinks: Self.containsLinks(immutable),
+            liveTailIndex: liveTailIndex,
+            spacingAfter: spacingAfter
         )
         if let sliceCacheKey {
             richTextSliceCache.set(rendered, for: sliceCacheKey)
@@ -969,26 +1069,6 @@ final class ChatProseBuilder: @unchecked Sendable {
             }
         }
         return found
-    }
-
-    private func applyStreamingTailFade(to attributed: NSMutableAttributedString) {
-        let raw = attributed.string
-        let tailIndices = Array(raw.indices.suffix(12))
-        let count = tailIndices.count
-        guard count > 0 else { return }
-        attributed.beginEditing()
-        for (offset, strIndex) in tailIndices.enumerated() {
-            let range = NSRange(strIndex..<raw.index(after: strIndex), in: raw)
-            guard range.location >= 0, range.location + range.length <= attributed.length else { continue }
-            let alpha = CGFloat(count - offset) / CGFloat(count + 1)
-            if let color = attributed.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? UIColor {
-                attributed.addAttribute(.foregroundColor, value: color.withAlphaComponent(alpha), range: range)
-            }
-            if let stroke = attributed.attribute(.strokeColor, at: range.location, effectiveRange: nil) as? UIColor {
-                attributed.addAttribute(.strokeColor, value: stroke.withAlphaComponent(alpha), range: range)
-            }
-        }
-        attributed.endEditing()
     }
 
     private func renderedBlock(
@@ -1046,12 +1126,16 @@ final class ChatProseBuilder: @unchecked Sendable {
         switch block {
         case .heading(let level, let text):
             let before = isFirst ? 0 : style.headingTop(level: level)
-            let spacing = isLast ? 0 : style.headingBottom
-            let pStyle = makeParagraphStyle(style: style, spacing: spacing, before: before, tight: true)
+            let spacing = isLast ? 0 : style.headingBottom(level: level)
+            let box = style.metrics.headingBox(level: level)
+            let pStyle = box.makeParagraphStyle(spacing: spacing, before: before)
             let attr = buildInline(
                 text,
                 fontGroup: style.fonts.headingGroup(level: level),
-                bold: true,
+                box: box,
+                bold: level <= 3,
+                isHeading: true,
+                headingLevel: level,
                 style: style,
                 ink: style.colors.ink,
                 paragraph: pStyle
@@ -1065,11 +1149,13 @@ final class ChatProseBuilder: @unchecked Sendable {
             )
 
         case .paragraph(let text):
+            let box = style.metrics.bodyBox
             let spacing = isLast ? 0 : style.paragraphGap
-            let pStyle = makeParagraphStyle(style: style, spacing: spacing)
+            let pStyle = box.makeParagraphStyle(spacing: spacing)
             let attr = buildInline(
                 text,
                 fontGroup: style.fonts.reading,
+                box: box,
                 bold: false,
                 style: style,
                 ink: style.colors.ink,
@@ -1084,6 +1170,7 @@ final class ChatProseBuilder: @unchecked Sendable {
             )
 
         case .list(let items):
+            let box = style.metrics.listBox
             let out = NSMutableAttributedString()
             out.beginEditing()
             let base = style.readingSize
@@ -1091,7 +1178,7 @@ final class ChatProseBuilder: @unchecked Sendable {
             let faintInk = style.colors.inkFaint
             let accentInk = style.colors.accent
             let separatorFont = style.fonts.reading.regular
-            var lastPStyle = makeParagraphStyle(style: style, spacing: isLast ? 0 : style.paragraphGap)
+            var lastPStyle = box.makeParagraphStyle(spacing: isLast ? 0 : style.paragraphGap)
             for (itemIndex, item) in items.enumerated() {
                 let marker: String
                 let markerFont: UIFont
@@ -1113,7 +1200,7 @@ final class ChatProseBuilder: @unchecked Sendable {
                 let hang = item.number != nil ? base * 1.75 : base * 1.25
                 let itemLast = itemIndex == items.count - 1
                 let spacing = itemLast ? (isLast ? 0 : style.paragraphGap) : style.listSpacing
-                let pStyle = makeParagraphStyle(style: style, spacing: spacing, indent: indent, hanging: hang)
+                let pStyle = box.makeParagraphStyle(spacing: spacing, indent: indent, hanging: hang)
                 lastPStyle = pStyle
                 if itemIndex > 0 {
                     out.append(NSAttributedString(string: "\n", attributes: [
@@ -1129,6 +1216,7 @@ final class ChatProseBuilder: @unchecked Sendable {
                 out.append(buildInline(
                     item.text,
                     fontGroup: style.fonts.reading,
+                    box: box,
                     bold: false,
                     style: style,
                     ink: bodyInk,
@@ -1146,28 +1234,29 @@ final class ChatProseBuilder: @unchecked Sendable {
             )
 
         case .quote(let inner):
+            let quoteBox = style.metrics.quoteBox
+            let headingBox = style.metrics.headingBox(level: 3)
             let out = NSMutableAttributedString()
             out.beginEditing()
             let indent = style.metrics.spaceL + 4
             let tail = -style.metrics.spaceM
             let cardPadV = style.metrics.spaceM
             let quoteInk = style.colors.inkSoft
-            let separatorFont = style.fonts.reading.regular
-            var lastPStyle = makeParagraphStyle(style: style, spacing: isLast ? 0 : cardPadV + style.paragraphGap, indent: indent, tailIndent: tail)
+            let separatorFont = style.fonts.quote.regular
+            var lastPStyle = quoteBox.makeParagraphStyle(spacing: isLast ? 0 : cardPadV + style.paragraphGap, indent: indent, tailIndent: tail)
             let flatLines = flattenQuoteBlocks(inner, listHanging: style.metrics.sizeSub)
             for (idx, line) in flatLines.enumerated() {
                 let firstInQuote = idx == 0
                 let lastInQuote = idx == flatLines.count - 1
                 let before: CGFloat = (firstInQuote && !isFirst) ? cardPadV : 0
                 let after = lastInQuote ? (isLast ? 0 : (cardPadV + style.paragraphGap)) : style.paragraphGap * 0.65
-                let pStyle = makeParagraphStyle(
-                    style: style,
+                let lineBox = line.isHeading ? headingBox : quoteBox
+                let pStyle = lineBox.makeParagraphStyle(
                     spacing: after,
                     before: before,
                     indent: indent,
                     hanging: line.hanging,
-                    tailIndent: tail,
-                    tight: line.isHeading
+                    tailIndent: tail
                 )
                 if idx > 0 {
                     out.append(NSAttributedString(string: "\n", attributes: [
@@ -1176,11 +1265,14 @@ final class ChatProseBuilder: @unchecked Sendable {
                     ]))
                 }
                 lastPStyle = pStyle
-                let fontGroup = line.isHeading ? style.fonts.heading3 : style.fonts.reading
+                let fontGroup = line.isHeading ? style.fonts.heading3 : style.fonts.quote
                 out.append(buildInline(
                     line.text,
                     fontGroup: fontGroup,
+                    box: lineBox,
                     bold: line.isHeading,
+                    isHeading: line.isHeading,
+                    headingLevel: line.isHeading ? 3 : 0,
                     style: style,
                     ink: quoteInk,
                     paragraph: pStyle
@@ -1225,7 +1317,7 @@ final class ChatProseBuilder: @unchecked Sendable {
             )
 
         case .code, .table, .math:
-            let pStyle = makeParagraphStyle(style: style)
+            let pStyle = style.metrics.bodyBox.makeParagraphStyle()
             return BlockCacheEntry(
                 attributed: NSAttributedString(),
                 trailingSeparatorStyle: pStyle,
@@ -1280,30 +1372,13 @@ final class ChatProseBuilder: @unchecked Sendable {
         return result
     }
 
-    private func makeParagraphStyle(
-        style: ChatListStyle,
-        spacing: CGFloat = 0,
-        before: CGFloat = 0,
-        indent: CGFloat = 0,
-        hanging: CGFloat = 0,
-        tailIndent: CGFloat = 0,
-        tight: Bool = false
-    ) -> NSParagraphStyle {
-        let pStyle = NSMutableParagraphStyle()
-        pStyle.lineSpacing = tight ? style.leading * 0.5 : style.leading
-        pStyle.paragraphSpacing = spacing
-        pStyle.paragraphSpacingBefore = before
-        pStyle.firstLineHeadIndent = indent
-        pStyle.headIndent = indent + hanging
-        if tailIndent != 0 { pStyle.tailIndent = tailIndent }
-        if hanging > 0 { pStyle.tabStops = [NSTextTab(textAlignment: .left, location: indent + hanging)] }
-        return (pStyle.copy() as? NSParagraphStyle) ?? pStyle
-    }
-
     private func buildInline(
         _ text: String,
         fontGroup: ChatFontGroup,
+        box: SafeLineBoxMetrics,
         bold: Bool,
+        isHeading: Bool = false,
+        headingLevel: Int = 0,
         style: ChatListStyle,
         ink: UIColor,
         paragraph: NSParagraphStyle
@@ -1311,6 +1386,7 @@ final class ChatProseBuilder: @unchecked Sendable {
         let parsed = PreparsedInline.parse(text)
         let accent = style.colors.accent
         let monoFont = fontGroup.inlineCode
+        let profile = style.metrics.opticalProfile
         let out = NSMutableAttributedString()
         out.beginEditing()
         for run in parsed.runs {
@@ -1326,9 +1402,21 @@ final class ChatProseBuilder: @unchecked Sendable {
                 .foregroundColor: ink,
                 .paragraphStyle: paragraph,
             ]
-            if style.face == .wenkai, isBold {
-                attributes[.strokeWidth] = -3.0
-                attributes[.strokeColor] = ink
+            if !run.code && run.link == nil && box.trackingPoints != 0 {
+                attributes[.kern] = NSNumber(value: Double(box.trackingPoints))
+            }
+            if profile.proseBoldStroke != 0 && !run.code {
+                if isHeading {
+                    let hWeight: Pref.HeadingWeight = headingLevel >= 4 ? .medium : style.headingWeight
+                    let stroke = profile.headingStroke(weight: hWeight)
+                    if stroke != 0 {
+                        attributes[.strokeWidth] = Double(stroke)
+                        attributes[.strokeColor] = ink
+                    }
+                } else if isBold {
+                    attributes[.strokeWidth] = Double(profile.proseBoldStroke)
+                    attributes[.strokeColor] = ink
+                }
             }
             if run.code {
                 attributes[.font] = monoFont
@@ -1346,6 +1434,12 @@ final class ChatProseBuilder: @unchecked Sendable {
             out.append(NSAttributedString(string: run.text, attributes: attributes))
         }
         out.endEditing()
+        ClioMixedScriptKerning.apply(
+            to: out,
+            fontSize: box.effectivePointSize,
+            squeezePunctuation: style.metrics.clreqSqueeze,
+            skipAttributeKeys: [.chatInlineCode]
+        )
         return NSAttributedString(attributedString: out)
     }
 
@@ -1947,7 +2041,7 @@ final class ChatLayoutCache: @unchecked Sendable {
         let startGeneration = cacheGeneration
         stateLock.unlock()
 
-        let contentWidth = max(120, input.collectionWidth - metrics.spacePage * 2)
+        let contentWidth = metrics.effectiveContentWidth(for: input.collectionWidth)
         let timeGapH: CGFloat = input.hasTimeGap ? metrics.timeGapHeight : 0
         let speakerH: CGFloat = (input.opens && (input.faces || input.isRoom))
             ? (input.faces ? metrics.faceSize : metrics.compactSpeakerSize)
@@ -2019,7 +2113,16 @@ final class ChatLayoutCache: @unchecked Sendable {
         if !measuredSlices.isEmpty {
             var proseStackH: CGFloat = 0
             for (idx, item) in measuredSlices.enumerated() {
-                if idx > 0 { proseStackH += style.paragraphGap }
+                if idx > 0 {
+                    let gap: CGFloat
+                    if case .richText(let prevRendered) = measuredSlices[idx - 1].slice,
+                       let explicitGap = prevRendered.spacingAfter {
+                        gap = explicitGap
+                    } else {
+                        gap = style.paragraphGap
+                    }
+                    proseStackH += gap
+                }
                 proseStackH += item.height
             }
             bodyItems.append(proseStackH)
@@ -2087,7 +2190,7 @@ final class ChatLayoutCache: @unchecked Sendable {
         style: ChatListStyle
     ) -> AssistantLayoutEntry {
         let metrics = style.metrics
-        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
+        let contentWidth = metrics.effectiveContentWidth(for: collectionWidth)
         let widthKey = Int((collectionWidth * 2).rounded())
         let cacheKey = LiveStreamingKey(
             generation: generation,
@@ -2123,7 +2226,16 @@ final class ChatLayoutCache: @unchecked Sendable {
         let measured = measuredResult.slices
         var proseStackH: CGFloat = 0
         for (idx, item) in measured.enumerated() {
-            if idx > 0 { proseStackH += style.paragraphGap }
+            if idx > 0 {
+                let gap: CGFloat
+                if case .richText(let prevRendered) = measured[idx - 1].slice,
+                   let explicitGap = prevRendered.spacingAfter {
+                    gap = explicitGap
+                } else {
+                    gap = style.paragraphGap
+                }
+                proseStackH += gap
+            }
             proseStackH += item.height
         }
         let entry = AssistantLayoutEntry(
@@ -2319,7 +2431,7 @@ final class ChatLayoutCache: @unchecked Sendable {
 
     func measureLiveText(_ text: String, collectionWidth: CGFloat, style: ChatListStyle, cardInsetH: CGFloat, cardInsetV: CGFloat) -> LiveTextEntry {
         let metrics = style.metrics
-        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
+        let contentWidth = metrics.effectiveContentWidth(for: collectionWidth)
         let innerWidth = max(80, contentWidth - cardInsetH * 2)
         let rendered = builder.buildDisclosureText(text, style: style)
         let textH = measureTextSize(rendered: rendered, maxWidth: innerWidth).height
@@ -2329,7 +2441,7 @@ final class ChatLayoutCache: @unchecked Sendable {
 
     func measureQueued(_ item: TeamModel.Queued, collectionWidth: CGFloat, style: ChatListStyle) -> QueuedLayoutEntry {
         let metrics = style.metrics
-        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
+        let contentWidth = metrics.effectiveContentWidth(for: collectionWidth)
         let maxBubbleW = max(120, contentWidth - metrics.spaceHuge)
         let innerW = max(60, maxBubbleW - metrics.spaceL * 2)
         var bubbleH: CGFloat = metrics.spaceM * 2
@@ -2353,7 +2465,7 @@ final class ChatLayoutCache: @unchecked Sendable {
 
     func measureFailure(error: String, working: Bool, collectionWidth: CGFloat, style: ChatListStyle) -> CGFloat {
         let metrics = style.metrics
-        let contentWidth = max(120, collectionWidth - metrics.spacePage * 2)
+        let contentWidth = metrics.effectiveContentWidth(for: collectionWidth)
         let buttonReserve: CGFloat = working ? 0 : (92 + metrics.spaceM)
         let textW = max(80, contentWidth - metrics.spaceL * 2 - 24 - metrics.spaceM - buttonReserve)
         let textH = Self.measureNSStringHeight(error, font: style.fonts.failureMessage, maxWidth: textW)

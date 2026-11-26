@@ -70,6 +70,7 @@ final class FontShelf {
                 Task { @MainActor in
                     let shelf = FontShelf.shared
                     Ink.recheckFonts()
+                    ChatTextTileRenderer.shared.invalidateAll()
                     shelf.loading[face] = nil
                     shelf.failed.insert(face)
                     shelf.generation += 1
@@ -79,6 +80,7 @@ final class FontShelf {
                 Task { @MainActor in
                     let shelf = FontShelf.shared
                     Ink.recheckFonts()
+                    ChatTextTileRenderer.shared.invalidateAll()
                     shelf.loading[face] = nil
                     if !Ink.has(names[0]) { shelf.failed.insert(face) }
                     shelf.generation += 1
@@ -101,7 +103,7 @@ struct FontPage: View {
             PaperRows {
                 Section {
                     ForEach(Pref.Face.allCases) { face in
-                        row(face, picked: Pref.face == face, sample: "纸墨之间，自有清欢。Clio 0.35") {
+                        row(face, picked: Pref.face == face, sample: "纸墨之间，自有清欢。Clio 0.36") {
                             Theme.shared.setFace(face)
                         }
                     }
@@ -163,7 +165,7 @@ struct FontPage: View {
                         Text(face.note).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint).lineLimit(1)
                     }
                     Text(sample)
-                        .font(Ink.face(face, Ink.Size.title))
+                        .font(Ink.face(face, SafeLineBox.effectivePointSize(for: Ink.Size.title, face: face)))
                         .foregroundStyle(state == .ready ? Ink.ink : Ink.inkFaint)
                         .lineLimit(1)
                 }

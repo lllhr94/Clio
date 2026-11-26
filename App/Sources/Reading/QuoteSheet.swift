@@ -50,10 +50,21 @@ private struct SelectableText: UIViewRepresentable {
         view.backgroundColor = .clear
         view.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 24, right: 8)
         view.delegate = context.coordinator
-        let style = NSMutableParagraphStyle()
-        style.lineSpacing = CGFloat(Pref.leading)
-        let font = Pref.face.postScript(bold: false).flatMap { UIFont(name: $0, size: CGFloat(Pref.size)) } ?? .systemFont(ofSize: CGFloat(Pref.size))
-        view.attributedText = NSAttributedString(string: text, attributes: [.font: font, .paragraphStyle: style, .foregroundColor: UIColor(Ink.ink)])
+        let face = Pref.face
+        let box = SafeLineBox.resolve(userSize: CGFloat(Pref.size), contentMultiplier: CGFloat(Pref.lineHeight), face: face)
+        let font = Ink.uiFace(box.effectivePointSize, face: face)
+        let style = box.makeParagraphStyle()
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .paragraphStyle: style,
+            .foregroundColor: UIColor(Ink.ink),
+        ]
+        if box.trackingPoints != 0 {
+            attributes[.kern] = box.trackingPoints
+        }
+        let attributed = NSMutableAttributedString(string: text, attributes: attributes)
+        ClioMixedScriptKerning.apply(to: attributed, fontSize: box.effectivePointSize, squeezePunctuation: Pref.clreqSqueeze)
+        view.attributedText = attributed
         return view
     }
 

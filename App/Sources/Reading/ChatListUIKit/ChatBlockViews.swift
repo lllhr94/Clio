@@ -261,21 +261,21 @@ final class ChatCodeBlockView: UIView {
 
     private func refreshThemeColors() {
         layer.cornerRadius = Ink.Radius.small
-        backgroundColor = UIColor(Ink.paperRaised)
-        layer.borderColor = UIColor(Ink.rule).resolvedColor(with: traitCollection).withAlphaComponent(0.75).cgColor
+        backgroundColor = UIColor(Ink.codeBg)
+        layer.borderColor = UIColor(Ink.rule).resolvedColor(with: traitCollection).withAlphaComponent(0.65).cgColor
 
-        headerView.backgroundColor = UIColor(Ink.mine).withAlphaComponent(0.42)
-        headerHairline.backgroundColor = UIColor(Ink.rule).withAlphaComponent(0.75)
+        headerView.backgroundColor = UIColor(Ink.surfaceSubtle).withAlphaComponent(0.65)
+        headerHairline.backgroundColor = UIColor(Ink.rule).withAlphaComponent(0.65)
         terminalIcon.tintColor = UIColor(Ink.Code.output)
         titleLabel.textColor = UIColor(Ink.inkSoft)
         countLabel.textColor = UIColor(Ink.inkFaint)
         outputStripe.backgroundColor = UIColor(Ink.Code.output).withAlphaComponent(0.65)
-        foldButton.backgroundColor = UIColor(Ink.mine).withAlphaComponent(0.28)
-        foldHairline.backgroundColor = UIColor(Ink.rule).withAlphaComponent(0.75)
+        foldButton.backgroundColor = UIColor(Ink.surfaceSubtle).withAlphaComponent(0.45)
+        foldHairline.backgroundColor = UIColor(Ink.rule).withAlphaComponent(0.65)
 
-        let raisedCG = UIColor(Ink.paperRaised).resolvedColor(with: traitCollection).cgColor
-        let clearCG = UIColor(Ink.paperRaised).resolvedColor(with: traitCollection).withAlphaComponent(0).cgColor
-        trailingFade.colors = [clearCG, raisedCG]
+        let codeCG = UIColor(Ink.codeBg).resolvedColor(with: traitCollection).cgColor
+        let clearCG = UIColor(Ink.codeBg).resolvedColor(with: traitCollection).withAlphaComponent(0).cgColor
+        trailingFade.colors = [clearCG, codeCG]
         trailingFade.startPoint = CGPoint(x: 0, y: 0.5)
         trailingFade.endPoint = CGPoint(x: 1, y: 0.5)
     }
@@ -554,10 +554,10 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
             rowBg.isHidden = false
             let isHeader = rIdx == 0
             if isHeader {
-                rowBg.backgroundColor = UIColor(Ink.mine).withAlphaComponent(0.45)
+                rowBg.backgroundColor = UIColor(Ink.surfaceSubtle).withAlphaComponent(0.75)
             } else {
                 let dataIdx = rIdx - 1
-                rowBg.backgroundColor = dataIdx.isMultiple(of: 2) ? .clear : UIColor(Ink.mine).withAlphaComponent(0.18)
+                rowBg.backgroundColor = dataIdx.isMultiple(of: 2) ? .clear : UIColor(Ink.surfaceSubtle).withAlphaComponent(0.32)
             }
 
             let rowCells = allRows[rIdx]
