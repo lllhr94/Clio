@@ -31,7 +31,8 @@ targets:
     type: application
     platform: iOS
     sources:
-      - Sources
+      - path: Sources
+        excludes: ["**/*.md"]
       - Shared
       - path: Den
         excludes: ["ish-src", "ish-src/**", "build", "build/**", "*.sh", "DenKernel.m"]
