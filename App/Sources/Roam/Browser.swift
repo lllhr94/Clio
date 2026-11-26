@@ -262,11 +262,8 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         // the home network (a router's page, a NAS); the user can still go there by hand.
         if actors > 0, owners[ObjectIdentifier(webView)] != nil, let target = navigationAction.request.url,
            target.scheme?.hasPrefix("http") == true {
-            var isLocalTarget = LocalAddress.isLocal(target)
-            if !isLocalTarget {
-                isLocalTarget = await LocalAddress.resolvesToLocal(target)
-            }
-            if isLocalTarget {
+            let eval = await PrivateNetworkPolicy.shared.evaluateAsync(url: target, action: .read, allowAuthorizedPrivate: true)
+            if !eval.allowed {
                 return (.cancel, preferences)
             }
         }
@@ -615,13 +612,16 @@ enum RoamTools {
         var tools: [AgentTool] = [
             RoamTool(name: "browser_open", description: "在远游（app 里的真浏览器）打开一个网址。登录状态会保留。打开后用 browser_read 看页面。desktop 为 true 时要电脑版网页（手机版缺功能时用），false 换回手机版。每一轮里头一次去某个网站，会先问用户。本机和局域网地址打不开。", parameters: ["type": "object", "properties": ["url": ["type": "string"], "desktop": ["type": "boolean"]], "required": ["url"]], label: { "远游：\($0["url"]?.string ?? "")" }, approval: { arguments in
                 // The first visit to each site in a turn asks; after that the companion may look around there.
-                guard let site = Self.site(arguments["url"]?.string), !LocalAddress.isLocal(site.url), !sites.allows(site.host, chat: chat) else { return nil }
+                guard let site = Self.site(arguments["url"]?.string) else { return nil }
+                let eval = PrivateNetworkPolicy.shared.evaluate(url: site.url, action: .read, allowAuthorizedPrivate: true, resolvedKinds: [])
+                guard eval.allowed, !sites.allows(site.host, chat: chat) else { return nil }
                 return ApprovalAsk(title: Words.t("让旅伴去 \(site.host)"), reason: "这一轮头一次打开这个网站。同意后，这一轮里它可以在这个网站上看页面、点按钮；填字和登录照旧另外问你。")
             }) { arguments in
                 guard let site = Self.site(arguments["url"]?.string) else { return ToolOutput("网址不对：\(arguments["url"]?.string ?? "")", isError: true) }
-                var isLocalOpen = LocalAddress.isLocal(site.url)
-                if !isLocalOpen { isLocalOpen = await LocalAddress.resolvesToLocal(site.url) }
-                if isLocalOpen { return ToolOutput(LocalAddress.refusal, isError: true) }
+                let eval = await PrivateNetworkPolicy.shared.evaluateAsync(url: site.url, action: .read, allowAuthorizedPrivate: true)
+                if !eval.allowed {
+                    return ToolOutput(eval.reason ?? LocalAddress.refusal, isError: true)
+                }
                 sites.allow(site.host, chat: chat)
                 let url = site.url
                 let address = url.absoluteString
@@ -660,9 +660,10 @@ enum RoamTools {
                 switch action {
                 case "new":
                     if let written = arguments["url"]?.string, let site = Self.site(written) {
-                        var isLocalNewTab = LocalAddress.isLocal(site.url)
-                        if !isLocalNewTab { isLocalNewTab = await LocalAddress.resolvesToLocal(site.url) }
-                        if isLocalNewTab { return ToolOutput(LocalAddress.refusal, isError: true) }
+                        let eval = await PrivateNetworkPolicy.shared.evaluateAsync(url: site.url, action: .read, allowAuthorizedPrivate: true)
+                        if !eval.allowed {
+                            return ToolOutput(eval.reason ?? LocalAddress.refusal, isError: true)
+                        }
                         guard sites.allows(site.host, chat: chat) else { return ToolOutput("这一轮还没去过 \(site.host)：先用 browser_open 打开它（会问用户），再开新标签。", isError: true) }
                         _ = await browser.newTab(for: chat, site.url)
                     } else {

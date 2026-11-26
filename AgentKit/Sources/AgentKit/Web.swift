@@ -546,32 +546,42 @@ enum WebFetch {
         request.setValue(agent, forHTTPHeaderField: "User-Agent")
         request.setValue("zh-CN,zh;q=0.9,en;q=0.7", forHTTPHeaderField: "Accept-Language")
         request.setValue("text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
-        if LocalAddress.isLocal(url) {
-            throw ProviderError(LocalAddress.refusal)
+        let initialEval = await PrivateNetworkPolicy.shared.evaluateAsync(url: url, action: .read, allowAuthorizedPrivate: true)
+        if !initialEval.allowed {
+            let msg = (initialEval.diagnostic == .fakeIPPlaceholder || initialEval.diagnostic == .mixedDNSAnomaly || initialEval.diagnostic == .scopeEscalationBlocked)
+                ? (initialEval.reason ?? LocalAddress.refusal)
+                : LocalAddress.refusal
+            throw ProviderError(msg)
         }
-        if await LocalAddress.resolvesToLocal(url) {
-            throw ProviderError(LocalAddress.refusal)
+        // Read as it comes, up to a limit: a link to a huge file must not be pulled whole into memory. A redirect to an
+        // unauthorized local or home-network address is not followed.
+        do {
+            let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: StayPublic(allowAuthorizedPrivate: true))
+            let http = response as? HTTPURLResponse
+            if let status = http?.statusCode, (300..<400).contains(status) {
+                throw ProviderError(status: status, "这个网址要跳到本机或局域网地址，没有跟过去。")
+            }
+            if let status = http?.statusCode, !(200..<300).contains(status) {
+                throw ProviderError(status: status, "网页打不开（\(status)）")
+            }
+            if response.expectedContentLength > limit {
+                throw ProviderError("这个文件太大了（\(ByteCountFormatter.string(fromByteCount: response.expectedContentLength, countStyle: .file))），不读。")
+            }
+            var data = Data()
+            if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > limit { throw ProviderError("这个文件太大了（超过 \(limit / 1_000_000) MB），不读。") }
+            }
+            return (data, http?.mimeType, http?.textEncodingName, http?.url ?? url)
+        } catch let error as ProviderError {
+            throw error
+        } catch {
+            if let diag = PrivateNetworkPolicy.diagnoseTransportError(error, url: url) {
+                throw ProviderError(diag.userMessage)
+            }
+            throw error
         }
-        // Read as it comes, up to a limit: a link to a huge file must not be pulled whole into memory. A redirect to a
-        // local or home-network address is not followed (the request would already reach the router or the NAS).
-        let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: StayPublic())
-        let http = response as? HTTPURLResponse
-        if let status = http?.statusCode, (300..<400).contains(status) {
-            throw ProviderError(status: status, "这个网址要跳到本机或局域网地址，没有跟过去。")
-        }
-        if let status = http?.statusCode, !(200..<300).contains(status) {
-            throw ProviderError(status: status, "网页打不开（\(status)）")
-        }
-        if response.expectedContentLength > limit {
-            throw ProviderError("这个文件太大了（\(ByteCountFormatter.string(fromByteCount: response.expectedContentLength, countStyle: .file))），不读。")
-        }
-        var data = Data()
-        if response.expectedContentLength > 0 { data.reserveCapacity(Int(response.expectedContentLength)) }
-        for try await byte in bytes {
-            data.append(byte)
-            if data.count > limit { throw ProviderError("这个文件太大了（超过 \(limit / 1_000_000) MB），不读。") }
-        }
-        return (data, http?.mimeType, http?.textEncodingName, http?.url ?? url)
     }
 
     /// The most a page or file read from the web may be.
@@ -583,11 +593,15 @@ enum WebFetch {
         guard let url = request.url, url.scheme?.lowercased() == "https", url.host != nil else {
             throw ProviderError("搜索接口只允许使用 https 地址。")
         }
-        if LocalAddress.isLocal(url) {
-            throw ProviderError(LocalAddress.refusal)
-        }
-        if await LocalAddress.resolvesToLocal(url) {
-            throw ProviderError(LocalAddress.refusal)
+        let hasCreds = request.value(forHTTPHeaderField: "Authorization") != nil
+            || request.value(forHTTPHeaderField: "x-api-key") != nil
+            || request.value(forHTTPHeaderField: "X-Subscription-Token") != nil
+        let eval = await PrivateNetworkPolicy.shared.evaluateAsync(url: url, action: .read, allowAuthorizedPrivate: false, hasCredentials: hasCreds)
+        if !eval.allowed {
+            let msg = (eval.diagnostic == .fakeIPPlaceholder || eval.diagnostic == .mixedDNSAnomaly || eval.diagnostic == .scopeEscalationBlocked)
+                ? (eval.reason ?? LocalAddress.refusal)
+                : LocalAddress.refusal
+            throw ProviderError(msg)
         }
         let activeSession = session ?? HTTP.session
         let (bytes, response) = try await activeSession.bytes(for: request, delegate: SameOriginHTTPSRedirect(origin: url))
@@ -697,8 +711,8 @@ enum WebFetch {
             guard let next = request.url, WebFetch.allowsSameHTTPSOriginRedirect(from: origin, to: next) else {
                 return nil
             }
-            if await LocalAddress.resolvesToLocal(next) { return nil }
-            return request
+            let eval = await PrivateNetworkPolicy.shared.evaluateAsync(url: next, action: .read, allowAuthorizedPrivate: false)
+            return eval.allowed ? request : nil
         }
     }
 
@@ -717,15 +731,28 @@ enum WebFetch {
     }
 
     fileprivate final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        let allowAuthorizedPrivate: Bool
+
+        init(allowAuthorizedPrivate: Bool = false) {
+            self.allowAuthorizedPrivate = allowAuthorizedPrivate
+        }
+
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest) async -> URLRequest? {
             guard let next = request.url,
                   let scheme = next.scheme?.lowercased(),
                   scheme == "http" || scheme == "https",
                   let host = next.host, !host.isEmpty,
-                  next.user == nil, next.password == nil,
-                  !LocalAddress.isLocal(next) else { return nil }
-            if await LocalAddress.resolvesToLocal(next) { return nil }
+                  next.user == nil, next.password == nil else { return nil }
+            let hasCreds = request.value(forHTTPHeaderField: "Authorization") != nil
+                || request.value(forHTTPHeaderField: "Cookie") != nil
+            let eval = await PrivateNetworkPolicy.shared.evaluateAsync(
+                url: next,
+                action: .read,
+                allowAuthorizedPrivate: allowAuthorizedPrivate,
+                hasCredentials: hasCreds
+            )
+            guard eval.allowed else { return nil }
             var sanitized = request
             if let prevHost = response.url?.host?.lowercased(), prevHost != host.lowercased() {
                 sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
@@ -750,17 +777,17 @@ public enum Web {
               url.user == nil, url.password == nil else {
             throw ProviderError("不安全的下载地址。")
         }
-        var isLocalTarget = LocalAddress.isLocal(url)
-        if !isLocalTarget {
-            isLocalTarget = await LocalAddress.resolvesToLocal(url)
-        }
-        if isLocalTarget {
-            throw ProviderError(LocalAddress.refusal)
+        let initialEval = await PrivateNetworkPolicy.shared.evaluateAsync(url: url, action: .read, allowAuthorizedPrivate: false)
+        if !initialEval.allowed {
+            let msg = (initialEval.diagnostic == .fakeIPPlaceholder || initialEval.diagnostic == .mixedDNSAnomaly)
+                ? (initialEval.reason ?? LocalAddress.refusal)
+                : LocalAddress.refusal
+            throw ProviderError(msg)
         }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "GET"
         let activeSession = session ?? HTTP.session
-        let (bytes, response) = try await activeSession.bytes(for: request, delegate: WebFetch.StayPublic())
+        let (bytes, response) = try await activeSession.bytes(for: request, delegate: WebFetch.StayPublic(allowAuthorizedPrivate: false))
         let http = response as? HTTPURLResponse
         let status = http?.statusCode ?? 0
         if (300..<400).contains(status) {
@@ -783,8 +810,11 @@ public enum Web {
                 throw ProviderError("文件过大（超过 \(limit / 1_000_000) MB），已停止下载。")
             }
         }
-        if let finalURL = http?.url, LocalAddress.isLocal(finalURL) {
-            throw ProviderError(LocalAddress.refusal)
+        if let finalURL = http?.url {
+            let finalEval = PrivateNetworkPolicy.shared.evaluate(url: finalURL, action: .read, allowAuthorizedPrivate: false, resolvedKinds: [])
+            if !finalEval.allowed {
+                throw ProviderError(LocalAddress.refusal)
+            }
         }
         return data
     }
@@ -2176,10 +2206,22 @@ public struct WebReadTool: AgentTool {
         guard let url = URL(string: address), url.scheme?.hasPrefix("http") == true else {
             return ToolOutput("网址不对：\(address)", isError: true)
         }
-        if LocalAddress.isLocal(url) { return ToolOutput(LocalAddress.refusal, isError: true) }
+        let initialEval = await PrivateNetworkPolicy.shared.evaluateAsync(url: url, action: .read, allowAuthorizedPrivate: true)
+        if !initialEval.allowed {
+            let msg = (initialEval.diagnostic == .fakeIPPlaceholder || initialEval.diagnostic == .mixedDNSAnomaly || initialEval.diagnostic == .scopeEscalationBlocked)
+                ? (initialEval.reason ?? LocalAddress.refusal)
+                : LocalAddress.refusal
+            return ToolOutput(msg, isError: true)
+        }
         let page = try await fetch(url)
-        // A public address can send us on to a local one; what came back from there is not handed over.
-        if LocalAddress.isLocal(page.url) { return ToolOutput(LocalAddress.refusal, isError: true) }
+        // A public address can send us on to an unauthorized local/private one; what came back from there is not handed over.
+        let finalEval = await PrivateNetworkPolicy.shared.evaluateAsync(url: page.url, action: .read, allowAuthorizedPrivate: true)
+        if !finalEval.allowed {
+            let msg = (finalEval.diagnostic == .fakeIPPlaceholder || finalEval.diagnostic == .mixedDNSAnomaly || finalEval.diagnostic == .scopeEscalationBlocked)
+                ? (finalEval.reason ?? LocalAddress.refusal)
+                : LocalAddress.refusal
+            return ToolOutput(msg, isError: true)
+        }
         let type = page.type ?? ""
         if type.contains("pdf") || PDFText.looksLike(page.data) {
             let from = (arguments["page"]?.int ?? 1)
