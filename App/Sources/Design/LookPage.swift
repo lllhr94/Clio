@@ -129,8 +129,10 @@ struct LookPage: View {
 }
 
 struct ReadingSizePage: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var pendingDensity: Double?
     @State private var draggingDensity = false
+    @State private var moreExpanded = false
 
     private static let sizes = [15.0, 16, 17, 19, 21, 24]
 
@@ -145,6 +147,32 @@ struct ReadingSizePage: View {
         Stops.snapped(
             Binding(get: { Theme.shared.lineHeight }, set: { Theme.shared.setLineHeight($0) }),
             to: Pref.lineHeights
+        )
+    }
+
+    private var paragraphGapBinding: Binding<Double> {
+        Stops.snapped(
+            Binding(get: { Theme.shared.paragraphGap }, set: { Theme.shared.setParagraphGap($0) }),
+            to: Pref.paragraphGapStops
+        )
+    }
+
+    private var headingWeightBinding: Binding<Pref.HeadingWeight> {
+        Binding(get: { Theme.shared.headingWeight }, set: { Theme.shared.setHeadingWeight($0) })
+    }
+
+    private var codeBinding: Binding<Pref.Code> {
+        Binding(get: { Theme.shared.code }, set: { Theme.shared.setCode($0) })
+    }
+
+    private var clreqSqueezeBinding: Binding<Bool> {
+        Binding(get: { Theme.shared.clreqSqueeze }, set: { Theme.shared.setClreqSqueeze($0) })
+    }
+
+    private var readingWidthBinding: Binding<Double> {
+        Stops.snapped(
+            Binding(get: { Theme.shared.readingWidth }, set: { Theme.shared.setReadingWidth($0) }),
+            to: Pref.readingWidthStops
         )
     }
 
@@ -163,52 +191,176 @@ struct ReadingSizePage: View {
     }
 
     var body: some View {
-        let theme = Theme.shared
         PreferenceForm(L.t("settingsHome.size"), reset: reset) {
-            Section {
-                ReadingSamplePreview(
-                    rawText: L.t("settingsHome.readingSample"),
-                    size: theme.size,
-                    lineHeight: theme.lineHeight,
-                    face: theme.face,
-                    code: theme.code
-                )
-                StopRow(title: L.t("settingsHome.fontSize"), value: sizeBinding, stops: Self.sizes.indices.map {
-                    Stop(value: Self.sizes[$0], name: L.t("settingsHome.textSize\($0)"), detail: "\(Int(Self.sizes[$0])) 点")
-                }, defaultValue: 17.0, opensForShot: Shots.name == "stops")
-                StopRow(title: L.t("settingsHome.lineSpacing"), value: lineHeightBinding, stops: Pref.lineHeights.indices.map {
-                    Stop(value: Pref.lineHeights[$0], name: L.t("settingsHome.lineHeight\($0)"), detail: String(format: "%g 倍", Pref.lineHeights[$0]))
-                }, defaultValue: Pref.defaultLineHeight)
-            } header: { Text(L.t("settings.chatTextSize")) } footer: { Text(L.t("settingsHome.readingSizeNote")) }
+            readingSection
+            moreTypographySection
+            densitySection
+        }
+    }
 
-            Section {
-                StopRow(
-                    title: L.t("settings.uiDensity"),
-                    value: density,
-                    stops: UIScale.levels.indices.map {
-                        Stop(value: UIScale.levels[$0].factor, name: L.t("settingsHome.density\($0)"), detail: "\(Int((UIScale.levels[$0].factor * 100).rounded()))%")
-                    },
-                    defaultValue: 1.0,
-                    onEditingChanged: { editing in
-                        draggingDensity = editing
-                        if !editing, let committed = pendingDensity {
-                            pendingDensity = nil
-                            UIScale.shared.value = committed
+    @ViewBuilder
+    private var readingSection: some View {
+        let theme = Theme.shared
+        Section {
+            ReadingSamplePreview(
+                rawText: L.t("settingsHome.readingSample"),
+                size: theme.size,
+                lineHeight: theme.lineHeight,
+                paragraphGap: theme.paragraphGap,
+                headingWeight: theme.headingWeight,
+                face: theme.face,
+                code: theme.code
+            )
+            presetRow(theme: theme)
+            NavigationLink {
+                FontPage()
+            } label: {
+                LabeledContent(L.t("settingsHome.readingFontRow"), value: theme.face.title)
+            }
+            StopRow(title: L.t("settingsHome.fontSize"), value: sizeBinding, stops: Self.sizes.indices.map {
+                Stop(value: Self.sizes[$0], name: L.t("settingsHome.textSize\($0)"), detail: "\(Int(Self.sizes[$0])) 点")
+            }, defaultValue: 17.0, opensForShot: Shots.name == "stops")
+            StopRow(title: L.t("settingsHome.lineSpacing"), value: lineHeightBinding, stops: Pref.lineHeights.indices.map {
+                Stop(value: Pref.lineHeights[$0], name: L.t("settingsHome.lineHeight\($0)"), detail: String(format: "%g 倍", Pref.lineHeights[$0]))
+            }, defaultValue: Pref.defaultLineHeight)
+            StopRow(title: L.t("settingsHome.paragraphGap"), value: paragraphGapBinding, stops: Pref.paragraphGapStops.indices.map {
+                Stop(value: Pref.paragraphGapStops[$0], name: L.t("settingsHome.paragraphGap\($0)"), detail: "\(Int(Pref.paragraphGapStops[$0])) 点")
+            }, defaultValue: Pref.defaultParagraphGap)
+        } header: { Text(L.t("settings.chatTextSize")) } footer: { Text(L.t("settingsHome.readingSizeNote")) }
+    }
+
+    private func presetRow(theme: Theme) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            Text(L.t("settingsHome.readingPreset"))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+            HStack(spacing: Ink.Space.s) {
+                ForEach(Pref.ReadingPreset.allCases) { preset in
+                    presetPill(preset, chosen: preset.matches(
+                        face: theme.face,
+                        size: theme.size,
+                        lineHeight: theme.lineHeight,
+                        paragraphGap: theme.paragraphGap
+                    ))
+                }
+            }
+        }
+        .padding(.vertical, Ink.Space.xs)
+    }
+
+    private func presetPill(_ preset: Pref.ReadingPreset, chosen: Bool) -> some View {
+        Button {
+            Haptics.tick(0.5)
+            withAnimation(Ink.Motion.settle) {
+                Theme.shared.applyReadingPreset(preset)
+            }
+        } label: {
+            Text(presetTitle(preset))
+                .font(.system(size: Ink.Size.small, weight: chosen ? .semibold : .regular))
+                .foregroundStyle(chosen ? Ink.ink : Ink.inkSoft)
+                .frame(maxWidth: .infinity)
+                .frame(height: 36 * UIScale.factor)
+                .background(chosen ? Ink.accentWash : Ink.surfaceSubtle, in: .capsule)
+                .overlay(Capsule().strokeBorder(chosen ? Ink.accent.opacity(0.6) : Ink.rule, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+    }
+
+    @ViewBuilder
+    private var moreTypographySection: some View {
+        Section {
+            DisclosureGroup(L.t("settingsHome.moreTypography"), isExpanded: $moreExpanded) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    Text(L.t("settingsHome.headingWeight"))
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                    Picker(L.t("settingsHome.headingWeight"), selection: headingWeightBinding) {
+                        ForEach(Pref.HeadingWeight.allCases) { weight in
+                            Text(headingWeightTitle(weight)).tag(weight)
                         }
                     }
-                )
-                RowLabel("textformat.size", title: L.t("settings.densitySampleTitle"), line: L.t("settings.densitySampleLine"), end: .valueChevron(L.t("settings.sample")))
-                    .padding(.horizontal, -Ink.Space.l)
-                    .allowsHitTesting(false)
-            } header: { Text(L.t("settings.uiDensity")) } footer: { Text(L.t("settings.densityNote")) }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                .padding(.vertical, Ink.Space.xs)
+
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    Text(L.t("settingsHome.codeFontRow"))
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                    Picker(L.t("settingsHome.codeFontRow"), selection: codeBinding) {
+                        ForEach(Pref.Code.allCases) { code in
+                            Text(code.title).tag(code)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                .padding(.vertical, Ink.Space.xs)
+
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    Toggle(L.t("settingsHome.clreqSqueeze"), isOn: clreqSqueezeBinding)
+                    Text(L.t("settingsHome.clreqSqueezeNote"))
+                        .font(.system(size: Ink.Size.micro))
+                        .foregroundStyle(Ink.inkSoft)
+                }
+                .padding(.vertical, Ink.Space.xs)
+
+                if horizontalSizeClass == .regular {
+                    StopRow(title: L.t("settingsHome.readingWidth"), value: readingWidthBinding, stops: Pref.readingWidthStops.indices.map {
+                        Stop(value: Pref.readingWidthStops[$0], name: L.t("settingsHome.readingWidth\($0)"), detail: "\(Int(Pref.readingWidthStops[$0])) 点")
+                    }, defaultValue: Pref.defaultReadingWidth)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var densitySection: some View {
+        Section {
+            StopRow(
+                title: L.t("settings.uiDensity"),
+                value: density,
+                stops: UIScale.levels.indices.map {
+                    Stop(value: UIScale.levels[$0].factor, name: L.t("settingsHome.density\($0)"), detail: "\(Int((UIScale.levels[$0].factor * 100).rounded()))%")
+                },
+                defaultValue: 1.0,
+                onEditingChanged: { editing in
+                    draggingDensity = editing
+                    if !editing, let committed = pendingDensity {
+                        pendingDensity = nil
+                        UIScale.shared.value = committed
+                    }
+                }
+            )
+            RowLabel("textformat.size", title: L.t("settings.densitySampleTitle"), line: L.t("settings.densitySampleLine"), end: .valueChevron(L.t("settings.sample")))
+                .padding(.horizontal, -Ink.Space.l)
+                .allowsHitTesting(false)
+        } header: { Text(L.t("settings.uiDensity")) } footer: { Text(L.t("settings.densityNote")) }
+    }
+
+    private func presetTitle(_ preset: Pref.ReadingPreset) -> String {
+        switch preset {
+        case .standard: L.t("settingsHome.presetStandard")
+        case .editorial: L.t("settingsHome.presetEditorial")
+        case .compact: L.t("settingsHome.presetCompact")
+        case .comfortable: L.t("settingsHome.presetComfortable")
+        }
+    }
+
+    private func headingWeightTitle(_ weight: Pref.HeadingWeight) -> String {
+        switch weight {
+        case .medium: L.t("settingsHome.headingWeightMedium")
+        case .semibold: L.t("settingsHome.headingWeightSemibold")
+        case .bold: L.t("settingsHome.headingWeightBold")
         }
     }
 
     private func reset() {
         pendingDensity = nil
         draggingDensity = false
-        Theme.shared.setSize(17)
-        Theme.shared.setLineHeight(Pref.defaultLineHeight)
+        Theme.shared.resetReadingTypography()
         if UIScale.shared.value != 1 { UIScale.shared.value = 1 }
     }
 }
@@ -218,12 +370,15 @@ private struct ReadingSamplePreview: View {
     let rawText: String
     let size: Double
     let lineHeight: Double
+    let paragraphGap: Double
+    let headingWeight: Pref.HeadingWeight
     let face: Pref.Face
     let code: Pref.Code
 
     private struct SampleKey: Hashable {
-        let rawText: String
+        let paragraphText: String
         let size: Double
+        let headingWeight: Pref.HeadingWeight
         let face: Pref.Face
         let code: Pref.Code
         let fontsArrived: Int
@@ -233,31 +388,68 @@ private struct ReadingSamplePreview: View {
 
     var body: some View {
         let fontsArrived = Theme.shared.fontsArrived
-        let attributed = Self.attributedSample(rawText: rawText, size: size, face: face, code: code, fontsArrived: fontsArrived)
-        Text(attributed)
-            .font(Ink.face(face, size, bold: false))
-            .foregroundStyle(Ink.ink)
-            .lineSpacing(Ink.leading(size: size, lineHeight: lineHeight, face: face))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, Ink.Space.s)
+        let bodyBox = SafeLineBox.resolve(userSize: CGFloat(size), contentMultiplier: CGFloat(lineHeight), face: face)
+        let paragraphs = rawText.components(separatedBy: "\n\n")
+        VStack(alignment: .leading, spacing: CGFloat(paragraphGap)) {
+            ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
+                let attributed = Self.attributedSample(
+                    paragraphText: paragraph,
+                    size: size,
+                    headingWeight: headingWeight,
+                    face: face,
+                    code: code,
+                    fontsArrived: fontsArrived
+                )
+                Text(attributed)
+                    .font(Ink.face(face, bodyBox.effectivePointSize, bold: false))
+                    .tracking(bodyBox.trackingPoints)
+                    .foregroundStyle(Ink.ink)
+                    .lineSpacing(bodyBox.swiftUILineSpacing)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, Ink.Space.s)
     }
 
     @MainActor
-    private static func attributedSample(rawText: String, size: Double, face: Pref.Face, code: Pref.Code, fontsArrived: Int) -> AttributedString {
-        let key = SampleKey(rawText: rawText, size: size, face: face, code: code, fontsArrived: fontsArrived)
+    private static func attributedSample(
+        paragraphText: String,
+        size: Double,
+        headingWeight: Pref.HeadingWeight,
+        face: Pref.Face,
+        code: Pref.Code,
+        fontsArrived: Int
+    ) -> AttributedString {
+        let key = SampleKey(
+            paragraphText: paragraphText,
+            size: size,
+            headingWeight: headingWeight,
+            face: face,
+            code: code,
+            fontsArrived: fontsArrived
+        )
         if let hit = cache[key] { return hit }
-        let built = buildSample(rawText, size: size, face: face, code: code)
-        if cache.count >= 24 { cache.removeAll(keepingCapacity: true) }
+        let built = buildSample(paragraphText, size: size, headingWeight: headingWeight, face: face, code: code)
+        if cache.count >= 48 { cache.removeAll(keepingCapacity: true) }
         cache[key] = built
         return built
     }
 
-    private static func buildSample(_ rawText: String, size: Double, face: Pref.Face, code: Pref.Code) -> AttributedString {
+    private static func buildSample(
+        _ rawText: String,
+        size: Double,
+        headingWeight: Pref.HeadingWeight,
+        face: Pref.Face,
+        code: Pref.Code
+    ) -> AttributedString {
         var result = AttributedString()
         let lines = rawText.split(separator: "\n", omittingEmptySubsequences: false)
-        let headingFont = Ink.face(face, size + 2, bold: true)
-        let boldFont = Ink.face(face, size, bold: true)
-        let codeFont = Ink.mono(max(12, size - 3), preference: code)
+        let basePt = SafeLineBox.effectivePointSize(for: CGFloat(size), face: face)
+        let headingBase = SafeLineBox.headingSize(level: 2, readingSize: CGFloat(size))
+        let headingPt = SafeLineBox.effectivePointSize(for: headingBase, face: face)
+        let headingFont = Ink.face(face, headingPt, weight: headingWeight.swiftUIWeight)
+        let boldFont = Ink.face(face, basePt, bold: true)
+        let codeFont = Ink.mono(max(12, CGFloat(size) - 3), preference: code)
 
         for (index, rawLine) in lines.enumerated() {
             if index > 0 { result.append(AttributedString("\n")) }
@@ -315,7 +507,7 @@ private struct ReadingSamplePreview: View {
                     span.font = isHeading ? headingFont : boldFont
                 } else {
                     span.font = codeFont
-                    span.backgroundColor = Ink.mine
+                    span.backgroundColor = Ink.surfaceSubtle
                 }
                 out.append(span)
                 cursor = closeRange.upperBound
