@@ -10,6 +10,12 @@
   - **Wave 3B**（`antigravity/ds2-wave3b-ia-settings` -> Wave 3A，PR #98，CI `45756201280`）：侧栏 `4+1` 信息架构、`UnifiedGlobalSearchSheet` 全域检索（含中文 IME 防断保护）、设置页 `8+1` 统一 `NavigationStack` 分类与 `CarePage` 拆解。
   - **Wave 4**（`antigravity/ds2-wave4-workflow-network` -> Wave 3B，PR #99，CI `45758960253`，`AgentKit` 407/407 通过）：工具执行严格 7 态、批准单手势取消保护与无障碍等效按钮、`PrivateNetworkPolicy` 五域分类与 Fake-IP 代理兼容开关、`PrivateNetworkGrant` 作用域授权与 6 类可懂诊断、多跳 SSH `ProxyJump` 及路径绑定指纹校验。
   - **Wave 5**（`antigravity/ds2-wave5-polish-a11y` -> Wave 4）：`InteractivePreview` 与 UIKit 图片/交互卡 `.matchedTransitionSource` / `preferredTransition = .zoom` 一镜到底缩放；`Ink.inkFaint`、边框/分隔线高对比度自适应，减透明降级、减动效避让、`DenPage` 非纯色终端状态图标与 `StopRow`/`StopRuler`/`ApproveView`/`InlineApproval`/`InlineAsk`/`AlwaysOn` 全组件 AX1–AX5 断点重排。
+- **PR #95–#100 复审问题修复（11-26 同步并向下合齐至 Wave 5）**：
+  - **PR #96（P1）**：恢复 80 字无装饰短文本同步绘制阈值，将流式渐显 CoreText 图块与 `ChatRevealLayoutSnapshot` 统一移回后台队列并用令牌序号保序防并发覆盖。
+  - **PR #97**：在 `ChatChromeCoordinator` 监听旁白状态变化通知，沉浸态下开启旁白立即恢复顶栏与输入区。
+  - **PR #98**：`UnifiedGlobalSearchSheet` 变更关键词立即清空旧命中防误点，并把 PDF 命中页码传给 `StudyFile` 的 `PDFView` 精准跳页。
+  - **PR #99（P1）**：为远游所有操作入口（含页面点击、表单填写/提交、信匣填凭据、`browser_read/text/screenshot/scroll/back/tabs`）接通 `.read`/`.write`/`.credential` 私网授权校验，撤销后对已打开标签即时阻断。
+  - **PR #100**：UIKit `preferredTransition = .zoom` 退出时校验 `card` / `PictureBlockView` 复用世代、源路径与窗口在场性，防复用缩回错图。
 - **待 iPhone 真机联合验收清单**（60Hz 标准屏 + 120Hz ProMotion，详表见 `design/design-system-2.0/engineering/04-device-qa-and-acceptance-rubric.md` D1–D15）：
   1. **排版与字体**：实测霞鹜文楷、`New York`、苹方与宋体在 7 处正文面的无双倍行距对齐，确认长文档/混合中英代码块与表格手感。
   2. **Telegram 渐显实体校准**：在实体 iPhone 上对照慢速/突发/中英混排流式长段实测 `durationMultiplier`、`SnippetLayer` 高负载熔断与定稿选区稳定性。

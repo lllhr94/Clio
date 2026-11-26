@@ -1683,7 +1683,18 @@ final class ChatFileCardsBlockView: UIView {
                 let vc = UIHostingController(rootView: InteractivePreviewPage(document: doc))
                 vc.modalPresentationStyle = .fullScreen
                 if !UIAccessibility.isReduceMotionEnabled {
-                    vc.preferredTransition = .zoom { [weak card] _ in card }
+                    let expectedPath = card.link.path
+                    let expectedURL = ref.url
+                    vc.preferredTransition = .zoom { [weak card] _ in
+                        guard let card,
+                              card.window != nil,
+                              !card.isHidden,
+                              card.link.path == expectedPath,
+                              card.activeResolved?.url == expectedURL else {
+                            return nil
+                        }
+                        return card
+                    }
                 }
                 presentedViewerVC = vc
                 presentedViewerMount = ref.mount
@@ -2219,7 +2230,19 @@ final class ChatProsePictureView: UIView {
                     StudyFile(url: ref.url, mount: ref.mount, showsDone: true)
                 })
                 if !UIAccessibility.isReduceMotionEnabled {
-                    vc.preferredTransition = .zoom { [weak self] _ in self?.imageView }
+                    let expectedSource = currentSource
+                    let expectedGeneration = generation
+                    vc.preferredTransition = .zoom { [weak self] _ in
+                        guard let self,
+                              self.generation == expectedGeneration,
+                              self.currentSource == expectedSource,
+                              self.imageView.window != nil,
+                              !self.imageView.isHidden,
+                              self.imageView.image != nil else {
+                            return nil
+                        }
+                        return self.imageView
+                    }
                 }
                 presentedViewerVC = vc
                 presentedViewerMount = ref.mount
@@ -2230,7 +2253,19 @@ final class ChatProsePictureView: UIView {
         } else if let remoteFile, let host = hostViewController, host.presentedViewController == nil {
             let vc = QuickPreviewHostingController(tempFile: remoteFile)
             if !UIAccessibility.isReduceMotionEnabled {
-                vc.preferredTransition = .zoom { [weak self] _ in self?.imageView }
+                let expectedSource = currentSource
+                let expectedGeneration = generation
+                vc.preferredTransition = .zoom { [weak self] _ in
+                    guard let self,
+                          self.generation == expectedGeneration,
+                          self.currentSource == expectedSource,
+                          self.imageView.window != nil,
+                          !self.imageView.isHidden,
+                          self.imageView.image != nil else {
+                        return nil
+                    }
+                    return self.imageView
+                }
             }
             presentedViewerVC = vc
             presentedViewerMount = nil
