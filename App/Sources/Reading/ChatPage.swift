@@ -2011,6 +2011,10 @@ private struct ChatSecondaryObservers: View {
     }
 
     var body: some View {
+        taskObserverView
+    }
+
+    private var baseObserverView: some View {
         Color.clear
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
@@ -2035,30 +2039,20 @@ private struct ChatSecondaryObservers: View {
                     trackedLineIDs = Set(chat.lines.map(\.id))
                 }
             }
+    }
+
+    private var lineObserverView: some View {
+        baseObserverView
             .onChange(of: lineIDs, initial: true) { _, nextIDs in
-                let nextSet = Set(nextIDs)
-                if chat.lines.isEmpty {
-                    trackedLineIDs = nil
-                    chrome.unreadCount = 0
-                    onClearedLines()
-                } else if let previousSet = trackedLineIDs {
-                    let addedLines = chat.lines.filter { !previousSet.contains($0.id) }
-                    if addedLines.contains(where: { $0.kind == .bot }) {
-                        Haptics.tick(0.45)
-                    }
-                    if !followState.following && chrome.farFromEnd {
-                        let unreadAdded = addedLines.filter { $0.kind == .bot || $0.kind == .note }.count
-                        if unreadAdded > 0 { chrome.unreadCount += unreadAdded }
-                    }
-                    trackedLineIDs = nextSet
-                } else if chat.loaded {
-                    trackedLineIDs = nextSet
-                }
-                onFollowToEnd()
+                handleLineIDsChange(nextIDs)
             }
             .onChange(of: chat.lines.count) { onFollowToEnd() }
             .onChange(of: chat.error) { onFollowToEnd() }
             .onChange(of: team.queued[chat.key]?.count ?? 0) { onFollowToEnd() }
+    }
+
+    private var taskObserverView: some View {
+        lineObserverView
             .task {
                 while !Task.isCancelled {
                     do { try await Task.sleep(for: .seconds(30)) } catch { return }
@@ -2078,6 +2072,28 @@ private struct ChatSecondaryObservers: View {
                 let estimate = await team.contextEstimate(chat.key)
                 if !Task.isCancelled { contextMetrics.estimate = estimate }
             }
+    }
+
+    private func handleLineIDsChange(_ nextIDs: [String]) {
+        let nextSet = Set(nextIDs)
+        if chat.lines.isEmpty {
+            trackedLineIDs = nil
+            chrome.unreadCount = 0
+            onClearedLines()
+        } else if let previousSet = trackedLineIDs {
+            let addedLines = chat.lines.filter { !previousSet.contains($0.id) }
+            if addedLines.contains(where: { $0.kind == .bot }) {
+                Haptics.tick(0.45)
+            }
+            if !followState.following && chrome.farFromEnd {
+                let unreadAdded = addedLines.filter { $0.kind == .bot || $0.kind == .note }.count
+                if unreadAdded > 0 { chrome.unreadCount += unreadAdded }
+            }
+            trackedLineIDs = nextSet
+        } else if chat.loaded {
+            trackedLineIDs = nextSet
+        }
+        onFollowToEnd()
     }
 }
 
