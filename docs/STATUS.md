@@ -1,8 +1,16 @@
 # 现状与交接
 
+## 0.36 发版定稿（11-27，PR #67–#102 → `batch-0.36` → `main`）
+
+- **正式版本**：**Clio 0.36**（`CFBundleShortVersionString = "0.36"`，发行标签 `v0.36` / `latest`），已按主人确认（「这版就做 0.36 正式版吧 模糊跟磨砂下个版本修」）于代码基线 `4c8d7ba` 冻结并合入 `batch-0.36` 与 `main`，更新说明见 `docs/releases/0.36.md`。
+- **包含范围**：120Hz 全 App 流畅度与对标 Telegram 引擎（PR #67–#94）+ Clio DS 2.0 Wave 1–5 堆叠改动及真机反馈修整（PR #95–#102）；`AgentKit` 412 项测试全部通过（CI `45875357022`）。
+- **留到下一版（0.37）继续做**：
+  1. **聊天顶栏渐进模糊与输入框磨砂通透度细调**（按主人最新实机反馈，记入 `docs/FEEDBACK.md` 0.37 待办第一条）。
+  2. **子会话异步干活与双轨交流节奏**（之前主人已确认：① 后台子会话异步干活＋自动回信，主对话不卡死；② 先接话再干活；③ 闲谈与干活双轨分流）。
+
 ## Clio DS 2.0 工程实施汇总（11-26，Wave 1–5 堆叠 PR #95–#100）
 
-- **冻结设计基线**：`origin/design/v2-review` v16（Design Tokens `2.4.0`；Telegram 原版参考上游提交 `24638bc`），基于 `batch-0.36`（`ee034ac`，已合入 PR #67–#94）以 5 组可独立回滚的堆叠分支依次实现；**`main` / `latest` / `batch-0.36` 保持未动**，正式合并与发版仍等主人真机验收后明确说「发」。
+- **冻结设计基线**：`origin/design/v2-review` v16（Design Tokens `2.4.0`；Telegram 原版参考上游提交 `24638bc`），基于 `batch-0.36`（`ee034ac`，已合入 PR #67–#94）以 5 组可独立回滚的堆叠分支依次实现；已随 PR #101–#102 一并合入 `batch-0.36` 并快进合入 `main` 发版 0.36。
 - **堆叠分支与试签验证进展**：
   - **Wave 1**（`antigravity/ds2-wave1-tokens-haptics` -> `batch-0.36`，PR #95）：WCAG 2.1 AA 全量色彩与 `UIScale`/排版开关 Token、`PressStyle` 去默认震动与语义/节流触觉、`StopRuler` 默认档位圆点与震感、双语词典对称键及 `tools/lint.py` 规则。
   - **Wave 2**（`antigravity/ds2-wave2-typography-reveal` -> Wave 1，PR #96）：原样移植 Telegram `TextRevealController.swift`（附 `UPSTREAM.md` 与 `README.md` `GPL-2.0-or-later` 致谢）、CoreText `Points` 揭示掩码与突发降级、单源 `SafeLineBox`（消除 `lineSpacing`/`minimumLineHeight` 叠加并对齐用户气泡）及四套阅读预设 + 9 项精细排版控件。
