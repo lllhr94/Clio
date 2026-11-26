@@ -690,7 +690,6 @@ struct ChatComposerBarView: View {
     let team: TeamModel
     let bot: BotInfo
     let chrome: ChatChrome
-    let chromeCoordinator: ChatChromeCoordinator
     let petPerch: PetPerch
     let dictationSlot: ChatDictationSlot
     let draftState: ChatDraft
