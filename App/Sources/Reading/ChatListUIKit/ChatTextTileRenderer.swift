@@ -50,16 +50,24 @@ struct ChatTextRenderRequest: @unchecked Sendable {
     let height: CGFloat
     let scale: CGFloat
     let palette: ChatTextRenderPalette
+    var includeRevealSnapshot: Bool = false
+    var sourceRenderToken: UInt64 = 0
 }
 
 /// Rasterized vertical tile strip backed by premultiplied BGRA8888 `CGImage` slices.
 final class ChatRenderedTiles: @unchecked Sendable {
     let tiles: [(y: CGFloat, height: CGFloat, image: CGImage)]
     let totalBytes: Int
+    let revealSnapshot: ChatRevealLayoutSnapshot?
 
-    init(tiles: [(y: CGFloat, height: CGFloat, image: CGImage)], totalBytes: Int) {
+    init(
+        tiles: [(y: CGFloat, height: CGFloat, image: CGImage)],
+        totalBytes: Int,
+        revealSnapshot: ChatRevealLayoutSnapshot? = nil
+    ) {
         self.tiles = tiles
         self.totalBytes = totalBytes
+        self.revealSnapshot = revealSnapshot
     }
 }
 
@@ -100,7 +108,7 @@ final class ChatTextTileRenderer: @unchecked Sendable {
     }()
 
     private let lock = NSLock()
-    private var inFlight: [String: (op: Operation, completions: [@MainActor (String, ChatTileRenderResult) -> Void])] = [:]
+    private var inFlight: [String: (op: Operation, includesReveal: Bool, completions: [@MainActor (String, ChatTileRenderResult) -> Void])] = [:]
     private var generation: UInt64 = 0
     private var memoryWarningObserver: NSObjectProtocol?
 
@@ -139,7 +147,8 @@ final class ChatTextTileRenderer: @unchecked Sendable {
     }
 
     func renderSync(_ request: ChatTextRenderRequest) -> ChatRenderedTiles? {
-        if let hit = cache.object(forKey: request.cacheKey as NSString) {
+        if let hit = cache.object(forKey: request.cacheKey as NSString),
+           (!request.includeRevealSnapshot || hit.revealSnapshot != nil) {
             return hit
         }
         guard let rendered = Self.render(request) else { return nil }
@@ -151,7 +160,8 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         _ request: ChatTextRenderRequest,
         completion: @escaping @MainActor (String, ChatTileRenderResult) -> Void
     ) {
-        if let hit = cache.object(forKey: request.cacheKey as NSString) {
+        if let hit = cache.object(forKey: request.cacheKey as NSString),
+           (!request.includeRevealSnapshot || hit.revealSnapshot != nil) {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     completion(request.cacheKey, .rendered(hit))
@@ -161,7 +171,8 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         }
 
         lock.lock()
-        if let hit = cache.object(forKey: request.cacheKey as NSString) {
+        if let hit = cache.object(forKey: request.cacheKey as NSString),
+           (!request.includeRevealSnapshot || hit.revealSnapshot != nil) {
             lock.unlock()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -171,6 +182,17 @@ final class ChatTextTileRenderer: @unchecked Sendable {
             return
         }
         if var existing = inFlight[request.cacheKey] {
+            if request.includeRevealSnapshot && !existing.includesReveal {
+                existing.op.cancel()
+                let combined = existing.completions + [completion]
+                let opGen = generation
+                let op = makeOperation(for: request, generation: opGen)
+                op.queuePriority = .veryHigh
+                inFlight[request.cacheKey] = (op: op, includesReveal: true, completions: combined)
+                lock.unlock()
+                queue.addOperation(op)
+                return
+            }
             existing.completions.append(completion)
             existing.op.queuePriority = .veryHigh
             inFlight[request.cacheKey] = existing
@@ -181,7 +203,7 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         let opGen = generation
         let op = makeOperation(for: request, generation: opGen)
         op.queuePriority = .high
-        inFlight[request.cacheKey] = (op: op, completions: [completion])
+        inFlight[request.cacheKey] = (op: op, includesReveal: request.includeRevealSnapshot, completions: [completion])
         lock.unlock()
 
         queue.addOperation(op)
@@ -210,7 +232,10 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         let opGen = generation
         for request in requests {
             guard request.width > 0, request.height > 0, request.attributed.length > 0 else { continue }
-            if cache.object(forKey: request.cacheKey as NSString) != nil { continue }
+            if let hit = cache.object(forKey: request.cacheKey as NSString),
+               (!request.includeRevealSnapshot || hit.revealSnapshot != nil) {
+                continue
+            }
             if let existing = inFlight[request.cacheKey] {
                 if existing.completions.isEmpty && existing.op.queuePriority.rawValue < queuePriority.rawValue {
                     existing.op.queuePriority = queuePriority
@@ -220,7 +245,7 @@ final class ChatTextTileRenderer: @unchecked Sendable {
 
             let op = makeOperation(for: request, generation: opGen)
             op.queuePriority = queuePriority
-            inFlight[request.cacheKey] = (op: op, completions: [])
+            inFlight[request.cacheKey] = (op: op, includesReveal: request.includeRevealSnapshot, completions: [])
             token?.keys.append(request.cacheKey)
             opsToAdd.append(op)
         }
@@ -579,6 +604,18 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         }
 
         guard !tiles.isEmpty else { return nil }
-        return ChatRenderedTiles(tiles: tiles, totalBytes: totalBytes)
+        let revealSnapshot: ChatRevealLayoutSnapshot? = req.includeRevealSnapshot
+            ? ChatRevealLayoutSnapshot.build(
+                from: ctFrame,
+                fullText: req.attributed.string,
+                realLength: req.attributed.length,
+                width: req.width,
+                height: req.height,
+                topInset: req.topInset,
+                bottomInset: req.bottomInset,
+                sourceRenderToken: req.sourceRenderToken
+            )
+            : nil
+        return ChatRenderedTiles(tiles: tiles, totalBytes: totalBytes, revealSnapshot: revealSnapshot)
     }
 }
