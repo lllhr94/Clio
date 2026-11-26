@@ -84,9 +84,9 @@ public struct MemoryRevisionSnapshot: Codable, Equatable, Identifiable, Sendable
         self.canonicalSHA256 = canonicalSHA256
         self.canonicalGeneration = canonicalGeneration
         self.itemCount = book.memories.count
-        self.pinnedCount = book.memories.filter { $0.pinned && !$0.deep }.count
-        self.surfaceCount = book.memories.filter { !$0.pinned && !$0.deep }.count
-        self.deepCount = book.memories.filter { $0.deep }.count
+        self.pinnedCount = book.memories.filter { $0.resolvedLayer == .pinned }.count
+        self.surfaceCount = book.memories.filter { $0.resolvedLayer == .surface }.count
+        self.deepCount = book.memories.filter { $0.resolvedLayer == .deep }.count
         self.book = book
     }
 }

@@ -1,3 +1,4 @@
+import AgentKit
 import Foundation
 
 /// Zero-approval read-only tool reporting accurate local time, timezone, logical day,
