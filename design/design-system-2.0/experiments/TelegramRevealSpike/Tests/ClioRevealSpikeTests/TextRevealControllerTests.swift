@@ -13,20 +13,23 @@ final class TextRevealControllerTests: XCTestCase {
         XCTAssertFalse(controller.isFinalizing)
 
         controller.observeUpdate(latestLength: 50, at: 0.05)
-        // First tick initializes TextRevealController.lastFrameTime (dt == 0), subsequent frame advances reveal.
+        // Tick 1 (0.066s) initializes lastFrameTime (dt == 0); velocityTau=0.12s ramps revealedCount > 1.0 within ~4 frames (~50ms).
         let initFrame = controller.tick(now: 0.066)
         XCTAssertEqual(initFrame.revealedGlyphCount, 0)
         XCTAssertFalse(initFrame.isComplete)
-        let secondFrame = controller.tick(now: 0.082)
-        XCTAssertGreaterThan(secondFrame.revealedGlyphCount, 0)
-        XCTAssertFalse(secondFrame.isComplete)
+        var rampedFrame = initFrame
+        for step in 1...4 {
+            rampedFrame = controller.tick(now: 0.066 + Double(step) * 0.016)
+        }
+        XCTAssertGreaterThan(rampedFrame.revealedGlyphCount, 0)
+        XCTAssertFalse(rampedFrame.isComplete)
 
         // Burst while finalizing must still drain cleanly without overshooting latestLength.
-        controller.observeUpdate(latestLength: 120, at: 0.12)
+        controller.observeUpdate(latestLength: 120, at: 0.14)
         controller.finalize(finalLength: 120)
         XCTAssertTrue(controller.isFinalizing)
 
-        var t = 0.066
+        var t = 0.14
         var completed = false
         for _ in 0..<240 {
             t += 1.0 / 60.0
