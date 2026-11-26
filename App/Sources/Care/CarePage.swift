@@ -4,10 +4,19 @@ import Darwin
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum CareScope: Hashable {
+    case all
+    case backup
+    case storage
+    case diagnostics
+}
+
 /// 养护: backup and restore, and a diagnosis to paste when something goes wrong.
 struct CarePage: View {
     let team: TeamModel
     var openRestore = false
+    var scope: CareScope = .all
+    var embedded = false
     @State private var denState = Den.State.asleep
     @State private var formSectionsReady = false
     @State private var diagnosticsReady = false
@@ -71,10 +80,45 @@ struct CarePage: View {
             || passphraseSetup != nil
     }
 
+    private var navigationTitleText: String {
+        switch scope {
+        case .all: L.t("settingsHome.care")
+        case .backup: L.t("settingsHome.careBackup")
+        case .storage: L.t("settingsHome.careStorage")
+        case .diagnostics: L.t("settingsHome.careDiagnostics")
+        }
+    }
+
     var body: some View {
-        NavigationStack {
-            Form {
-                PaperRows {
+        if embedded {
+            pageContent
+        } else {
+            NavigationStack { pageContent }
+        }
+    }
+
+    private var pageContent: some View {
+        Form {
+            PaperRows {
+                switch scope {
+                case .backup:
+                    localBackupSection
+                    webdavSection
+                case .storage:
+                    storageSection
+                    archivedSection
+                case .diagnostics:
+                    diagnosticInfoSection
+                    connectivitySection
+                    recentErrorsSection
+                    if hitchesReady {
+                        HitchSettings()
+                    }
+                    if showSpikeLab {
+                        spikeLabSection
+                    }
+                    diagnosticsActionSection
+                case .all:
                     localBackupSection
                     if formSectionsReady {
                         webdavSection
@@ -96,16 +140,38 @@ struct CarePage: View {
                     }
                 }
             }
-            .paperForm()
-            .hitchPage("养护")
-            .navigationTitle(L.t("settingsHome.care"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
-            .onChange(of: withKeys) { _, includeKeys in
-                if includeKeys { encryptLocal = true }
+        }
+        .paperForm()
+        .hitchPage("养护")
+        .navigationTitle(navigationTitleText)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !embedded {
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
             }
-            .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
-            .task {
+        }
+        .onChange(of: withKeys) { _, includeKeys in
+            if includeKeys { encryptLocal = true }
+        }
+        .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
+        .task {
+            switch scope {
+            case .backup:
+                formSectionsReady = true
+            case .storage:
+                formSectionsReady = true
+                await measureStorage()
+            case .diagnostics:
+                formSectionsReady = true
+                let errors = Array((await Diag.snapshot(suffix: 20)).reversed())
+                guard !Task.isCancelled else { return }
+                recentErrors = errors
+                diagnosticsReady = true
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                hitchesReady = true
+                await measureStorage()
+            case .all:
                 do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
                 formSectionsReady = true
                 do { try await Task.sleep(for: .milliseconds(80)) } catch { return }
@@ -119,86 +185,86 @@ struct CarePage: View {
                 hitchesReady = true
                 await measureStorage()
             }
-            .task {
-                guard !davPasswordLoaded else { return }
-                let loaded = await CareWebDAVCoordinator.loadPassword()
-                guard !Task.isCancelled else { return }
-                lastSavedDavPassword = loaded
-                davPassword = loaded
-                davPasswordLoaded = true
-                davPasswordDirty = false
+        }
+        .task {
+            guard scope == .all || scope == .backup, !davPasswordLoaded else { return }
+            let loaded = await CareWebDAVCoordinator.loadPassword()
+            guard !Task.isCancelled else { return }
+            lastSavedDavPassword = loaded
+            davPassword = loaded
+            davPasswordLoaded = true
+            davPasswordDirty = false
+        }
+        .onChange(of: davPassword) { _, newValue in
+            guard davPasswordLoaded else { return }
+            davPasswordDirty = (newValue != lastSavedDavPassword)
+        }
+        .onDisappear {
+            cleanTask?.cancel()
+            persistDavPasswordIfNeeded()
+            pendingSetupAction = nil
+            deferredNoticeAfterUnlock = nil
+            if !restoringBusy {
+                let pendingURL = pendingRestore?.url
+                pendingRestore = nil
+                CareWebDAVCoordinator.scheduleInboxCleanup(removing: pendingURL)
             }
-            .onChange(of: davPassword) { _, newValue in
-                guard davPasswordLoaded else { return }
-                davPasswordDirty = (newValue != lastSavedDavPassword)
-            }
-            .onDisappear {
-                cleanTask?.cancel()
-                persistDavPasswordIfNeeded()
-                pendingSetupAction = nil
-                deferredNoticeAfterUnlock = nil
-                if !restoringBusy {
-                    let pendingURL = pendingRestore?.url
-                    pendingRestore = nil
-                    CareWebDAVCoordinator.scheduleInboxCleanup(removing: pendingURL)
+        }
+        .task {
+            guard openRestore else { return }
+            do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
+            restoring = true
+        }
+        .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in
+            guard case .success(let url) = result else { return }
+            prepareLocalRestore(from: url)
+        }
+        .sheet(item: $passphraseSetup, onDismiss: { runPendingSetupActionIfAny() }) { request in
+            PassphraseSetupSheet(
+                purpose: request.purpose,
+                onCancel: {
+                    pendingSetupAction = nil
+                    passphraseSetup = nil
+                },
+                onConfirm: { passphrase in
+                    pendingSetupAction = PendingSetupAction(purpose: request.purpose, passphrase: passphrase)
+                    passphraseSetup = nil
                 }
-            }
-            .task {
-                guard openRestore else { return }
-                do { try await Task.sleep(for: .milliseconds(450)) } catch { return }
-                restoring = true
-            }
-            .fileImporter(isPresented: $restoring, allowedContentTypes: [.data, .item]) { result in
-                guard case .success(let url) = result else { return }
-                prepareLocalRestore(from: url)
-            }
-            .sheet(item: $passphraseSetup, onDismiss: { runPendingSetupActionIfAny() }) { request in
-                PassphraseSetupSheet(
-                    purpose: request.purpose,
-                    onCancel: {
-                        pendingSetupAction = nil
-                        passphraseSetup = nil
-                    },
-                    onConfirm: { passphrase in
-                        pendingSetupAction = PendingSetupAction(purpose: request.purpose, passphrase: passphrase)
-                        passphraseSetup = nil
-                    }
-                )
-            }
-            .sheet(item: $pendingRestore, onDismiss: { handleUnlockSheetDismissed() }) { pending in
-                PassphraseUnlockSheet(
-                    displayName: pending.displayName,
-                    errorMessage: pending.wrongPassphraseHint,
-                    busy: $restoringBusy,
-                    onCancel: { cancelPendingRestore() },
-                    onSubmit: { passphrase in
-                        startUnlockRestore(pending: pending, passphrase: passphrase)
-                    }
-                )
-            }
-            .confirmationDialog(
-                "从网盘的哪一份恢复？",
-                isPresented: Binding(get: { !davChoices.isEmpty }, set: { if !$0 { davChoices = [] } }),
-                titleVisibility: .visible
-            ) {
-                ForEach(davChoices.prefix(8), id: \.self) { name in
-                    Button(Self.backupLabel(name)) { davRestore(name) }
+            )
+        }
+        .sheet(item: $pendingRestore, onDismiss: { handleUnlockSheetDismissed() }) { pending in
+            PassphraseUnlockSheet(
+                displayName: pending.displayName,
+                errorMessage: pending.wrongPassphraseHint,
+                busy: $restoringBusy,
+                onCancel: { cancelPendingRestore() },
+                onSubmit: { passphrase in
+                    startUnlockRestore(pending: pending, passphrase: passphrase)
                 }
-                Button(L.t("actions.cancel"), role: .cancel) { davChoices = [] }
-            } message: {
-                Text("恢复会换掉手机上现在的助手、对话和记忆。")
+            )
+        }
+        .confirmationDialog(
+            "从网盘的哪一份恢复？",
+            isPresented: Binding(get: { !davChoices.isEmpty }, set: { if !$0 { davChoices = [] } }),
+            titleVisibility: .visible
+        ) {
+            ForEach(davChoices.prefix(8), id: \.self) { name in
+                Button(Self.backupLabel(name)) { davRestore(name) }
             }
-            .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
-                if restored {
-                    Button(L.t("actions.quitApp")) { exit(0) }
-                    Button(L.t("actions.cancel"), role: .cancel) {}
-                } else {
-                    Button(L.t("actions.done"), role: .cancel) {}
-                }
+            Button(L.t("actions.cancel"), role: .cancel) { davChoices = [] }
+        } message: {
+            Text("恢复会换掉手机上现在的助手、对话和记忆。")
+        }
+        .alert(notice ?? "", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+            if restored {
+                Button(L.t("actions.quitApp")) { exit(0) }
+                Button(L.t("actions.cancel"), role: .cancel) {}
+            } else {
+                Button(L.t("actions.done"), role: .cancel) {}
             }
-            .fullScreenCover(isPresented: $uikitSpikeOpen) {
-                SpikeChatSheet()
-            }
+        }
+        .fullScreenCover(isPresented: $uikitSpikeOpen) {
+            SpikeChatSheet()
         }
     }
 
