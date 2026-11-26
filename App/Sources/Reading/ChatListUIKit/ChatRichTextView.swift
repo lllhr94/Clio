@@ -95,6 +95,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     private var revealSession: ChatRevealSession?
     private let revealMaskCoordinator = ChatRevealMaskCoordinator()
     private var pendingRevealHandoff: ChatRevealHandoff?
+    private var appliedRevealSnapshot: ChatRevealLayoutSnapshot?
+    private var appliedRenderToken: UInt64 = 0
     private var isRevealVisible = true
 
     private var paintedWidth: CGFloat = -1
@@ -183,6 +185,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             view.activeRenderKey = ""
             view.appliedRenderKey = ""
             view.inFlightRenderKey = ""
+            view.appliedRevealSnapshot = nil
+            view.appliedRenderToken = 0
             view.paintedTraitStyle = .unspecified
             view.needsDecorationLayout = true
             view.clearTileLayers()
@@ -217,7 +221,6 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             && isLiveTail == lastIsLiveTail
         if sameToken && transferredSelection == nil && transferredReveal == nil { return }
 
-        drawGeneration &+= 1
         let wasLive = lastIsLive
         let wasAwaitingTiles = isAwaitingFinalizedTiles
 
@@ -251,6 +254,23 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             }
         }
 
+        let eligibleReveal = ChatRevealPolicy.isEligible(
+            fade: style.fade,
+            reduceMotion: style.reduceMotion,
+            attributedLength: rendered.attributed.length
+        )
+
+        let keepLiveTailGeneration = sameOwner
+            && style.styleKey == lastStyleKey
+            && isLiveTail
+            && lastIsLiveTail
+            && eligibleReveal
+            && restoredRange == nil
+            && selectionTextView == nil
+        if !keepLiveTailGeneration {
+            drawGeneration &+= 1
+        }
+
         currentOwnerID = ownerID
         currentRendered = rendered
         currentStyle = style
@@ -261,12 +281,6 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         lastIsLive = isLive
         lastIsLiveTail = isLiveTail
         keepsFallbackTextView = false
-
-        let eligibleReveal = ChatRevealPolicy.isEligible(
-            fade: style.fade,
-            reduceMotion: style.reduceMotion,
-            attributedLength: rendered.attributed.length
-        )
 
         if !eligibleReveal || restoredRange != nil || (selectionTextView != nil && oldRange.length > 0) {
             teardownReveal()
@@ -517,8 +531,9 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         }
 
         activeRenderKey = renderKey
-        if let cached = ChatTextTileRenderer.shared.cached(for: renderKey) {
-            applyTiles(cached, forKey: renderKey, scale: scale)
+        if let cached = ChatTextTileRenderer.shared.cached(for: renderKey),
+           (!wantsRevealTiles || cached.revealSnapshot != nil) {
+            applyTiles(cached, forKey: renderKey, scale: scale, token: currentRendered.renderToken)
             return
         }
 
@@ -529,6 +544,9 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         if !wantsRevealTiles {
             clearTileLayers()
         }
+        let requestedToken = currentRendered.renderToken
+        let requestWidth = bounds.width
+        let requestStyleKey = style.styleKey
         let request = ChatTextRenderRequest(
             cacheKey: renderKey,
             attributed: currentRendered.attributed,
@@ -538,15 +556,16 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             width: bounds.width,
             height: bounds.height,
             scale: scale,
-            palette: ChatTextRenderPalette.make(style: style)
+            palette: ChatTextRenderPalette.make(style: style),
+            includeRevealSnapshot: wantsRevealTiles,
+            sourceRenderToken: requestedToken
         )
 
-        let canRenderSync = (currentRendered.attributed.length <= 80 && !currentRendered.decorations.hasAny)
-            || (wantsRevealTiles && currentRendered.attributed.length <= ChatRevealPolicy.maxTailAttributedLength)
+        let canRenderSync = currentRendered.attributed.length <= 80 && !currentRendered.decorations.hasAny
 
         if canRenderSync {
             if let tiles = ChatTextTileRenderer.shared.renderSync(request) {
-                applyTiles(tiles, forKey: renderKey, scale: scale)
+                applyTiles(tiles, forKey: renderKey, scale: scale, token: requestedToken)
             } else {
                 teardownReveal()
                 isAwaitingFinalizedTiles = false
@@ -561,19 +580,31 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                     self.inFlightRenderKey = ""
                 }
                 guard self.drawGeneration == expectedDrawGen,
-                      self.activeRenderKey == key,
                       self.selectionTextView == nil || self.isAwaitingFinalizedTiles else {
+                    return
+                }
+                let matchesLatest = self.activeRenderKey == key
+                let canAdvanceLiveTail = self.currentIsLiveTail
+                    && requestedToken >= self.appliedRenderToken
+                    && abs(self.bounds.width - requestWidth) <= 0.5
+                    && self.currentStyle?.styleKey == requestStyleKey
+                guard matchesLatest || canAdvanceLiveTail else {
                     return
                 }
                 switch result {
                 case .rendered(let tiles):
-                    self.applyTiles(tiles, forKey: key, scale: scale)
+                    self.applyTiles(tiles, forKey: key, scale: scale, token: requestedToken)
+                    if self.activeRenderKey != key {
+                        self.setNeedsLayout()
+                    }
                 case .staleOrCancelled:
                     self.setNeedsLayout()
                 case .failed:
-                    self.teardownReveal()
-                    self.isAwaitingFinalizedTiles = false
-                    self.mountFallbackTextView()
+                    if matchesLatest {
+                        self.teardownReveal()
+                        self.isAwaitingFinalizedTiles = false
+                        self.mountFallbackTextView()
+                    }
                 }
             }
         }
@@ -581,7 +612,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     // MARK: - Tile Rendering Layer Pool
 
-    private func applyTiles(_ rendered: ChatRenderedTiles, forKey key: String, scale: CGFloat) {
+    private func applyTiles(_ rendered: ChatRenderedTiles, forKey key: String, scale: CGFloat, token: UInt64) {
         if let tv = selectionTextView {
             guard !keepsFallbackTextView, tv.selectedRange.length == 0, isAwaitingFinalizedTiles else {
                 isAwaitingFinalizedTiles = false
@@ -590,6 +621,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         }
         isAwaitingFinalizedTiles = false
         activeTileCount = rendered.tiles.count
+        appliedRevealSnapshot = rendered.revealSnapshot
+        appliedRenderToken = token
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -634,6 +667,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     private func clearTileLayers() {
         appliedRenderKey = ""
+        appliedRevealSnapshot = nil
+        appliedRenderToken = 0
         activeTileCount = 0
         guard !tileLayers.isEmpty else { return }
         CATransaction.begin()
@@ -655,14 +690,24 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             return
         }
 
-        let snap = ChatRevealLayoutSnapshot.build(
-            attributed: currentRendered.attributed,
-            width: bounds.width,
-            height: bounds.height,
-            topInset: currentRendered.topInset,
-            bottomInset: currentRendered.bottomInset,
-            sourceRenderToken: currentRendered.renderToken
-        )
+        let snap: ChatRevealLayoutSnapshot
+        if let prebuilt = appliedRevealSnapshot,
+           abs(prebuilt.layoutSize.width - bounds.width) <= 0.5,
+           ((prebuilt.sourceRenderToken == currentRendered.renderToken && abs(prebuilt.layoutSize.height - bounds.height) <= 0.5)
+            || (currentIsLiveTail && prebuilt.sourceRenderToken == appliedRenderToken && appliedRenderToken > 0)) {
+            snap = prebuilt
+        } else if currentRendered.attributed.length <= 80 && !currentRendered.decorations.hasAny {
+            snap = ChatRevealLayoutSnapshot.build(
+                attributed: currentRendered.attributed,
+                width: bounds.width,
+                height: bounds.height,
+                topInset: currentRendered.topInset,
+                bottomInset: currentRendered.bottomInset,
+                sourceRenderToken: currentRendered.renderToken
+            )
+        } else {
+            return
+        }
         revealMaskCoordinator.updateTheme(traitCollection: traitCollection)
         let now = CACurrentMediaTime()
 
