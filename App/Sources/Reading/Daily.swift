@@ -204,8 +204,8 @@ struct TideSheet: View {
     }
 
     static func when(_ day: String) -> String {
-        if day == Tide.day(of: Date()) { return "今天" }
-        if day == Tide.day(of: Date().addingTimeInterval(-86_400)) { return "昨天" }
+        if day == LogicalDay.day(of: Date()) { return "今天" }
+        if day == LogicalDay.daysBack(1, from: Date()) { return "昨天" }
         let parts = day.split(separator: "-")
         return parts.count == 3 ? "\(Int(parts[1]) ?? 0) 月 \(Int(parts[2]) ?? 0) 日" : day
     }
@@ -408,7 +408,7 @@ extension TeamModel {
 
     /// The last page and its answer, for the companion to remember (not to bring up unasked).
     func diaryLine(_ bot: String) -> String? {
-        guard let page = diary(bot).first, page.day >= Tide.day(of: Date().addingTimeInterval(-2 * 86_400)) else { return nil }
+        guard let page = diary(bot).first, page.day >= LogicalDay.daysBack(2, from: Date()) else { return nil }
         var line = "你最近一篇日记（\(TideSheet.when(page.day))）：\(page.text)"
         if let reply = page.reply { line += "\n用户在下面回了你：\(reply)" }
         return line + "\n（这是你们之间的小事：聊到相关的再提，不必主动说起。）"
@@ -417,7 +417,7 @@ extension TeamModel {
     /// Writes today's page on request. The nightly job can also finish a day deferred by iOS.
     func writeDiary(_ botId: String) async throws {
         guard let bot = bots.first(where: { $0.id == botId }) else { return }
-        let day = Tide.day(of: Date())
+        let day = LogicalDay.day(of: Date())
         let said = diaryEntries(for: bot, day: day, includeLeaves: true)
         guard said.contains(where: { $0.message.role == .user }) else { throw TeamError(message: "今天还没和\(bot.name)聊过，没什么可写的。") }
         try await writeDiary(bot, day: day, said: said, automatic: false)
@@ -427,13 +427,13 @@ extension TeamModel {
         let key = Self.key(bot: bot.id)
         var list = history(key)
         if includeLeaves {
-            let relevant = leaves(key).filter { Tide.day(of: Date(timeIntervalSince1970: $0.at / 1000)) >= day }
+            let relevant = leaves(key).filter { LogicalDay.day(of: Date(timeIntervalSince1970: $0.at / 1000)) >= day }
             list += relevant.flatMap { entries(in: $0, of: key) }
         }
         var seen = Set<String>()
         return list.sorted { $0.at < $1.at }.filter {
             $0.note != true && $0.fold != true && $0.message.role != .tool && $0.message.toolCalls.isEmpty
-                && !$0.message.text.isEmpty && Tide.day(of: Date(timeIntervalSince1970: $0.at / 1000)) == day
+                && !$0.message.text.isEmpty && LogicalDay.day(of: Date(timeIntervalSince1970: $0.at / 1000)) == day
                 && seen.insert($0.id).inserted
         }
     }

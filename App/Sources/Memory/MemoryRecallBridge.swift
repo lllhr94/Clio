@@ -71,6 +71,11 @@ final class MemoryRecallBridge: @unchecked Sendable {
         }
     }
 
+    private enum RecallScope {
+        case deepOnly
+        case allActive
+    }
+
     func recallForTurn(
         query: String?,
         usesMemory: Bool,
@@ -84,37 +89,115 @@ final class MemoryRecallBridge: @unchecked Sendable {
         recordUsage: Bool = true,
         config: MemoryRecall.Config = MemoryRecall.Config()
     ) async -> [MemoryRecall.Hit] {
-        guard usesMemory, grantAllowed, !diskFrozen else { return [] }
+        await recallScoped(
+            scope: .deepOnly,
+            query: query,
+            usesMemory: usesMemory,
+            grantAllowed: grantAllowed,
+            diskFrozen: diskFrozen,
+            keeping: keeping,
+            fallbackRecords: fallbackRecords,
+            fallbackSurfaceTexts: fallbackSurfaceTexts,
+            retractedIDs: retractedIDs,
+            suppressedHashes: suppressedHashes,
+            recordUsage: recordUsage,
+            config: config
+        )
+    }
+
+    /// Full-scope recall across `.pinned`, `.surface`, and `.deep` (excluding `.archived`).
+    func recallAll(
+        query: String?,
+        usesMemory: Bool,
+        grantAllowed: Bool,
+        diskFrozen: Bool,
+        keeping: Bool,
+        fallbackRecords: [MemoryRecord] = [],
+        retractedIDs: Set<String>,
+        suppressedHashes: Set<String>,
+        recordUsage: Bool = false,
+        config: MemoryRecall.Config = MemoryRecall.Config()
+    ) async -> [MemoryRecall.Hit] {
+        await recallScoped(
+            scope: .allActive,
+            query: query,
+            usesMemory: usesMemory,
+            grantAllowed: grantAllowed,
+            diskFrozen: diskFrozen,
+            keeping: keeping,
+            fallbackRecords: fallbackRecords,
+            fallbackSurfaceTexts: [],
+            retractedIDs: retractedIDs,
+            suppressedHashes: suppressedHashes,
+            recordUsage: recordUsage,
+            config: config
+        )
+    }
+
+    private func recallScoped(
+        scope: RecallScope,
+        query: String?,
+        usesMemory: Bool,
+        grantAllowed: Bool,
+        diskFrozen: Bool,
+        keeping: Bool,
+        fallbackRecords: [MemoryRecord],
+        fallbackSurfaceTexts: [String],
+        retractedIDs: Set<String>,
+        suppressedHashes: Set<String>,
+        recordUsage: Bool,
+        config: MemoryRecall.Config
+    ) async -> [MemoryRecall.Hit] {
+        guard usesMemory, grantAllowed else { return [] }
+        if scope == .deepOnly, diskFrozen { return [] }
+        if diskFrozen && recordUsage { return [] }
         guard let rawQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines), !rawQuery.isEmpty else {
             return []
         }
 
-        if !keeping {
+        if !keeping || diskFrozen {
             return await Task.detached(priority: .userInitiated) {
                 let secrets = Self.orderedSecrets(Vault.allStrings())
-                return MemoryRecall.searchDeep(
-                    query: rawQuery,
-                    records: fallbackRecords,
-                    excludedIDs: retractedIDs,
-                    suppressedHashes: suppressedHashes,
-                    existingSurfaceTexts: fallbackSurfaceTexts,
-                    secrets: secrets,
-                    config: config
-                )
+                switch scope {
+                case .deepOnly:
+                    return MemoryRecall.searchDeep(
+                        query: rawQuery,
+                        records: fallbackRecords,
+                        excludedIDs: retractedIDs,
+                        suppressedHashes: suppressedHashes,
+                        existingSurfaceTexts: fallbackSurfaceTexts,
+                        secrets: secrets,
+                        config: config
+                    )
+                case .allActive:
+                    return MemoryRecall.searchAll(
+                        query: rawQuery,
+                        records: fallbackRecords,
+                        excludedIDs: retractedIDs,
+                        suppressedHashes: suppressedHashes,
+                        secrets: secrets,
+                        config: config
+                    )
+                }
             }.value
         }
 
         return await withCheckedContinuation { continuation in
             queue.async { [weak self] in
-                guard let self, !Disk.frozen else {
+                guard let self else {
+                    continuation.resume(returning: [])
+                    return
+                }
+                if scope == .deepOnly && Disk.frozen {
                     continuation.resume(returning: [])
                     return
                 }
                 let hits = self.performTurnRecallLocked(
+                    scope: scope,
                     query: rawQuery,
                     retractedIDs: retractedIDs,
                     suppressedHashes: suppressedHashes,
-                    recordUsage: recordUsage,
+                    recordUsage: recordUsage && !Disk.frozen,
                     config: config
                 )
                 continuation.resume(returning: hits)
@@ -181,6 +264,7 @@ final class MemoryRecallBridge: @unchecked Sendable {
     }
 
     private func performTurnRecallLocked(
+        scope: RecallScope = .deepOnly,
         query: String,
         retractedIDs: Set<String>,
         suppressedHashes: Set<String>,
@@ -190,31 +274,56 @@ final class MemoryRecallBridge: @unchecked Sendable {
         loadStatsLockedIfNeeded()
         let records = MemoryStoreBridge.shared.recordsSnapshot()
         let secrets = Self.orderedSecrets(Vault.allStrings())
-        let surfaceTexts = records
-            .filter { $0.deletedAtMs == nil && ($0.layer == .pinned || $0.layer == .surface || $0.pinned) }
-            .map(\.text)
+        let surfaceTexts = scope == .deepOnly
+            ? records
+                .filter { $0.deletedAtMs == nil && ($0.layer == .pinned || $0.layer == .surface || $0.pinned) }
+                .map(\.text)
+            : []
 
         let hits: [MemoryRecall.Hit]
         do {
             try index.sync(records: records, secrets: secrets)
-            hits = try index.searchDeep(
-                query: query,
-                surfaceTexts: surfaceTexts,
-                excludedIDs: retractedIDs,
-                suppressedHashes: suppressedHashes,
-                secrets: secrets,
-                config: config
-            )
+            switch scope {
+            case .deepOnly:
+                hits = try index.searchDeep(
+                    query: query,
+                    surfaceTexts: surfaceTexts,
+                    excludedIDs: retractedIDs,
+                    suppressedHashes: suppressedHashes,
+                    secrets: secrets,
+                    config: config
+                )
+            case .allActive:
+                hits = try index.searchAll(
+                    query: query,
+                    excludedIDs: retractedIDs,
+                    suppressedHashes: suppressedHashes,
+                    secrets: secrets,
+                    config: config
+                )
+            }
         } catch {
-            hits = MemoryRecall.searchDeep(
-                query: query,
-                records: records,
-                excludedIDs: retractedIDs,
-                suppressedHashes: suppressedHashes,
-                existingSurfaceTexts: surfaceTexts,
-                secrets: secrets,
-                config: config
-            )
+            switch scope {
+            case .deepOnly:
+                hits = MemoryRecall.searchDeep(
+                    query: query,
+                    records: records,
+                    excludedIDs: retractedIDs,
+                    suppressedHashes: suppressedHashes,
+                    existingSurfaceTexts: surfaceTexts,
+                    secrets: secrets,
+                    config: config
+                )
+            case .allActive:
+                hits = MemoryRecall.searchAll(
+                    query: query,
+                    records: records,
+                    excludedIDs: retractedIDs,
+                    suppressedHashes: suppressedHashes,
+                    secrets: secrets,
+                    config: config
+                )
+            }
         }
 
         if recordUsage, !hits.isEmpty {

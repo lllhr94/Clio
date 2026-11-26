@@ -64,6 +64,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
     }
 
     private let store: MemoryStore
+    let revisionStore: MemoryRevisionStore
     private let teamRoot: URL
     private let mirrorRoot: URL
     private let commitQueue = DispatchQueue(label: "clio.memory-store.commit", qos: .userInitiated)
@@ -91,6 +92,11 @@ final class MemoryStoreBridge: @unchecked Sendable {
         self.store = MemoryStore(databaseURL: databaseURL)
         self.teamRoot = teamRoot
         self.mirrorRoot = mirrorRoot
+        self.revisionStore = MemoryRevisionStore(
+            memoryFileURL: teamRoot.appendingPathComponent(Self.memoryFileName),
+            retractedFileURL: teamRoot.appendingPathComponent(Self.retractedFileName),
+            revisionsDirectoryURL: teamRoot.appendingPathComponent("memory-revisions", isDirectory: true)
+        )
     }
 
     // MARK: - Synchronous Shadow Reads (Thread-Safe)
@@ -103,6 +109,30 @@ final class MemoryStoreBridge: @unchecked Sendable {
         stateLock.lock()
         defer { stateLock.unlock() }
         return pinnedIDs
+    }
+
+    func tombstoneHashesSnapshot() -> Set<String> {
+        var combined = stateLock.withLock { Set(tombstoneShadow.keys) }
+        let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
+        combined.formUnion(loadRetractedHashes(at: retractedURL))
+        return combined
+    }
+
+    func withBackupBarrier<T>(_ work: () throws -> T) rethrows -> T {
+        if self === MemoryStoreBridge.shared {
+            return try commitQueue.sync {
+                try queue.sync {
+                    try ExperienceStoreBridge.shared.queue.sync {
+                        try work()
+                    }
+                }
+            }
+        }
+        return try commitQueue.sync {
+            try queue.sync {
+                try work()
+            }
+        }
     }
 
     func recordsSnapshot(layer: MemoryLayer? = nil) -> [MemoryRecord] {
@@ -141,8 +171,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
         stateLock.withLock {
             if !initialBots.isEmpty { botSummaries = initialBots }
         }
-        return queue.sync {
-            bootstrapOnLaunchLocked()
+        return commitQueue.sync {
+            queue.sync {
+                bootstrapOnLaunchLocked()
+            }
         }
     }
 
@@ -151,15 +183,25 @@ final class MemoryStoreBridge: @unchecked Sendable {
         let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
         let secrets = Self.orderedSecrets(Vault.allStrings())
 
-        let diskLoad = loadCanonicalBookFromDisk(at: memoryURL)
         let retractedHashes = loadRetractedHashes(at: retractedURL)
-
-        let pendingRebuild = UserDefaults.standard.bool(forKey: Self.pendingRestoreRebuildDefaultsKey)
+        var pendingRebuild = UserDefaults.standard.bool(forKey: Self.pendingRestoreRebuildDefaultsKey)
         if pendingRebuild {
             UserDefaults.standard.removeObject(forKey: Self.pendingRestoreRebuildDefaultsKey)
+        }
+        if !Disk.frozen && !pendingRebuild {
+            if let recovery = try? revisionStore.recoverPendingJournalIfNeeded(
+                extraRetractedHashes: retractedHashes,
+                nowMs: Now.ms
+            ), case .rolledBackToSnapshot(_, _) = recovery {
+                pendingRebuild = true
+            }
+        }
+        if pendingRebuild {
             store.destroyFiles()
             MemoryMarkdownMirror.clearMirrors(mirrorsRoot: mirrorRoot)
         }
+
+        let diskLoad = loadCanonicalBookFromDisk(at: memoryURL)
 
         let incomingBook: CanonicalMemoryBook?
         let initialDigest: String?
@@ -421,6 +463,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
     private func performSerializedCommitOnCommitQueue(
         _ book: MemoryBook,
         mutation: MemoryCommitMutation,
+        snapshotReason: String? = nil,
         suppressedHashes: Set<String>,
         bots: [BotInfo],
         mainBotId: String?,
@@ -447,13 +490,27 @@ final class MemoryStoreBridge: @unchecked Sendable {
             nowMs: nowMs
         )
 
-        let memoryURL = teamRoot.appendingPathComponent(Self.memoryFileName)
-        let writtenDigest = try writeCanonicalBookToDisk(prepared.canonical, at: memoryURL)
+        let effectiveReason: String?
+        if let snapshotReason {
+            effectiveReason = snapshotReason
+        } else if case .importBatch = mutation {
+            effectiveReason = "import"
+        } else {
+            effectiveReason = nil
+        }
+
+        let committedResult = try revisionStore.commitWithJournal(
+            prepared.canonical,
+            snapshotReason: effectiveReason,
+            nowMs: nowMs
+        )
+        let writtenCanonical = committedResult.book
+        let writtenDigest = committedResult.digest
 
         let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
         let existingRetracted = loadRetractedHashes(at: retractedURL)
         syncRetractedHashesFileIfNeeded(
-            Set(prepared.canonical.suppressedFlushHashes),
+            Set(writtenCanonical.suppressedFlushHashes),
             existing: existingRetracted,
             at: retractedURL
         )
@@ -463,7 +520,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self, !Disk.frozen else { return }
             self.applyBackgroundPersist(
-                canonical: prepared.canonical,
+                canonical: writtenCanonical,
                 liveRecords: prepared.liveRecords,
                 bots: summaries,
                 secrets: orderedSecrets,
@@ -501,6 +558,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
     func commitAppBook(
         _ book: MemoryBook,
         mutation: MemoryCommitMutation = .none,
+        snapshotReason: String? = nil,
         suppressedHashes: Set<String>,
         promptState: MemorySafety.PromptState? = nil,
         bots: [BotInfo],
@@ -511,6 +569,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
             try performSerializedCommitOnCommitQueue(
                 book,
                 mutation: mutation,
+                snapshotReason: snapshotReason,
                 suppressedHashes: suppressedHashes,
                 bots: bots,
                 mainBotId: mainBotId,
@@ -526,6 +585,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
     func commitAppBookAsync(
         _ book: MemoryBook,
         mutation: MemoryCommitMutation = .none,
+        snapshotReason: String? = nil,
         suppressedHashes: Set<String>,
         promptState: MemorySafety.PromptState? = nil,
         bots: [BotInfo],
@@ -542,6 +602,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
                     let result = try self.performSerializedCommitOnCommitQueue(
                         book,
                         mutation: mutation,
+                        snapshotReason: snapshotReason,
                         suppressedHashes: suppressedHashes,
                         bots: bots,
                         mainBotId: mainBotId,
@@ -1359,6 +1420,151 @@ final class MemoryStoreBridge: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self, !Disk.frozen else { return }
             try? self.store.checkpoint()
+        }
+    }
+
+    // MARK: - Revision Snapshots & Health
+
+    func revisionHealthSnapshot() -> MemoryRevisionHealth {
+        revisionStore.readHealth()
+    }
+
+    func recordReviewFailure(message: String) {
+        queue.async { [revisionStore] in
+            _ = revisionStore.recordReviewFailure(message: message, atMs: Now.ms)
+        }
+    }
+
+    func recordReviewSuccess() {
+        queue.async { [revisionStore] in
+            _ = revisionStore.recordReviewSuccess(atMs: Now.ms)
+        }
+    }
+
+    func listRevisionSnapshotsOffMain() async -> [MemoryRevisionSnapshot] {
+        await withCheckedContinuation { continuation in
+            commitQueue.async { [revisionStore] in
+                continuation.resume(returning: revisionStore.listSnapshots())
+            }
+        }
+    }
+
+    func saveManualRevisionSnapshotOffMain() async throws -> MemoryRevisionSnapshot {
+        try await withCheckedThrowingContinuation { continuation in
+            commitQueue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: TeamError(message: "保存快照已取消。"))
+                    return
+                }
+                guard !Disk.frozen else {
+                    continuation.resume(throwing: TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存快照。"))
+                    return
+                }
+                let memoryURL = self.teamRoot.appendingPathComponent(Self.memoryFileName)
+                guard case .decoded(let currentBook, _) = self.loadCanonicalBookFromDisk(at: memoryURL) else {
+                    continuation.resume(throwing: TeamError(message: "当前没有可保存的记忆档案。"))
+                    return
+                }
+                do {
+                    let snap = try self.revisionStore.saveManualSnapshot(currentBook, reason: "manual", nowMs: Now.ms)
+                    continuation.resume(returning: snap)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func restoreRevisionSnapshotOffMain(
+        id: String,
+        bots: [BotInfo],
+        mainBotId: String?
+    ) async throws -> (book: MemoryBook, preRestore: MemoryRevisionSnapshot?) {
+        let summaries = Self.makeBotSummaries(bots: bots, mainBotId: mainBotId)
+        let secrets = Self.orderedSecrets(Vault.allStrings())
+        let isShared = (self === MemoryStoreBridge.shared)
+        return try await withCheckedThrowingContinuation { continuation in
+            commitQueue.async { [weak self] in
+                guard let self else {
+                    continuation.resume(throwing: TeamError(message: "恢复快照已取消。"))
+                    return
+                }
+                self.queue.sync {
+                    guard !Disk.frozen else {
+                        continuation.resume(throwing: TeamError(message: "刚恢复了备份，重新打开 Clio 后才能恢复快照。"))
+                        return
+                    }
+                    guard !self.stateLock.withLock({ self.canonicalLoadFailed }) else {
+                        continuation.resume(throwing: TeamError(message: "记忆文件暂不可读，已跳过恢复以防数据损坏。"))
+                        return
+                    }
+                    do {
+                        let extraTombstones = self.tombstoneHashesSnapshot()
+                        let restored = try self.revisionStore.restoreSnapshot(
+                            id: id,
+                            extraRetractedHashes: extraTombstones,
+                            nowMs: Now.ms
+                        )
+                        let retractedURL = self.teamRoot.appendingPathComponent(Self.retractedFileName)
+                        let existingRetracted = self.loadRetractedHashes(at: retractedURL)
+                        self.syncRetractedHashesFileIfNeeded(
+                            Set(restored.book.suppressedFlushHashes),
+                            existing: existingRetracted,
+                            at: retractedURL
+                        )
+
+                        // Reset SQLite index and rehydrate solely from the restored canonical snapshot.
+                        self.store.destroyFiles()
+                        _ = try self.store.openOrRecover()
+                        let reconciled = try self.store.reconcile(
+                            book: restored.book,
+                            secrets: secrets,
+                            nowMs: Now.ms,
+                            jsonDigest: restored.digest
+                        )
+                        try? self.store.checkpoint()
+
+                        let liveRecords = try self.store.list(layer: nil, includeDeleted: false, secrets: secrets)
+                        let appBook = Self.toAppMemoryBook(reconciled)
+                        self.updateShadowState(
+                            liveRecords: liveRecords,
+                            tombstones: reconciled.tombstones,
+                            appBook: appBook
+                        )
+                        if !Disk.frozen {
+                            MemoryMarkdownMirror.sync(
+                                records: liveRecords,
+                                bots: summaries,
+                                secrets: secrets,
+                                mirrorsRoot: self.mirrorRoot
+                            )
+                        }
+                        if isShared {
+                            Task.detached(priority: .utility) {
+                                await ExperienceStoreBridge.shared.rebuildFromCanonicalOffMain()
+                            }
+                            MemoryRecallBridge.shared.scheduleSync()
+                        }
+                        continuation.resume(returning: (book: appBook, preRestore: restored.preRestoreSnapshot))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
+    }
+
+    func runColdStartRecoveryForTesting(
+        extraRetractedHashes: Set<String> = [],
+        nowMs: Double = Now.ms
+    ) throws -> MemoryJournalRecoveryOutcome {
+        try commitQueue.sync {
+            try queue.sync {
+                try revisionStore.recoverPendingJournalIfNeeded(
+                    extraRetractedHashes: extraRetractedHashes,
+                    nowMs: nowMs
+                )
+            }
         }
     }
 

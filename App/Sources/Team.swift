@@ -171,6 +171,7 @@ final class TeamModel: ObservableObject {
     let approvalReceipts = ApprovalReceiptBook()
     let hostBindings = HostBindingBook()
     private var hostBindingObserver: AnyCancellable?
+    private var mountedFoldersObserver: AnyCancellable?
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
     @Published var laters: [Later] = []
     /// When each running conversation last heard anything from its model.
@@ -263,6 +264,16 @@ final class TeamModel: ObservableObject {
                 self.cancelStaleWorkplaceApprovals(executionChat: key, oldHostID: change.old)
             }
         }
+        mountedFoldersObserver = NotificationCenter.default.publisher(for: MountedFolders.changed)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let names = MountedFolders.all().map(\.name)
+                let summary = names.isEmpty
+                    ? "当前没有外部挂载文件夹。"
+                    : "外部挂载文件夹已更新：\(names.map { "书案/\(MountedFolders.virtualFolder)/\($0)/" }.joined(separator: "、"))"
+                self.notifyLivePromptEnvChange(.init(kind: .workplaceMounted(summary: summary)))
+            }
         // Screenshots start straight in the demo, before the first frame, so the welcome never shows.
         if let shot = Shots.name {
             loading = false
@@ -2007,6 +2018,30 @@ final class TeamModel: ObservableObject {
         all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
         all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
         all.append(RecallTool { [weak self] words in await self?.recall(words) ?? [] })
+        let experienceSource: ExperienceWriteSource = helping ? .subtask : .mainChat
+        all.append(RecordExperienceTool(source: experienceSource) { title, content, tags, source in
+            await ExperienceStoreBridge.shared.recordTool(title: title, content: content, tags: tags, source: source)
+        })
+        all.append(RecallExperienceTool { query, limit in
+            await ExperienceStoreBridge.shared.searchTool(query: query, limit: limit)
+        })
+        all.append(CurrentStatusTool { [weak self] in
+            await MainActor.run {
+                let activePlace = workplace ?? self?.place(of: key) ?? .desk
+                let mounts = activePlace == .desk ? MountedFolders.all() : []
+                let summary: String
+                if mounts.isEmpty {
+                    summary = activePlace.title
+                } else {
+                    summary = "\(activePlace.title)（已挂载：\(mounts.map(\.name).joined(separator: "、"))）"
+                }
+                let activeTasks = self?.doing.count ?? 0
+                return CurrentStatusSnapshot.capture(
+                    workplaceSummary: summary,
+                    activeBackgroundTasks: activeTasks
+                )
+            }
+        })
         all.append(SearchHistoryTool(helping: helping) { [weak self] query, includeAllChats, limit in
             await self?.searchHistory(query: query, chatKey: key, includeAllChats: includeAllChats, helping: helping, limit: limit)
                 ?? "当前无法检索历史记录。"
@@ -2542,7 +2577,7 @@ extension TeamModel {
     }
 
     private func reviewConversations(now: Date, includeLeaves: Bool) async {
-        let today = Tide.day(of: now)
+        let today = LogicalDay.day(of: now)
         if memoryBook.budgetDay == today, memoryBook.requests >= MemoryReviewRules.requestsPerDay { return }
         if memoryBook.reviewFromDay == nil {
             var book = memoryBook
@@ -2554,7 +2589,7 @@ extension TeamModel {
                 return
             }
         }
-        let cutoff = max(memoryBook.reviewFromDay ?? today, Tide.day(of: now.addingTimeInterval(-7 * 86_400)))
+        let cutoff = max(memoryBook.reviewFromDay ?? today, LogicalDay.daysBack(7, from: now))
         let keys = bots.map { Self.key(bot: $0.id) } + rooms.map { Self.key(room: $0.id) }
         var remaining = includeLeaves ? 8 : 2
         memoryReviewAttempts = memoryReviewAttempts.filter { now.timeIntervalSince($0.value) < 3600 }
@@ -2578,7 +2613,10 @@ extension TeamModel {
                     try await review(source, day: batch.day, lines: batch.lines, cutoff: cutoff)
                 } catch {
                     // Network/model/disk failures leave every entry eligible for another attempt.
-                    if !Task.isCancelled { memoryReviewAttempts[source.id] = now }
+                    if !Task.isCancelled {
+                        memoryReviewAttempts[source.id] = now
+                        MemoryStoreBridge.shared.recordReviewFailure(message: error.localizedDescription)
+                    }
                 }
             }
         }
@@ -2665,7 +2703,7 @@ extension TeamModel {
     }
 
     private nonisolated static func reviewDay(_ entry: Entry) -> String {
-        Tide.day(of: Date(timeIntervalSince1970: entry.at / 1000))
+        LogicalDay.day(of: Date(timeIntervalSince1970: entry.at / 1000))
     }
 
     private struct ReviewPromptPrep {
@@ -2741,7 +2779,8 @@ extension TeamModel {
         book.reviews.insert(MemoryReviewLog(id: UUID(), at: Date(), day: day, conversation: source.name,
                                             added: changes.added, merged: changes.merged), at: 0)
         book.reviews = Array(book.reviews.prefix(100))
-        try commitMemoryBook(book)
+        try commitMemoryBook(book, snapshotReason: "nightly")
+        MemoryStoreBridge.shared.recordReviewSuccess()
         invalidateMemoryPromptCache()
     }
 
@@ -2760,7 +2799,7 @@ extension TeamModel {
         }
         try Task.checkCancellation()
         guard let (endpoint, model, key) = chosen else { throw CancellationError() }
-        let day = Tide.day(of: Date())
+        let day = LogicalDay.day(of: Date())
         var book = memoryBook
         if book.budgetDay != day {
             book.budgetDay = day

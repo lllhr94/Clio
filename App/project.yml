@@ -124,6 +124,27 @@ targets:
           - -lresolv
         "EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]": DenKernel.m
         "EXCLUDED_SOURCE_FILE_NAMES[sdk=iphoneos*]": DenKernelStub.m
+  ClioAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Clio
+      - package: AgentKit
+        product: AgentKit
+      - package: AgentKit
+        product: Prose
+      - package: AgentKit
+        product: Craft
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.lllhr94.clio.tests
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: "NO"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Clio.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Clio"
+        BUNDLE_LOADER: "$(TEST_HOST)"
   ClioWidget:
     type: app-extension
     platform: iOS
@@ -145,3 +166,13 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGNING_ALLOWED: "NO"
         SKIP_INSTALL: "YES"
+schemes:
+  Clio:
+    build:
+      targets:
+        Clio: all
+        ClioWidget: all
+        ClioAppTests: [test]
+    test:
+      targets:
+        - ClioAppTests

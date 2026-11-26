@@ -706,7 +706,8 @@ public final class MemoryStore: @unchecked Sendable {
 
         return try performWriteTransactionLocked {
             try reconcileLocked(book: book, orderedSecrets: ordered, nowMs: nowMs, jsonDigest: jsonDigest)
-            let snapshot = try snapshotBookLocked()
+            var snapshot = try snapshotBookLocked()
+            snapshot.generation = max(snapshot.generation, book.generation)
             _needsBootstrapFromCanonical = false
             return snapshot
         }

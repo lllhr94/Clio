@@ -159,14 +159,14 @@ enum Backup {
 
         var archivedEndpoints: [Endpoint]?
         let supportReal = support.resolvingSymlinksInPath().standardizedFileURL.path
-        for folder in folders {
+        func packFolder(_ folder: String) throws {
             let base = support.appendingPathComponent(folder, isDirectory: true)
-            guard isRealDirectory(base) else { continue }
+            guard isRealDirectory(base) else { return }
             guard let walker = manager.enumerator(
                 at: base,
                 includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey],
                 options: []
-            ) else { continue }
+            ) else { return }
             for case let file as URL in walker {
                 var st = stat()
                 guard lstat(file.path, &st) == 0 else { continue }
@@ -199,6 +199,16 @@ enum Backup {
                     archivedEndpoints = (try? JSONDecoder().decode(TeamSettings.self, from: data))?.endpoints
                 }
                 try autoreleasepool { try add(relative, data) }
+            }
+        }
+
+        for folder in folders {
+            if folder == "Team" {
+                try MemoryStoreBridge.shared.withBackupBarrier {
+                    try packFolder(folder)
+                }
+            } else {
+                try packFolder(folder)
             }
         }
 
@@ -436,7 +446,9 @@ enum Backup {
                 try verifyNoSymlinks(under: stagedFolder, root: staging)
             }
         }
-        stripDisallowedStagedArtifacts(in: staging.appendingPathComponent("Team", isDirectory: true))
+        var strippedStagedMounts = stripDisallowedStagedArtifacts(in: staging.appendingPathComponent("Team", isDirectory: true))
+        let archiveContainedMounts = items.contains { $0.path.lowercased() == "team/mounts.json" }
+        let localRetractedHashes = collectLocalRetractedHashes()
 
         let skillsStaging = staging.appendingPathComponent("Skills.staging", isDirectory: true)
         var hasStagedSkills = false
@@ -463,6 +475,12 @@ enum Backup {
                 count += 1
             }
         }
+
+        let stagedTeam = staging.appendingPathComponent("Team", isDirectory: true)
+        if stripDisallowedStagedArtifacts(in: stagedTeam) {
+            strippedStagedMounts = true
+        }
+        applyTombstoneUnionToStagedTeam(stagedTeam: stagedTeam, localRetractedHashes: localRetractedHashes)
 
         // Verify staged Skills directory and destination Workspace.root/技能 before committing.
         let workspaceRoot = Workspace.root
@@ -562,6 +580,9 @@ enum Backup {
         }
 
         committed = true
+        if archiveContainedMounts || strippedStagedMounts {
+            UserDefaults.standard.set(true, forKey: "chat.backupStrippedMounts")
+        }
         try? manager.removeItem(at: old)
         TeamModel.discardCredentials(from: previousEndpoints, keeping: preparedEndpoints)
         if hasStagedSkills {
@@ -672,24 +693,107 @@ enum Backup {
         }
     }
 
-    /// Removes any SQLite / WAL / SHM artifacts that should never stay inside `Team/` across restores
-    /// while preserving `Team/secrets.json` (Vault metadata belongs exclusively to the local device).
-    private static func stripDisallowedStagedArtifacts(in teamStaging: URL) {
+    /// Removes any SQLite / WAL / SHM artifacts, journal files, or device-local mount tables (`mounts.json`)
+    /// that should never stay inside `Team/` across restores while preserving `Team/secrets.json`
+    /// (Vault metadata belongs exclusively to the local device) and `Team/experiences.json` / `Team/memory-revisions/rev-*.json`.
+    @discardableResult
+    static func stripDisallowedStagedArtifacts(in teamStaging: URL) -> Bool {
         let manager = FileManager.default
-        guard manager.fileExists(atPath: teamStaging.path) else { return }
-        guard let walker = manager.enumerator(
+        guard manager.fileExists(atPath: teamStaging.path) else { return false }
+        let mountsURL = teamStaging.appendingPathComponent("mounts.json")
+        var strippedMounts = manager.fileExists(atPath: mountsURL.path)
+        var toDelete: [URL] = []
+        if let walker = manager.enumerator(
             at: teamStaging,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: []
-        ) else { return }
-        var toDelete: [URL] = []
-        for case let entry as URL in walker {
-            if BackupArchivePolicy.isSQLiteOrCacheArtifact(entry.lastPathComponent) {
-                toDelete.append(entry)
+        ) {
+            for case let entry as URL in walker {
+                let name = entry.lastPathComponent.lowercased()
+                if name == "mounts.json" {
+                    strippedMounts = true
+                    toDelete.append(entry)
+                } else if name == "trash-index.json" || BackupArchivePolicy.isSQLiteOrCacheArtifact(entry.lastPathComponent) {
+                    toDelete.append(entry)
+                }
             }
         }
         for item in toDelete {
             try? manager.removeItem(at: item)
+        }
+        return strippedMounts
+    }
+
+    /// Collects retracted/tombstoned SHA-256 digests from the live device before swapping in a restored backup.
+    private static func collectLocalRetractedHashes() -> Set<String> {
+        var hashes = MemoryStoreBridge.shared.tombstoneHashesSnapshot()
+        let liveTeam = support.appendingPathComponent("Team", isDirectory: true)
+        let retractedURL = liveTeam.appendingPathComponent("memory-retracted.json")
+        if let data = try? Data(contentsOf: retractedURL),
+           let list = try? JSONDecoder().decode([String].self, from: data) {
+            hashes.formUnion(list.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        }
+        let expURL = liveTeam.appendingPathComponent("experiences.json")
+        if let data = try? Data(contentsOf: expURL),
+           let expBook = try? JSONDecoder().decode(CanonicalExperienceBook.self, from: data) {
+            hashes.formUnion(expBook.retractedHashes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        }
+        return hashes
+    }
+
+    /// Unions local retracted/tombstone hashes into the staged restore directory so a restored older archive
+    /// can never resurrect facts or experiences deleted on this device.
+    static func applyTombstoneUnionToStagedTeam(
+        stagedTeam: URL,
+        localRetractedHashes: Set<String>,
+        nowMs: Double = Now.ms
+    ) {
+        let normalizedLocal = Set(
+            localRetractedHashes
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { MemorySafety.isSHA256Hex($0) }
+        )
+        guard !normalizedLocal.isEmpty, FileManager.default.fileExists(atPath: stagedTeam.path) else {
+            return
+        }
+
+        let stagedRetractedURL = stagedTeam.appendingPathComponent("memory-retracted.json")
+        var mergedHashes = normalizedLocal
+        if let existingData = try? Data(contentsOf: stagedRetractedURL),
+           let existingList = try? JSONDecoder().decode([String].self, from: existingData) {
+            mergedHashes.formUnion(
+                existingList
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                    .filter { MemorySafety.isSHA256Hex($0) }
+            )
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let encodedRetracted = try? encoder.encode(mergedHashes.sorted()) {
+            try? encodedRetracted.write(to: stagedRetractedURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
+
+        let stagedMemoryURL = stagedTeam.appendingPathComponent("memory.json")
+        if let memData = try? Data(contentsOf: stagedMemoryURL),
+           let decodedBook = try? CanonicalMemoryBook.decodeFlexible(from: memData) {
+            let pruned = MemoryRevisionStore.applyTombstoneUnion(
+                to: decodedBook,
+                retractedHashes: mergedHashes,
+                minimumGeneration: decodedBook.generation,
+                nowMs: nowMs
+            )
+            if let encodedMem = try? encoder.encode(pruned) {
+                try? encodedMem.write(to: stagedMemoryURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            }
+        }
+
+        let stagedExpURL = stagedTeam.appendingPathComponent("experiences.json")
+        if let expData = try? Data(contentsOf: stagedExpURL),
+           var expBook = try? JSONDecoder().decode(CanonicalExperienceBook.self, from: expData) {
+            expBook.mergeRetractionsAndPrune(hashes: mergedHashes, nowMs: nowMs)
+            if let encodedExp = try? encoder.encode(expBook) {
+                try? encodedExp.write(to: stagedExpURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            }
         }
     }
 }

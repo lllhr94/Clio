@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(NaturalLanguage)
+import NaturalLanguage
+#endif
 
 /// Normalizes and tokenizes CJK, ASCII, and mixed conversation text for SQLite FTS5 indexing and queries.
 public enum MemoryIndexTokenizer {
@@ -110,6 +113,35 @@ public enum MemoryIndexTokenizer {
         return IndexedTokens(
             bodyTokens: body.joined(separator: " "),
             cjkUnigrams: unigrams.joined(separator: " ")
+        )
+    }
+
+    /// Hybrid FTS5 tokenization combining `NLTokenizer(unit: .word)` word segmentation
+    /// with CJK bigrams & ASCII normalization so multi-character Chinese phrases rank cleanly
+    /// while preserving exact substring recall.
+    public static func hybridIndexTokens(for text: String) -> IndexedTokens {
+        let base = indexTokens(for: text)
+        var bodyTokens = base.bodyTokens.isEmpty
+            ? []
+            : base.bodyTokens.split(separator: " ").map(String.init)
+        var seen = Set(bodyTokens)
+
+        #if canImport(NaturalLanguage)
+        let normalized = normalize(text)
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = normalized
+        tokenizer.enumerateTokens(in: normalized.startIndex..<normalized.endIndex) { range, _ in
+            let token = String(normalized[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !token.isEmpty, seen.insert(token).inserted {
+                bodyTokens.append(token)
+            }
+            return true
+        }
+        #endif
+
+        return IndexedTokens(
+            bodyTokens: bodyTokens.joined(separator: " "),
+            cjkUnigrams: base.cjkUnigrams
         )
     }
 

@@ -323,7 +323,8 @@ extension TeamModel {
     @discardableResult
     func commitMemoryBook(
         _ book: MemoryBook,
-        mutation: MemoryCommitMutation = .none
+        mutation: MemoryCommitMutation = .none,
+        snapshotReason: String? = nil
     ) throws -> MemoryBook {
         guard keeping, !Disk.frozen else {
             throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
@@ -337,6 +338,7 @@ extension TeamModel {
         let committed = try MemoryStoreBridge.shared.commitAppBook(
             book,
             mutation: mutation,
+            snapshotReason: snapshotReason,
             suppressedHashes: suppressed,
             promptState: memoryPromptState,
             bots: bots,

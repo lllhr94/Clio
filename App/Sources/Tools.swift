@@ -1,4 +1,5 @@
 import AgentKit
+import Craft
 import EventKit
 import Foundation
 import UserNotifications
@@ -291,6 +292,94 @@ struct RecallTool: AgentTool {
         let words = arguments["words"]?.string ?? ""
         let found = await find(words)
         return ToolOutput(found.isEmpty ? "拾遗里没有和「\(words)」有关的事。" : "找到了：\n" + found.map { "- \($0)" }.joined(separator: "\n"))
+    }
+}
+
+/// Saves a reusable workflow, troubleshooting lesson, or command recipe into Clio's experience store.
+struct RecordExperienceTool: AgentTool {
+    let source: ExperienceWriteSource
+    let save: @Sendable (_ title: String, _ content: String, _ tags: [String], _ source: ExperienceWriteSource) async -> ToolOutput
+
+    var spec: ToolSpec {
+        ToolSpec(
+            name: "record_experience",
+            description: "把一次真正踩坑摸索出来、以后可复用的做法、排查经验或稳定命令写进经验库（供今后类似任务快速检索）。不要把具体项目代码或一次性的个人闲聊写入经验库。",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "title": ["type": "string", "description": "简短标题，概括经验主题"],
+                    "content": ["type": "string", "description": "可复用的步骤、关键参数或避坑要点"],
+                    "tags": [
+                        "type": "array",
+                        "items": ["type": "string"],
+                        "description": "可选标签（如 python、ffmpeg、excel）",
+                    ],
+                ],
+                "required": ["title", "content"],
+            ]
+        )
+    }
+
+    func label(for arguments: JSONValue) -> String {
+        "记经验：\(arguments["title"]?.string ?? "")"
+    }
+
+    func run(_ arguments: JSONValue) async throws -> ToolOutput {
+        guard source.isAllowedToPersist else {
+            return ToolOutput("子任务或后台协助过程中不允许改写经验库。", isError: true)
+        }
+        let title = arguments["title"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let content = arguments["content"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !content.isEmpty else {
+            return ToolOutput("没有写经验正文，未保存。", isError: true)
+        }
+        let tags: [String]
+        if let rawTags = arguments["tags"]?.array {
+            tags = rawTags.compactMap { $0.string?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        } else {
+            tags = []
+        }
+        return await save(title.isEmpty ? String(content.prefix(24)) : title, content, tags, source)
+    }
+}
+
+/// Searches previously saved reusable workflows and solutions without touching any files or mutating chat state.
+struct RecallExperienceTool: AgentTool {
+    var isReadOnlySafe: Bool { true }
+    let search: @Sendable (_ query: String, _ limit: Int) async -> [ExperienceHit]
+
+    var spec: ToolSpec {
+        ToolSpec(
+            name: "recall_experience",
+            description: "按关键词在经验库里检索以前积累的可复用做法、避坑经验或排查流程。",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "query": ["type": "string", "description": "检索关键词或问题现象"],
+                    "limit": ["type": "integer", "description": "返回条数上限（默认 5）"],
+                ],
+                "required": ["query"],
+            ]
+        )
+    }
+
+    func label(for arguments: JSONValue) -> String {
+        "查经验：\(arguments["query"]?.string ?? "")"
+    }
+
+    func run(_ arguments: JSONValue) async throws -> ToolOutput {
+        let query = arguments["query"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !query.isEmpty else { return ToolOutput("请给出要检索的关键词。") }
+        let limit = min(12, max(1, arguments["limit"]?.int ?? 5))
+        let hits = await search(query, limit)
+        guard !hits.isEmpty else {
+            return ToolOutput("经验库里暂时没有和「\(query)」相关的记录。")
+        }
+        let lines = hits.map { hit -> String in
+            let tagsText = hit.tags.isEmpty ? "" : "（标签：\(hit.tags.joined(separator: "、"))）"
+            return "- **\(hit.title)**\(tagsText)\n  \(hit.content)"
+        }
+        return ToolOutput("找到 \(hits.count) 条相关经验：\n" + lines.joined(separator: "\n"))
     }
 }
 

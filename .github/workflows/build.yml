@@ -102,6 +102,44 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build 2>&1 | tee xcodebuild.log | grep -iE "error|failed|BUILD|undefined|not found" | grep -v "^\s*$" | tail -n 150
 
+      - name: Run ClioAppTests (simulator)
+        env:
+          SWIFTTERM_BUILD_BRANCH: main
+          SWIFTTERM_BUILD_TAG: "1.20.0"
+          SWIFTTERM_BUILD_COMMIT: release
+          SWIFTTERM_BUILD_DIRTY: "false"
+        run: |
+          set -o pipefail
+          UDID="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)["devices"]
+          phones = [d for runtime, ds in data.items() if "iOS" in runtime for d in ds if d["name"].startswith("iPhone") and "Pro" in d["name"] and "Max" not in d["name"]]
+          phones = phones or [d for runtime, ds in data.items() if "iOS" in runtime for d in ds if d["name"].startswith("iPhone")]
+          print(phones[-1]["udid"])
+          ')"
+          echo "ClioAppTests simulator: $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          set +e
+          xcodebuild \
+            -project Clio.xcodeproj \
+            -scheme Clio \
+            -configuration Debug \
+            -destination "id=$UDID" \
+            -only-testing:ClioAppTests \
+            -derivedDataPath simtestbuild \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            test > simtestbuild.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            grep -n -E "error:|failed|XCTAssert|XCTFail|Fatal error|Testing failed|BUILD FAILED" simtestbuild.log | head -n 120 || true
+            echo "--- simtest tail ---"
+          fi
+          tail -n 80 simtestbuild.log || true
+          exit "$status"
+
       - name: Package the IPA
         run: |
           APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"

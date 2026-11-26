@@ -263,6 +263,7 @@ public struct CanonicalMemoryBook: Codable, Equatable, Sendable {
     public var diaryRequests: Int
     public var suppressedFlushHashes: [String]
     public var tombstones: [MemoryTombstone]
+    public var generation: UInt64
 
     public init(
         memories: [CanonicalMemoryItem] = [],
@@ -274,7 +275,8 @@ public struct CanonicalMemoryBook: Codable, Equatable, Sendable {
         requests: Int = 0,
         diaryRequests: Int = 0,
         suppressedFlushHashes: [String] = [],
-        tombstones: [MemoryTombstone] = []
+        tombstones: [MemoryTombstone] = [],
+        generation: UInt64 = 0
     ) {
         self.memories = memories
         self.archived = archived
@@ -286,6 +288,7 @@ public struct CanonicalMemoryBook: Codable, Equatable, Sendable {
         self.diaryRequests = diaryRequests
         self.suppressedFlushHashes = suppressedFlushHashes
         self.tombstones = tombstones
+        self.generation = generation
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -299,6 +302,7 @@ public struct CanonicalMemoryBook: Codable, Equatable, Sendable {
         case diaryRequests
         case suppressedFlushHashes
         case tombstones
+        case generation
     }
 
     public init(from decoder: Decoder) throws {
@@ -313,7 +317,8 @@ public struct CanonicalMemoryBook: Codable, Equatable, Sendable {
                 requests: try container.decodeIfPresent(Int.self, forKey: .requests) ?? 0,
                 diaryRequests: try container.decodeIfPresent(Int.self, forKey: .diaryRequests) ?? 0,
                 suppressedFlushHashes: try container.decodeIfPresent([String].self, forKey: .suppressedFlushHashes) ?? [],
-                tombstones: try container.decodeIfPresent([MemoryTombstone].self, forKey: .tombstones) ?? []
+                tombstones: try container.decodeIfPresent([MemoryTombstone].self, forKey: .tombstones) ?? [],
+                generation: try container.decodeIfPresent(UInt64.self, forKey: .generation) ?? 0
             )
             return
         }
@@ -339,6 +344,9 @@ public struct CanonicalMemoryBook: Codable, Equatable, Sendable {
         }
         if !tombstones.isEmpty {
             try container.encode(tombstones, forKey: .tombstones)
+        }
+        if generation > 0 {
+            try container.encode(generation, forKey: .generation)
         }
     }
 

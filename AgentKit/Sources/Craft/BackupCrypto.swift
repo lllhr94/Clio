@@ -238,6 +238,8 @@ public enum BackupArchivePolicy: Sendable {
         "secrets.json",
         "snapshots",
         "doccache",
+        "mounts.json",
+        "trash-index.json",
     ]
 
     private static let excludedStoreDirectories: Set<String> = [
