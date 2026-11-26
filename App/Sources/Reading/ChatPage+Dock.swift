@@ -436,31 +436,11 @@ struct ChatBottomStackView<FindBar: View>: View {
                         team: team,
                         confirmStop: confirmStop,
                         askingStop: $askingStop,
-                        onRestore: {
-                            withAnimation(petDockMotion) {
-                                chromeCoordinator.restore()
-                            }
-                        },
+                        onRestore: { chromeCoordinator.restore() },
                         onLatest: onReturnToLatest
                     )
                     .padding(.horizontal, Ink.Bar.edge)
-                    .padding(.bottom, Ink.Space.s)
-                    .background(alignment: .top) {
-                        LinearGradient(
-                            colors: [Ink.paper.opacity(0), Ink.paper.opacity(0.94)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 18)
-                        .offset(y: -18)
-                        .allowsHitTesting(false)
-                    }
-                    .background {
-                        Ink.paper.opacity(0.94)
-                            .ignoresSafeArea(edges: .bottom)
-                            .allowsHitTesting(false)
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .transition(.opacity.animation(calmPetMotion ? nil : Ink.Motion.quick))
                 } else {
                     VStack(spacing: 0) {
                         ChatDockedFormSlot(
@@ -540,8 +520,8 @@ struct ChatBottomStackView<FindBar: View>: View {
                             startPoint: .top,
                             endPoint: .bottom
                         )
-                        .frame(height: 18)
-                        .offset(y: -18)
+                        .frame(height: Ink.Space.s)
+                        .offset(y: -Ink.Space.s)
                         .allowsHitTesting(false)
                     }
                     .background {
@@ -565,7 +545,6 @@ struct ChatBottomStackView<FindBar: View>: View {
                 )
             }
         }
-        .animation(petDockMotion, value: chromeCoordinator.isImmersive)
         .animation(petDockMotion, value: finding)
     }
 }
@@ -2002,13 +1981,13 @@ private struct ChatImmersiveBottomBar: View {
                         chat.stop()
                     }
                 } label: {
-                    Label(L.t("chat.stopGenerating"), systemImage: "stop.fill")
+                    Image(systemName: "stop.fill")
                         .font(.system(size: Ink.Size.small, weight: .semibold))
                         .foregroundStyle(Ink.stop)
-                        .padding(.horizontal, Ink.Space.m)
-                        .frame(minHeight: 44)
-                        .contentShape(Capsule())
-                        .glassFace(in: Capsule())
+                        .padding(Ink.Space.s)
+                        .glassFace(in: Circle())
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(PressStyle(haptic: false))
                 .accessibilityLabel(L.t("chat.stopGenerating"))
@@ -2019,13 +1998,13 @@ private struct ChatImmersiveBottomBar: View {
                 onRestore()
                 onLatest()
             } label: {
-                Label(L.t("chat.latest"), systemImage: "arrow.down.to.line")
+                Image(systemName: "arrow.down.to.line")
                     .font(.system(size: Ink.Size.small, weight: .semibold))
                     .foregroundStyle(Ink.ink)
-                    .padding(.horizontal, Ink.Space.m)
-                    .frame(minHeight: 44)
-                    .contentShape(Capsule())
-                    .glassFace(in: Capsule())
+                    .padding(Ink.Space.s)
+                    .glassFace(in: Circle())
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(PressStyle(haptic: false))
             .accessibilityLabel(L.t("chat.latest"))

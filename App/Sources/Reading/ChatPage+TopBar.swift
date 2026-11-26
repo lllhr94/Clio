@@ -11,8 +11,9 @@ import VisionKit
 extension ChatPage {
     // MARK: Top bar
 
-    static func companionStatus(waiting: Approval?, doing: String?) -> String {
+    static func companionStatus(waiting: Approval?, doing: String?, streaming: Bool = false) -> String {
         if waiting != nil { return Words.t("候印") }
+        if streaming { return Words.t("落笔") }
         guard let doing else { return Words.t("闲坐") }
         if doing == "正在回复" { return Words.t("落笔") }
         if doing == "正在想" || doing == "等你批准" || doing.contains("在想") || doing.contains("开口") || doing.contains("递出") {
@@ -154,13 +155,11 @@ struct ChatTopBarView: View {
                     bot: bot,
                     onRestore: {
                         Haptics.selection()
-                        withAnimation(reduceMotion ? .easeOut(duration: 0.16) : Ink.Motion.quick) {
-                            chromeCoordinator.restore()
-                        }
+                        chromeCoordinator.restore()
                     }
                 )
                 .frame(maxWidth: .infinity)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.opacity.animation(reduceMotion ? nil : Ink.Motion.quick))
             } else if largeText {
                 HStack(alignment: .top, spacing: Ink.Space.s) {
                     ChatHeaderBackButton(onLeave: onLeave)
@@ -195,17 +194,20 @@ struct ChatTopBarView: View {
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.top, Ink.Space.xs)
         .padding(.bottom, Ink.Space.xs)
-        // Seamless paper fade beneath the slim floating bar so scrolling prose melts out softly.
         .background {
-            Ink.paper.ignoresSafeArea(edges: .top)
+            if !chromeCoordinator.isImmersive {
+                Ink.paper.ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+            }
         }
         .background(alignment: .bottom) {
-            LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
-                .frame(height: chromeCoordinator.isImmersive ? Ink.Space.s : Ink.Space.m)
-                .offset(y: chromeCoordinator.isImmersive ? Ink.Space.s : Ink.Space.m)
-                .allowsHitTesting(false)
+            if !chromeCoordinator.isImmersive {
+                LinearGradient(colors: [Ink.paper, Ink.paper.opacity(0)], startPoint: .top, endPoint: .bottom)
+                    .frame(height: Ink.Space.s)
+                    .offset(y: Ink.Space.s)
+                    .allowsHitTesting(false)
+            }
         }
-        .animation(reduceMotion ? .easeOut(duration: 0.16) : Ink.Motion.quick, value: chromeCoordinator.isImmersive)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
@@ -296,9 +298,7 @@ private struct ChatTopBarIdentityView: View {
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
 
     private var headerLine: String {
-        let status = ChatPage.companionStatus(waiting: waiting, doing: doing)
-        if working || waiting != nil { return status }
-        return team.title(of: chat.key) ?? status
+        ChatPage.companionStatus(waiting: waiting, doing: doing, streaming: chat.hasStreaming)
     }
 
     var body: some View {
@@ -365,12 +365,7 @@ private struct ChatTopBarIdentityView: View {
         .padding(.leading, Ink.Space.s)
         .padding(.trailing, Ink.Space.m)
         .padding(.vertical, largeText ? Ink.Space.s : 0)
-        .frame(
-            minWidth: largeText ? nil : min(116, max(86, viewportWidth * 0.27)),
-            maxWidth: largeText ? nil : max(120, viewportWidth - 208),
-            minHeight: Ink.Bar.height,
-            alignment: .leading
-        )
+        .frame(minHeight: Ink.Bar.height, alignment: .leading)
         .glassBacking(in: Capsule())
     }
 }
@@ -386,7 +381,7 @@ private struct ChatImmersiveTopPill: View {
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
 
     var body: some View {
-        let status = ChatPage.companionStatus(waiting: waiting, doing: doing)
+        let status = ChatPage.companionStatus(waiting: waiting, doing: doing, streaming: chat.hasStreaming)
         Button(action: onRestore) {
             HStack(spacing: Ink.Space.xs) {
                 Circle()
@@ -397,18 +392,15 @@ private struct ChatImmersiveTopPill: View {
                     .foregroundStyle(Ink.ink)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Rectangle()
-                    .fill(Ink.rule.opacity(0.7))
-                    .frame(width: 0.5, height: 14 * UIScale.factor)
-                Label(L.t("chat.restoreControls"), systemImage: "chevron.down")
-                    .labelStyle(.titleAndIcon)
+                Image(systemName: "chevron.down")
                     .font(.system(size: Ink.Size.micro, weight: .semibold))
                     .foregroundStyle(Ink.accent)
             }
-            .padding(.horizontal, Ink.Space.m)
-            .frame(minHeight: 44)
-            .contentShape(Capsule())
+            .padding(.horizontal, Ink.Space.s)
+            .padding(.vertical, Ink.Space.xs)
             .glassFace(in: Capsule())
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle(haptic: false))
         .accessibilityLabel("\(bot.name)，\(status)，\(L.t("chat.restoreControls"))")

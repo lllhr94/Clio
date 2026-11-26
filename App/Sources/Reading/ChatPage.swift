@@ -33,6 +33,8 @@ struct ChatPage: View {
     @State var dictationMerger = DictationDraftMerger()
     @State var speakingText: String?
     @State var headerHeight: CGFloat = 0
+    @State var headerBottomY: CGFloat?
+    @State var dockTopY: CGFloat?
     @State var photos: [Data] = []
     @State var draftAttachmentQueuedIds: [UUID] = []
     @State var draftAttachmentsLoaded = false
@@ -1062,7 +1064,12 @@ struct ChatPage: View {
             observers
             chromeLockObserver
         }
-        .safeAreaInset(edge: .bottom) { bottomStack }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            bottomStack
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY.rounded(.down) } action: {
+                    dockTopY = $0
+                }
+        }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
             if chatViewport != newSize { chatViewport = newSize }
         }

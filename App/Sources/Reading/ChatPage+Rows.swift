@@ -388,6 +388,8 @@ extension ChatPage {
             editing: editing,
             speakingText: speakingText,
             headerHeight: headerHeight,
+            headerBottomY: headerBottomY,
+            dockTopY: dockTopY,
             starters: starters,
             reach: reach,
             petPerch: petPerch,
@@ -441,7 +443,12 @@ extension ChatPage {
             timeGap: { line in timeGap(before: line) },
             minimap: { minimap }
         )
-        .safeAreaInset(edge: .top, spacing: 0) { header }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            header
+                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY.rounded(.up) } action: {
+                    headerBottomY = $0
+                }
+        }
         .onAppear { scroller = ChatScroller(listProxy: listProxy) }
         .task { await playShot() }
     }

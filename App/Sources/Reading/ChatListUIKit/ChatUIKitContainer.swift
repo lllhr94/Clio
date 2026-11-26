@@ -520,6 +520,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
     let editing: String?
     let speakingText: String?
     let headerHeight: CGFloat
+    let headerBottomY: CGFloat?
+    let dockTopY: CGFloat?
     let starters: [(String, String, String)]
     let reach: String
     let petPerch: PetPerch
@@ -578,6 +580,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
         editing: String?,
         speakingText: String?,
         headerHeight: CGFloat,
+        headerBottomY: CGFloat?,
+        dockTopY: CGFloat?,
         starters: [(String, String, String)],
         reach: String,
         petPerch: PetPerch,
@@ -620,6 +624,8 @@ struct ChatUIKitContainer<Minimap: View>: View {
         self.editing = editing
         self.speakingText = speakingText
         self.headerHeight = headerHeight
+        self.headerBottomY = headerBottomY
+        self.dockTopY = dockTopY
         self.starters = starters
         self.reach = reach
         self.petPerch = petPerch
@@ -652,12 +658,14 @@ struct ChatUIKitContainer<Minimap: View>: View {
 
     private var safeTopInset: CGFloat {
         guard fullVertical.height > 0, safeVertical.height > 0 else { return 0 }
-        return max(0, safeVertical.minY - fullVertical.minY)
+        let headerEdge = headerBottomY ?? safeVertical.minY
+        return max(0, max(safeVertical.minY, headerEdge) - fullVertical.minY)
     }
 
     private var safeBottomInset: CGFloat {
         guard fullVertical.height > 0, safeVertical.height > 0 else { return 0 }
-        return max(0, fullVertical.maxY - safeVertical.maxY)
+        let dockEdge = dockTopY ?? safeVertical.maxY
+        return max(0, fullVertical.maxY - min(safeVertical.maxY, dockEdge))
     }
 
     private var styleSignal: String {
@@ -745,11 +753,6 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 }
                 .overlay(alignment: .trailing) { minimap() }
 
-            ChatTopPaperFadeView(
-                safeTopInset: safeTopInset,
-                headerHeight: headerHeight,
-                isImmersive: chromeCoordinator.isImmersive
-            )
         }
         .onAppear {
             teamSlice.bind(team: team, chatKey: chat.key)
@@ -1185,36 +1188,6 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         init(lastStyleSignal: String) {
             self.lastStyleSignal = lastStyleSignal
         }
-    }
-}
-
-/// Isolated top paper gradient so `ChatUIKitContainer.body` does not subscribe to `Theme.shared` or `UIScale.shared`.
-private struct ChatTopPaperFadeView: View {
-    let safeTopInset: CGFloat
-    let headerHeight: CGFloat
-    let isImmersive: Bool
-
-    var body: some View {
-        let collapsedExtent = safeTopInset + Ink.Space.s
-        let topBarExtent = isImmersive ? collapsedExtent : max(safeTopInset, headerHeight)
-        let fadeTail = isImmersive ? Ink.Space.s : Ink.Space.l
-        let totalHeight = topBarExtent + fadeTail
-        let holdStop = totalHeight > 0 ? min(0.95, topBarExtent / totalHeight) : 0
-        VStack(spacing: 0) {
-            LinearGradient(
-                stops: [
-                    .init(color: Ink.paper, location: 0),
-                    .init(color: Ink.paper, location: holdStop),
-                    .init(color: Ink.paper.opacity(0), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: totalHeight)
-            Spacer(minLength: 0)
-        }
-        .ignoresSafeArea()
-        .allowsHitTesting(false)
     }
 }
 

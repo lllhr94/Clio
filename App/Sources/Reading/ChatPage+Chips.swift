@@ -99,7 +99,7 @@ extension ChatPage {
     static func modelPillMaxWidth(viewportWidth: CGFloat, team: TeamModel) -> CGFloat {
         let width = viewportWidth > 0 ? viewportWidth : 390
         let browser = team.browser.acting ? Ink.Bar.height + Ink.Space.xs : 0
-        return max(68, min(138, (width - 176 - browser) * 0.46))
+        return max(84, min(174, (width - browser) * 0.42))
     }
 
     var modelMenu: some View {
