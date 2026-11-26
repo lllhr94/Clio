@@ -46,6 +46,7 @@ public protocol PowerThermalPolicyProvider {
     var isThermalDowngraded: Bool { get }
 }
 
+@MainActor
 public protocol MemoryPressureHandling: AnyObject {
     func handleMemoryWarning()
 }
@@ -350,7 +351,7 @@ public final class StreamRevealAdapter: MemoryPressureHandling {
         durationMultiplier: Double = 10.0,
         policy: RevealVisualPolicy = RevealVisualPolicy(),
         blockCache: StableBlockCaching = InMemoryStableBlockCache(),
-        scheduler: RevealAnimationScheduling = VirtualRevealScheduler()
+        scheduler: RevealAnimationScheduling? = nil
     ) {
         self.conversationID = conversationID
         self.maxWidth = maxWidth
@@ -358,7 +359,7 @@ public final class StreamRevealAdapter: MemoryPressureHandling {
         self.durationMultiplier = durationMultiplier
         self.policy = policy
         self.blockCache = blockCache
-        self.scheduler = scheduler
+        self.scheduler = scheduler ?? VirtualRevealScheduler()
         self.maskContainerLayer.frame = CGRect(x: 0, y: 0, width: maxWidth, height: 600)
         self.maskHostLayer.frame = self.maskContainerLayer.frame
         self.maskHostLayer.addSublayer(self.maskContainerLayer)
