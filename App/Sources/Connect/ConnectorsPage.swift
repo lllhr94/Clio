@@ -4,6 +4,7 @@ import UIKit
 /// 连接器, laid out the way other agent apps do it: categories along the top, one row per service, and a page
 /// per service with a big sign-in button (or a key), a token as the other way in, and what it brought once connected.
 struct ConnectorsPage: View {
+    var embedded = false
     @ObservedObject private var hills = Hills.shared
     @ObservedObject private var work = ConnectorWork.shared
     @Environment(\.dismiss) private var dismiss
@@ -13,8 +14,18 @@ struct ConnectorsPage: View {
     @AppStorage("connectors.suggest") private var suggest = true
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
+        Group {
+            if embedded {
+                content
+            } else {
+                NavigationStack { content }
+            }
+        }
+        .sheet(isPresented: $adding) { CustomSheet() }
+    }
+
+    private var content: some View {
+        ScrollView {
                 let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
                 let lookup = ServerLookup(servers: hills.servers)
                 LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
@@ -63,10 +74,12 @@ struct ConnectorsPage: View {
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "找连接器")
             .navigationTitle(L.t("agent.connectors"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
+            .toolbar {
+                if !embedded {
+                    ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                }
+            }
             .navigationDestination(for: Connector.self) { ConnectorDetail(connector: $0) }
-        }
-        .sheet(isPresented: $adding) { CustomSheet() }
     }
 
     /// Clio's own suggestions: while talking, a companion may say which connector would help.

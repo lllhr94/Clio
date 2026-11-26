@@ -2,6 +2,7 @@ import SwiftUI
 
 /// 信匣: the passwords and keys kept on this phone.
 struct SecretsPage: View {
+    var embedded = false
     @ObservedObject private var secrets = Secrets.shared
     @Environment(\.dismiss) private var dismiss
     @State private var editing: Secrets.Item?
@@ -10,8 +11,19 @@ struct SecretsPage: View {
     @Environment(\.scenePhase) private var phase
 
     var body: some View {
-        NavigationStack {
-            ZStack {
+        Group {
+            if embedded {
+                content
+            } else {
+                NavigationStack { content }
+            }
+        }
+        // A password shown stays shown only while the app is in front: never in the app switcher.
+        .onChange(of: phase) { _, now in if now != .active { revealed = [:] } }
+    }
+
+    private var content: some View {
+        ZStack {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.l) {
@@ -37,7 +49,9 @@ struct SecretsPage: View {
             .navigationTitle(L.t("settings.vault"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                if !embedded {
+                    ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { editing = Secrets.Item(title: "") } label: { Image(systemName: "plus") }
                         .accessibilityLabel("添加密码项目")
@@ -58,9 +72,6 @@ struct SecretsPage: View {
             } message: {
                 Text(L.t("errors.cannotUndo"))
             }
-        }
-        // A password shown stays shown only while the app is in front: never in the app switcher.
-        .onChange(of: phase) { _, now in if now != .active { revealed = [:] } }
     }
 
     private func row(_ item: Secrets.Item) -> some View {

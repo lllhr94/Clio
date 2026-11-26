@@ -791,6 +791,7 @@ struct MorningSettingsPage: View {
 }
 
 struct PrivacySettingsPage<VaultRow: View>: View {
+    var showsVaultRow = true
     @AppStorage("lock.faceid") private var faceLock = false
     @State private var verifying = false
     @ViewBuilder var vaultRow: VaultRow
@@ -834,7 +835,9 @@ struct PrivacySettingsPage<VaultRow: View>: View {
             } header: { Text(L.t("settings.appLock")) } footer: {
                 Text(L.t("settings.faceLockNote"))
             }
-            Section { vaultRow }
+            if showsVaultRow {
+                Section { vaultRow }
+            }
         }
     }
 }

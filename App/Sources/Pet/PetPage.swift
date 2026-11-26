@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 /// 宠物设置: which pet is yours (it is also every portrait in Clio), whether it stands on the composer, how big,
 /// quiet or not; importing your own, from a pet pack or a single picture.
 struct PetPage: View {
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
     @State private var previewSince = Date()
@@ -14,8 +15,15 @@ struct PetPage: View {
     @State private var deleting: PetPack?
 
     var body: some View {
-        NavigationStack {
-            Form {
+        if embedded {
+            content
+        } else {
+            NavigationStack { content }
+        }
+    }
+
+    private var content: some View {
+        Form {
                 PaperRows {
                     Section {
                         sizePreview
@@ -60,7 +68,11 @@ struct PetPage: View {
             .paperForm()
             .navigationTitle(L.t("pet.settings"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
+            .toolbar {
+                if !embedded {
+                    ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                }
+            }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.zip, .png, .gif, .webP]) { result in
                 guard case .success(let url) = result else { return }
                 installing = true
@@ -84,7 +96,6 @@ struct PetPage: View {
                     deleting = nil
                 }
             } message: { Text(L.daily["errors.cannotUndo"] ?? "删除后无法恢复。") }
-        }
     }
 
     private var levels: [Double] { PetSize.levels(for: library.pack, displayScale: displayScale) }

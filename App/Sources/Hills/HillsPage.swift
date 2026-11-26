@@ -2,6 +2,7 @@ import SwiftUI
 
 /// 远山: the computers far away, and the tools borrowed from them.
 struct HillsPage: View {
+    var embedded = false
     @ObservedObject var hills = Hills.shared
     @Environment(\.dismiss) private var dismiss
     @State private var editingHost: Hills.Host?
@@ -20,8 +21,15 @@ struct HillsPage: View {
     @State private var installing: [String: String] = [:]
 
     var body: some View {
-        NavigationStack {
-            ZStack {
+        if embedded {
+            content
+        } else {
+            NavigationStack { content }
+        }
+    }
+
+    private var content: some View {
+        ZStack {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
@@ -83,7 +91,11 @@ struct HillsPage: View {
             .hitchPage("远山")
             .navigationTitle(L.t("nav.remoteHost"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } } }
+            .toolbar {
+                if !embedded {
+                    ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                }
+            }
             .sheet(item: $editingHost) { host in HostEditor(host: host) }
             .sheet(item: $editingServer) { server in ServerEditor(server: server) }
             .fullScreenCover(item: $terminalHost) { host in InkstonePage(hill: host) }
@@ -141,7 +153,6 @@ struct HillsPage: View {
                 publicKey = await Task.detached(priority: .userInitiated) { Hills.publicKey }.value
             }
             .task(id: hills.hosts) { await loadFingerprints() }
-        }
     }
 
     private var divider: some View { Kit.divider }

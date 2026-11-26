@@ -148,6 +148,7 @@ extension Notify {
 /// 定时: the routines, each with its time, who does it and what; on, off, change, take away.
 struct RoutinesPage: View {
     let team: TeamModel
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @State private var routines: [Routine] = []
     @State private var botNames: [String: String] = [:]
@@ -155,8 +156,29 @@ struct RoutinesPage: View {
     @State private var pendingDelete: Routine?
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
+        Group {
+            if embedded {
+                content
+            } else {
+                NavigationStack { content }
+            }
+        }
+        .hitchPage("定时")
+        .onAppear {
+            routines = team.routines
+            botNames = Dictionary(uniqueKeysWithValues: team.bots.map { ($0.id, $0.name) })
+        }
+        .onReceive(team.$routines) { routines = $0 }
+        .onReceive(team.$bots) { bots in
+            botNames = Dictionary(uniqueKeysWithValues: bots.map { ($0.id, $0.name) })
+        }
+        .sheet(item: $editing) { routine in
+            RoutineEditor(team: team, routine: routine)
+        }
+    }
+
+    private var content: some View {
+        ScrollView {
                 LazyVStack(alignment: .leading, spacing: Ink.Space.l) {
                     Text("到点弹通知，打开 Clio 就开始做")
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
@@ -179,7 +201,9 @@ struct RoutinesPage: View {
             .navigationTitle(L.t("agent.scheduledJobs"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                if !embedded {
+                    ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Haptics.light()
@@ -207,19 +231,6 @@ struct RoutinesPage: View {
             } message: {
                 Text(L.t("errors.cannotUndo"))
             }
-        }
-        .hitchPage("定时")
-        .onAppear {
-            routines = team.routines
-            botNames = Dictionary(uniqueKeysWithValues: team.bots.map { ($0.id, $0.name) })
-        }
-        .onReceive(team.$routines) { routines = $0 }
-        .onReceive(team.$bots) { bots in
-            botNames = Dictionary(uniqueKeysWithValues: bots.map { ($0.id, $0.name) })
-        }
-        .sheet(item: $editing) { routine in
-            RoutineEditor(team: team, routine: routine)
-        }
     }
 
     private func row(_ routine: Routine) -> some View {

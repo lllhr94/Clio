@@ -248,6 +248,7 @@ struct UseSkillTool: AgentTool {
 
 /// 技能: what the companions know how to do, each a page the user can read, change, switch off or add.
 struct SkillsPage: View {
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @State private var items: [SkillShelf.Item] = []
     @State private var loading = true
@@ -262,8 +263,33 @@ struct SkillsPage: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
+        Group {
+            if embedded {
+                content
+            } else {
+                NavigationStack { content }
+            }
+        }
+        .hitchPage("技能")
+        .task(id: scan) {
+            let found = await Task.detached(priority: .utility) { SkillShelf.all(fresh: true) }.value
+            guard !Task.isCancelled else { return }
+            items = found
+            loading = false
+        }
+        .sheet(item: $editing, onDismiss: reload) { editing in
+            SkillEditor(item: editing.item)
+        }
+        .sheet(isPresented: $installing) {
+            SkillInstallSheet { installedName in
+                note = "装好了「\(installedName)」。"
+                reload()
+            }
+        }
+    }
+
+    private var content: some View {
+        ScrollView {
                 LazyVStack(alignment: .leading, spacing: Ink.Space.l) {
                     Text(Words.t("书案/技能 里的做事说明，对得上就照做"))
                         .font(Ink.secondary).foregroundStyle(Ink.inkSoft)
@@ -301,7 +327,9 @@ struct SkillsPage: View {
             .navigationTitle(L.t("agent.skills"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                if !embedded {
+                    ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("从链接 / zip 安装", systemImage: "square.and.arrow.down.on.square") { installing = true }
@@ -315,23 +343,6 @@ struct SkillsPage: View {
                     .accessibilityLabel("添技能")
                 }
             }
-        }
-        .hitchPage("技能")
-        .task(id: scan) {
-            let found = await Task.detached(priority: .utility) { SkillShelf.all(fresh: true) }.value
-            guard !Task.isCancelled else { return }
-            items = found
-            loading = false
-        }
-        .sheet(item: $editing, onDismiss: reload) { editing in
-            SkillEditor(item: editing.item)
-        }
-        .sheet(isPresented: $installing) {
-            SkillInstallSheet { installedName in
-                note = "装好了「\(installedName)」。"
-                reload()
-            }
-        }
     }
 
     private func reload() { scan += 1 }

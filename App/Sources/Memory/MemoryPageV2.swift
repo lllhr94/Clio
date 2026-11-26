@@ -96,6 +96,8 @@ struct MemoryBadgePill: View {
 
 struct MemoryPageV2: View {
     @ObservedObject var team: TeamModel
+    var showsDone = false
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private enum LayerFilter: String, CaseIterable, Identifiable {
@@ -418,6 +420,13 @@ struct MemoryPageV2: View {
                 Image(systemName: "tray.and.arrow.down")
             }
             .accessibilityLabel(L.t("memoryV2.importButton"))
+
+            if showsDone {
+                Button(L.t("actions.done")) {
+                    Haptics.light()
+                    dismiss()
+                }
+            }
         }
     }
 

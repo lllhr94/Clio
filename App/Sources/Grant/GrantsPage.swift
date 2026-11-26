@@ -3,6 +3,7 @@ import SwiftUI
 /// 应许: every ability on one page, with the user's say and the system's say side by side.
 struct GrantsPage: View {
     let team: TeamModel
+    var embedded = false
     @Environment(\.dismiss) private var dismiss
     @State private var asking = false
     @Environment(\.scenePhase) private var phase
@@ -20,64 +21,11 @@ struct GrantsPage: View {
     ] }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Ink.paper.ignoresSafeArea()
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
-                        presets
-                        webGuardCard
-                        Button {
-                            askAll()
-                        } label: {
-                            HStack(spacing: Ink.Space.m) {
-                                Image(systemName: "checkmark.seal").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
-                                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                                    Text(asking ? L.t("loading.requestingPermissions") : L.t("actions.requestAllPermissions")).font(Ink.serif(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
-                                    Text(L.t("settings.requestPermissionsNote"))
-                                        .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .padding(Ink.Space.l)
-                            .paperCard()
-                        }
-                        .buttonStyle(PressStyle())
-                        .disabled(asking)
-                        ForEach(groups, id: \.0) { group in
-                            VStack(alignment: .leading, spacing: Ink.Space.s) {
-                                SectionTitle(group.0)
-                                LazyVStack(spacing: 0) {
-                                    ForEach(group.1) { grant in
-                                        row(grant)
-                                        if grant != group.1.last { Kit.divider }
-                                    }
-                                }
-                                .paperCard()
-                            }
-                        }
-                        if !alwaysAllowed.isEmpty {
-                            AlwaysAllowedSection(team: team, tools: alwaysAllowed)
-                        }
-                        Button {
-                            if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
-                        } label: {
-                            Label("去系统设置里看 Clio 的权限", systemImage: "gear")
-                                .font(.system(size: Ink.Size.sub, weight: .medium))
-                                .foregroundStyle(Ink.accent)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, Ink.Space.m)
-                        }
-                        .buttonStyle(PressStyle())
-                    }
-                    .padding(.horizontal, Ink.Space.page)
-                    .padding(.vertical, Ink.Space.l)
-                }
-            }
-            .navigationTitle(L.t("settings.permissions"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
+        Group {
+            if embedded {
+                content
+            } else {
+                NavigationStack { content }
             }
         }
         .onAppear {
@@ -94,6 +42,69 @@ struct GrantsPage: View {
             if now == .active {
                 loadPolicies()
                 Task { await loadSystems() }
+            }
+        }
+    }
+
+    private var content: some View {
+        ZStack {
+            Ink.paper.ignoresSafeArea()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    presets
+                    webGuardCard
+                    Button {
+                        askAll()
+                    } label: {
+                        HStack(spacing: Ink.Space.m) {
+                            Image(systemName: "checkmark.seal").font(.system(size: Ink.Size.title)).foregroundStyle(Ink.accent)
+                            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                                Text(asking ? L.t("loading.requestingPermissions") : L.t("actions.requestAllPermissions")).font(Ink.serif(Ink.Size.body, bold: true)).foregroundStyle(Ink.ink)
+                                Text(L.t("settings.requestPermissionsNote"))
+                                    .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(Ink.Space.l)
+                        .paperCard()
+                    }
+                    .buttonStyle(PressStyle())
+                    .disabled(asking)
+                    ForEach(groups, id: \.0) { group in
+                        VStack(alignment: .leading, spacing: Ink.Space.s) {
+                            SectionTitle(group.0)
+                            LazyVStack(spacing: 0) {
+                                ForEach(group.1) { grant in
+                                    row(grant)
+                                    if grant != group.1.last { Kit.divider }
+                                }
+                            }
+                            .paperCard()
+                        }
+                    }
+                    if !alwaysAllowed.isEmpty {
+                        AlwaysAllowedSection(team: team, tools: alwaysAllowed)
+                    }
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                    } label: {
+                        Label("去系统设置里看 Clio 的权限", systemImage: "gear")
+                            .font(.system(size: Ink.Size.sub, weight: .medium))
+                            .foregroundStyle(Ink.accent)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, Ink.Space.m)
+                    }
+                    .buttonStyle(PressStyle())
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+        }
+        .navigationTitle(L.t("settings.permissions"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !embedded {
+                ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done")) { dismiss() } }
             }
         }
     }
