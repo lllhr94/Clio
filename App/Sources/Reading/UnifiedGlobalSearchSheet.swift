@@ -13,6 +13,7 @@ struct UnifiedGlobalSearchSheet: View {
     @FocusState private var searchFocused: Bool
 
     @State private var query = ""
+    @State private var completedQuery = ""
     @State private var scope: Scope = .all
     @State private var loading = false
     @State private var chatHits: [TeamModel.Hit] = []
@@ -47,10 +48,15 @@ struct UnifiedGlobalSearchSheet: View {
         let id: String
         let url: URL
         let mount: MountedFolder?
+        let page: Int?
     }
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var resultsCurrent: Bool {
+        !trimmedQuery.isEmpty && completedQuery == trimmedQuery
     }
 
     private var totalCount: Int {
@@ -76,7 +82,7 @@ struct UnifiedGlobalSearchSheet: View {
                 }
             }
             .navigationDestination(for: StudyFileTarget.self) { target in
-                StudyFile(url: target.url, mount: target.mount)
+                StudyFile(url: target.url, mount: target.mount, initialPage: target.page)
             }
         }
         .hitchPage("全局搜索")
@@ -133,7 +139,7 @@ struct UnifiedGlobalSearchSheet: View {
     private func scopeChip(_ tab: Scope) -> some View {
         let active = scope == tab
         let count = count(for: tab)
-        let label = trimmedQuery.isEmpty ? tab.title : "\(tab.title) \(count)"
+        let label = resultsCurrent ? "\(tab.title) \(count)" : tab.title
         return Button {
             Haptics.selection()
             withAnimation(Ink.Motion.settle) {
@@ -171,7 +177,7 @@ struct UnifiedGlobalSearchSheet: View {
                         .foregroundStyle(Ink.inkSoft)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.top, Ink.Space.m)
-                } else if loading && totalCount == 0 {
+                } else if loading || !resultsCurrent {
                     HStack(spacing: Ink.Space.s) {
                         ProgressView().controlSize(.small)
                         Text(L.t("unifiedSearch.searching"))
@@ -413,14 +419,15 @@ struct UnifiedGlobalSearchSheet: View {
             onOpenStudy()
             return
         }
+        let targetID = "\(hit.path)#\(hit.page ?? 0)"
         switch parsed {
         case .desk(let url, _):
-            path.append(StudyFileTarget(id: hit.path, url: url, mount: nil))
+            path.append(StudyFileTarget(id: targetID, url: url, mount: nil, page: hit.page))
         case .mounted(let mount, let innerParts, _):
             if let opened = MountedFolders.openForUI(mount) {
                 let fileURL = innerParts.reduce(opened.url) { $0.appendingPathComponent($1) }
                 opened.token.stop()
-                path.append(StudyFileTarget(id: hit.path, url: fileURL, mount: mount))
+                path.append(StudyFileTarget(id: targetID, url: fileURL, mount: mount, page: hit.page))
             } else {
                 dismiss()
                 onOpenStudy()
@@ -435,10 +442,17 @@ struct UnifiedGlobalSearchSheet: View {
         let snapshot = trimmedQuery
         guard !snapshot.isEmpty else {
             loading = false
+            completedQuery = ""
             chatHits = []
             memoryHits = []
             fileHits = []
             return
+        }
+        if snapshot != completedQuery {
+            completedQuery = ""
+            chatHits = []
+            memoryHits = []
+            fileHits = []
         }
         loading = true
         do { try await Task.sleep(for: .milliseconds(220)) } catch { return }
@@ -474,6 +488,7 @@ struct UnifiedGlobalSearchSheet: View {
         chatHits = chats
         memoryHits = Array(memories.prefix(40))
         fileHits = files
+        completedQuery = snapshot
         loading = false
     }
 }
