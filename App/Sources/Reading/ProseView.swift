@@ -2517,6 +2517,8 @@ enum FileCardCache {
 struct FileCard: View {
     let label: String
     let path: String
+    @Namespace private var previewZoom
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var resolved: WorkspaceFileRef?
     @State private var checked = false
     @State private var open = false
@@ -2567,7 +2569,10 @@ struct FileCard: View {
             if document == nil { open = true } else { interaction = true }
         } label: {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
-                if let document { InteractivePreviewThumbnail(document: document) }
+                if let document {
+                    InteractivePreviewThumbnail(document: document)
+                        .modifier(PhotoZoomSourceModifier(id: path, namespace: previewZoom, enabled: !reduceMotion))
+                }
                 HStack(spacing: Ink.Space.m) {
                     IconBadge(symbol: Self.symbol(for: path), tint: activeResolved == nil ? Ink.Tile.off : Ink.Tile.accent, size: 40)
                     VStack(alignment: .leading, spacing: 2) {
@@ -2624,7 +2629,10 @@ struct FileCard: View {
             }
         }
         .fullScreenCover(isPresented: $interaction) {
-            if let document { InteractivePreviewPage(document: document) }
+            if let document {
+                InteractivePreviewPage(document: document)
+                    .modifier(PhotoZoomDestinationModifier(id: path, namespace: previewZoom, enabled: !reduceMotion))
+            }
         }
     }
 

@@ -1682,6 +1682,9 @@ final class ChatFileCardsBlockView: UIView {
             if let host = hostViewController, host.presentedViewController == nil {
                 let vc = UIHostingController(rootView: InteractivePreviewPage(document: doc))
                 vc.modalPresentationStyle = .fullScreen
+                if !UIAccessibility.isReduceMotionEnabled {
+                    vc.preferredTransition = .zoom { [weak card] _ in card }
+                }
                 presentedViewerVC = vc
                 presentedViewerMount = ref.mount
                 presentedViewerPath = card.link.path
@@ -2215,6 +2218,9 @@ final class ChatProsePictureView: UIView {
                 let vc = UIHostingController(rootView: NavigationStack {
                     StudyFile(url: ref.url, mount: ref.mount, showsDone: true)
                 })
+                if !UIAccessibility.isReduceMotionEnabled {
+                    vc.preferredTransition = .zoom { [weak self] _ in self?.imageView }
+                }
                 presentedViewerVC = vc
                 presentedViewerMount = ref.mount
                 host.present(vc, animated: true)
@@ -2223,6 +2229,9 @@ final class ChatProsePictureView: UIView {
             }
         } else if let remoteFile, let host = hostViewController, host.presentedViewController == nil {
             let vc = QuickPreviewHostingController(tempFile: remoteFile)
+            if !UIAccessibility.isReduceMotionEnabled {
+                vc.preferredTransition = .zoom { [weak self] _ in self?.imageView }
+            }
             presentedViewerVC = vc
             presentedViewerMount = nil
             host.present(vc, animated: true)
