@@ -252,7 +252,6 @@ extension ChatPage {
 
     func presentApproval(_ approval: Approval) {
         DiagTrail.record("开审批详情")
-        chromeCoordinator.restore()
         followPending?.cancel()
         settleEnd?.cancel()
         settleJump?.cancel()

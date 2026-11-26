@@ -1087,6 +1087,7 @@ struct ChatPage: View {
             .onAppear { handleAppear() }
             .task(id: chat.key) { await loadDraftAsync(for: chat.key) }
             .onChange(of: chat.key) { _, _ in chromeCoordinator.resetForChatSwitch() }
+            .onChange(of: approving?.id) { _, next in if next != nil { chromeCoordinator.restore() } }
             .onChange(of: photos) { _, _ in
                 if !isApplyingLoadedAttachments { draftAttachmentsEdited = true }
             }
