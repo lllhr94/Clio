@@ -43,7 +43,7 @@ final class ClioAppPR1ATests: XCTestCase {
             MemorySafety.retractionHash(forgottenMemoryText),
             forgottenExp.contentSHA256.lowercased(),
         ])
-        Backup.applyTombstoneUnionToStagedTeam(stagedTeam: stagedTeam, localRetractedHashes: localTombstones, nowMs: 5_000)
+        try Backup.applyTombstoneUnionToStagedTeam(stagedTeam: stagedTeam, localRetractedHashes: localTombstones, nowMs: 5_000)
 
         let mergedRetracted = try JSONDecoder().decode(
             [String].self,
@@ -64,7 +64,7 @@ final class ClioAppPR1ATests: XCTestCase {
         XCTAssertEqual(activeExps.map(\.id), ["e2"])
     }
 
-    func testIsolatedMemoryStoreBridgeRecoveryAndBackupBarrier() throws {
+    func testIsolatedMemoryStoreBridgeRecoveryAndProjectionRebuildCrashWindow() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("clio-bridge-pr1a-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -92,6 +92,18 @@ final class ClioAppPR1ATests: XCTestCase {
 
         let outcome = try bridge.runColdStartRecoveryForTesting(nowMs: 2_000)
         XCTAssertEqual(outcome, .rolledBackToSnapshot(journalID: "bridge-j1", snapshotID: c1.snapshot?.id ?? ""))
+        XCTAssertTrue(bridge.revisionStore.hasPendingProjectionRebuild)
+
+        // Simulate stale row left inside SQLite before crash: bootstrapOnLaunch MUST honor `projection-rebuild.journal`,
+        // wipe stale SQLite rows (`m-stale-resurrection`), rebuild from Canonical `memory.json`, and clear the marker.
+        let directSQLite = MemoryStore(databaseURL: dbURL)
+        _ = try directSQLite.upsert(
+            MemoryRecord(id: "m-stale-resurrection", text: "崩溃窗口里残留的旧SQLite行", createdAtMs: 9_000),
+            explicitUserAction: true
+        )
+        let bootstrap = bridge.bootstrapOnLaunch()
+        XCTAssertEqual(bootstrap.book.memories.map(\.id), ["m1"])
+        XCTAssertFalse(bridge.revisionStore.hasPendingProjectionRebuild)
 
         let barrierValue = bridge.withBackupBarrier {
             bridge.tombstoneHashesSnapshot().count
@@ -100,9 +112,29 @@ final class ClioAppPR1ATests: XCTestCase {
     }
 
     @MainActor
-    func testTeamModelRecallReadOnlyDoesNotMutateLayerOrUsedTimestamp() async {
+    func testTeamModelExperienceSourceGatingZeroWriteRecallReadOnlyAndProcessedDedupe() async throws {
         let team = TeamModel()
         team.keeping = false
+        let bot = BotInfo(id: "b-test", name: "小测", role: nil, model: nil, instructions: nil)
+
+        // 1. Experience write-source propagation across routine / subtask / mainChat
+        let routineTools = team.tools(for: bot, key: "bot-b-test", canSee: false, helping: false, workplace: .desk, experienceSource: .routine)
+        if let recTool = routineTools.first(where: { $0.spec.name == "record_experience" }) {
+            let out = try await recTool.run(.object(["title": .string("定时测试"), "content": .string("应被拦截")]))
+            XCTAssertTrue(out.isError)
+        } else {
+            XCTFail("Expected record_experience tool")
+        }
+
+        let subtaskTools = team.tools(for: bot, key: "bot-b-test", canSee: false, helping: true, workplace: .desk, experienceSource: .mainChat)
+        if let recTool = subtaskTools.first(where: { $0.spec.name == "record_experience" }) {
+            let out = try await recTool.run(.object(["title": .string("子任务测试"), "content": .string("应被拦截")]))
+            XCTAssertTrue(out.isError)
+        } else {
+            XCTFail("Expected record_experience tool in subtask")
+        }
+
+        // 2. Zero-write recallReadOnly across deep + surface + pinned (even under `keeping = true`, must never touch DB/timestamps)
         let deepItem = Memory(id: "d-readonly", text: "去年冬天去北海道滑雪的计划", at: 500, by: nil, deep: true, used: nil)
         let surfaceItem = Memory(id: "s-readonly", text: "平时冬天喜欢喝热可可", at: 900, by: nil, deep: nil, used: nil)
         team.memories = [deepItem, surfaceItem]
@@ -113,5 +145,13 @@ final class ClioAppPR1ATests: XCTestCase {
         XCTAssertEqual(team.memories.first(where: { $0.id == "d-readonly" })?.deep, true)
         XCTAssertNil(team.memories.first(where: { $0.id == "d-readonly" })?.used)
         XCTAssertNil(team.memories.first(where: { $0.id == "s-readonly" })?.used)
+
+        // 3. 05:00 -> 04:00 processed dedupe across legacy day buckets
+        let deduped = TeamModel.processedEntryIDs(in: [
+            "2026-11-26": ["entry-0430-legacy"],
+            "2026-11-27": ["entry-1000-new"],
+        ])
+        XCTAssertTrue(deduped.contains("entry-0430-legacy"))
+        XCTAssertTrue(deduped.contains("entry-1000-new"))
     }
 }

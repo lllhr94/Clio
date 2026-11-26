@@ -84,9 +84,49 @@ public struct ExperienceRecord: Codable, Equatable, Hashable, Identifiable, Send
         self.createdAtMs = createdAtMs
         self.updatedAtMs = updatedAtMs ?? createdAtMs
         self.usedAtMs = usedAtMs
-        self.useCount = max(0, useCount)
+        self.useCount = Self.clampUseCount(useCount)
         self.deletedAtMs = deletedAtMs
         self.source = source
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, content, tags, contentSHA256, createdAtMs, updatedAtMs, usedAtMs, useCount, deletedAtMs, source
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try c.decode(String.self, forKey: .id)
+        let title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        let content = try c.decode(String.self, forKey: .content)
+        let tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
+        let contentSHA256 = try c.decodeIfPresent(String.self, forKey: .contentSHA256)
+        let createdAtMs = try c.decodeIfPresent(Double.self, forKey: .createdAtMs) ?? 0
+        let updatedAtMs = try c.decodeIfPresent(Double.self, forKey: .updatedAtMs)
+        let usedAtMs = try c.decodeIfPresent(Double.self, forKey: .usedAtMs)
+        let rawUseCount = try c.decodeIfPresent(Int64.self, forKey: .useCount) ?? 0
+        let deletedAtMs = try c.decodeIfPresent(Double.self, forKey: .deletedAtMs)
+        let source = try c.decodeIfPresent(ExperienceWriteSource.self, forKey: .source) ?? .mainChat
+        self.init(
+            id: id,
+            title: title,
+            content: content,
+            tags: tags,
+            contentSHA256: contentSHA256,
+            createdAtMs: createdAtMs,
+            updatedAtMs: updatedAtMs,
+            usedAtMs: usedAtMs,
+            useCount: Self.clampUseCount(Int(clamping: rawUseCount)),
+            deletedAtMs: deletedAtMs,
+            source: source
+        )
+    }
+
+    static func clampUseCount(_ value: Int) -> Int {
+        max(0, min(Int(Int32.max), value))
+    }
+
+    static func clampedIncrement(_ value: Int) -> Int {
+        value >= Int(Int32.max) ? Int(Int32.max) : max(0, value) + 1
     }
 }
 
@@ -175,6 +215,8 @@ public final class ExperienceStore: @unchecked Sendable {
     private var db: OpaquePointer?
     private var fts5Enabled = false
     private var lastSyncedCanonicalKey: String?
+    private var openedDatabaseEpoch: UInt64 = 0
+    private var openedFileInode: UInt64?
 
     public init(
         canonicalFileURL: URL?,
@@ -406,7 +448,7 @@ public final class ExperienceStore: @unchecked Sendable {
         let allSuppressed = normalizedSuppressed.union(bookRetracted)
 
         try openOrSyncLocked(secrets: orderedSecrets)
-        let hits = try searchSQLiteLocked(
+        var hits = try searchSQLiteLocked(
             cleanQuery: cleanQuery,
             analysis: analysis,
             limit: limit,
@@ -419,18 +461,20 @@ public final class ExperienceStore: @unchecked Sendable {
             if canonicalFileURL != nil {
                 var book = try readCanonicalBookLocked()
                 for idx in book.records.indices where hitIDs.contains(book.records[idx].id) {
-                    book.records[idx].useCount += 1
+                    book.records[idx].useCount = ExperienceRecord.clampedIncrement(book.records[idx].useCount)
                     book.records[idx].usedAtMs = max(book.records[idx].usedAtMs ?? 0, markUsedNowMs)
                     book.records[idx].updatedAtMs = max(book.records[idx].updatedAtMs, markUsedNowMs)
                 }
                 book.updatedAtMs = max(book.updatedAtMs, markUsedNowMs)
-                try writeCanonicalBookIfConfiguredLocked(book)
+                if let writtenDigest = try writeCanonicalBookIfConfiguredLocked(book) {
+                    lastSyncedCanonicalKey = Self.syncKey(digest: writtenDigest, orderedSecrets: orderedSecrets)
+                }
             }
             for id in hitIDs {
                 try runPreparedLocked(
                     """
                     UPDATE experiences
-                    SET use_count = use_count + 1,
+                    SET use_count = CASE WHEN use_count >= 2147483647 THEN 2147483647 ELSE use_count + 1 END,
                         used_at_ms = CASE WHEN used_at_ms IS NULL OR used_at_ms < ? THEN ? ELSE used_at_ms END,
                         updated_at_ms = CASE WHEN updated_at_ms < ? THEN ? ELSE updated_at_ms END
                     WHERE id = ? AND deleted_at_ms IS NULL;
@@ -441,6 +485,11 @@ public final class ExperienceStore: @unchecked Sendable {
                         .text(id),
                     ]
                 )
+            }
+            for idx in hits.indices {
+                hits[idx].useCount = ExperienceRecord.clampedIncrement(hits[idx].useCount)
+                hits[idx].usedAtMs = max(hits[idx].usedAtMs ?? 0, markUsedNowMs)
+                hits[idx].updatedAtMs = max(hits[idx].updatedAtMs, markUsedNowMs)
             }
         }
 
@@ -580,16 +629,28 @@ public final class ExperienceStore: @unchecked Sendable {
     }
 
     private func ensureDatabaseOpenLocked() throws {
-        if db != nil { return }
+        if db != nil {
+            if let databaseURL {
+                let currentEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
+                let currentInode = Self.fileInode(at: databaseURL)
+                if currentEpoch != openedDatabaseEpoch || currentInode != openedFileInode {
+                    closeLocked()
+                    lastSyncedCanonicalKey = nil
+                } else {
+                    return
+                }
+            } else {
+                return
+            }
+        }
 
         if let databaseURL {
             let fm = FileManager.default
             try fm.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            // If `clio-memory.db` does not exist yet or lacks `MemoryStore`'s v1 base schema,
-            // bootstrap `MemoryStore` first so `MemoryStore.validateOpenedDatabaseLocked()` never
-            // sees an unversioned file with custom tables and recreates it.
+            // Bootstrap `MemoryStore` v1 base schema synchronously without swallowing errors so shared
+            // `ClioMemory/clio-memory.db` always carries `user_version == 1` and `store_meta`.
             let baseStore = MemoryStore(databaseURL: databaseURL)
-            _ = try? baseStore.list(layer: nil, includeDeleted: true)
+            _ = try baseStore.openOrRecover()
         }
 
         let path = databaseURL?.path ?? ":memory:"
@@ -602,6 +663,8 @@ public final class ExperienceStore: @unchecked Sendable {
             throw ExperienceStoreError.sqlite(code: rc, message: msg)
         }
         self.db = opened
+        self.openedDatabaseEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
+        self.openedFileInode = databaseURL.flatMap(Self.fileInode(at:))
 
         try execLocked("PRAGMA busy_timeout = 5000;")
         if databaseURL != nil {
@@ -724,7 +787,7 @@ public final class ExperienceStore: @unchecked Sendable {
                 .text(tagsJoined),
                 .text(redacted.contentSHA256),
                 .text(redacted.source.rawValue),
-                .int(Int32(min(Int32.max, Int32(redacted.useCount)))),
+                .int(Int32(ExperienceRecord.clampUseCount(redacted.useCount))),
                 .double(redacted.createdAtMs),
                 .double(redacted.updatedAtMs),
                 .optionalDouble(redacted.usedAtMs),
@@ -927,6 +990,12 @@ public final class ExperienceStore: @unchecked Sendable {
 
     private static func orderSecrets(_ secrets: [String]) -> [String] {
         secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+    }
+
+    private static func fileInode(at url: URL) -> UInt64? {
+        var st = stat()
+        guard stat(url.path, &st) == 0 else { return nil }
+        return UInt64(st.st_ino)
     }
 
     private static func redactedRecord(_ record: ExperienceRecord, orderedSecrets: [String]) -> ExperienceRecord {

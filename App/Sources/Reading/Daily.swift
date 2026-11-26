@@ -204,8 +204,10 @@ struct TideSheet: View {
     }
 
     static func when(_ day: String) -> String {
-        if day == LogicalDay.day(of: Date()) { return "今天" }
-        if day == LogicalDay.daysBack(1, from: Date()) { return "昨天" }
+        let today = Tide.day(of: Date())
+        let yesterday = LogicalDay.daysBack(1, from: Date(), boundaryHour: 5)
+        if day == today { return "今天" }
+        if day == yesterday { return "昨天" }
         let parts = day.split(separator: "-")
         return parts.count == 3 ? "\(Int(parts[1]) ?? 0) 月 \(Int(parts[2]) ?? 0) 日" : day
     }

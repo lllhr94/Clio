@@ -59,7 +59,7 @@ extension TeamModel {
             var words = "【定时 · \(routine.title)】\(routine.prompt)"
             if now.timeIntervalSince(due.at) > 600 { words += "\n（本该 \(When.show(due.at)) 做，现在补上。）" }
             if due.missed > 0 { words += "\n（之前还错过了 \(due.missed) 次，没有补。）" }
-            guard send(words, photos: [], to: key, userInitiated: false) else { continue }
+            guard send(words, photos: [], to: key, userInitiated: false, experienceSource: .routine) else { continue }
             var done = routine
             done.lastRun = now.timeIntervalSince1970
             if let index = routines.firstIndex(where: { $0.id == routine.id }) { routines[index] = done }
@@ -112,7 +112,7 @@ extension TeamModel {
         // Busy (a routine, say): tried again on the next look, not marked done for the day.
         guard canAcceptInput(for: key), !isWorking(key) else { return }
         let prompt = "早。请给我一封今天的晨信：看看今天和明天的日程、还没做完的提醒；能查天气就说一句天气；再挑一两件今天值得留意的事。短一些，像一封便笺。"
-        if send(prompt, photos: [], to: key, userInitiated: false) {
+        if send(prompt, photos: [], to: key, userInitiated: false, experienceSource: .routine) {
             UserDefaults.standard.set(today, forKey: "morning.last")
         }
     }

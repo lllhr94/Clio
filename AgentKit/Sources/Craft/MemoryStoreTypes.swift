@@ -1,5 +1,31 @@
 import Foundation
 
+/// Cross-store epoch tracker so SQLite connections sharing `ClioMemory/clio-memory.db`
+/// (`MemoryStore` and `ExperienceStore`) immediately detect unlinked/recreated files and reopen cleanly.
+enum ClioMemoryDatabaseCoordinator {
+    private static let lock = NSLock()
+    private static var epochs: [String: UInt64] = [:]
+
+    static func key(for url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    static func epoch(for url: URL?) -> UInt64 {
+        guard let url else { return 0 }
+        lock.lock()
+        defer { lock.unlock() }
+        return epochs[key(for: url), default: 0]
+    }
+
+    static func bump(for url: URL?) {
+        guard let url else { return }
+        lock.lock()
+        let normalized = key(for: url)
+        epochs[normalized, default: 0] &+= 1
+        lock.unlock()
+    }
+}
+
 /// Clio's four-tier memory lifecycle layer.
 public enum MemoryLayer: String, Codable, CaseIterable, Sendable {
     /// 镇纸：置顶常驻核心设定，始终注入对话且不随表面记忆上限下沉。

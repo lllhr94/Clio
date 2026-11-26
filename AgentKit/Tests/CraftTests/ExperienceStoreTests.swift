@@ -26,14 +26,14 @@ final class ExperienceStoreTests: XCTestCase {
         XCTAssertEqual(loaded.count, 1)
     }
 
-    func testCoexistsInSharedClioMemoryDatabaseWithMemoryStoreInEitherOrder() throws {
+    func testCoexistsInSharedClioMemoryDatabaseAndHandlesDestroyFilesEpochReopen() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("exp-shared-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let canonicalURL = dir.appendingPathComponent("Team/experiences.json")
         let sharedDBURL = dir.appendingPathComponent("ClioMemory/clio-memory.db")
 
-        // Open ExperienceStore BEFORE MemoryStore ever touches `clio-memory.db`.
+        // 1. Open ExperienceStore BEFORE MemoryStore ever touches `clio-memory.db`.
         let expStore = ExperienceStore(canonicalFileURL: canonicalURL, databaseURL: sharedDBURL)
         let savedExp = try expStore.record(
             title: "ffmpeg 无损压视频",
@@ -43,7 +43,7 @@ final class ExperienceStoreTests: XCTestCase {
             nowMs: 2_000
         )
 
-        // Now open MemoryStore on the SAME `clio-memory.db` and assert zero schema-mismatch recreation!
+        // 2. Open MemoryStore on the SAME `clio-memory.db` and assert zero schema-mismatch recreation.
         let memStore = MemoryStore(databaseURL: sharedDBURL)
         let recoveryReason = try memStore.openOrRecover()
         XCTAssertEqual(recoveryReason, .none)
@@ -52,9 +52,18 @@ final class ExperienceStoreTests: XCTestCase {
         let expHits = try expStore.search(query: "ffmpeg 压缩录像")
         XCTAssertEqual(expHits.map(\.id), [savedExp.id])
         XCTAssertEqual(try memStore.list(layer: nil).map(\.id), ["m1"])
+
+        // 3. Destroy DB while ExperienceStore already holds an open handle -> ExperienceStore detects epoch/inode
+        // change, cleanly reopens, and rebuilds SQLite projection from Canonical `experiences.json`.
+        memStore.destroyFiles()
+        _ = try memStore.openOrRecover()
+        _ = try memStore.upsert(MemoryRecord(id: "m2", text: "重建后的新记忆", createdAtMs: 3_000))
+        let hitsAfterDestroy = try expStore.search(query: "ffmpeg")
+        XCTAssertEqual(hitsAfterDestroy.map(\.id), [savedExp.id])
+        XCTAssertEqual(try memStore.list(layer: nil).map(\.id), ["m2"])
     }
 
-    func testHybridSearchSecretRedactionTombstonesAndFallbackLikeSearch() throws {
+    func testHybridSearchSecretRedactionUsageSemanticsAndInt32Clamping() throws {
         for disableFTS5 in [false, true] {
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("exp-search-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: dir) }
@@ -78,9 +87,17 @@ final class ExperienceStoreTests: XCTestCase {
             )
             XCTAssertFalse(e1.content.contains(secret))
 
+            // Read-only search (`markUsedNowMs: nil`) leaves persisted `useCount == 0`.
+            let readOnlyHits = try store.search(query: "CSV 批处理", markUsedNowMs: nil)
+            XCTAssertEqual(readOnlyHits.map(\.id), [e1.id])
+            XCTAssertEqual(readOnlyHits.first?.useCount, 0)
+            XCTAssertEqual(try store.loadAll().first?.useCount, 0)
+
+            // Search with `markUsedNowMs` returns incremented `useCount == 1` AND persists it.
             let hits = try store.search(query: "CSV 批处理", markUsedNowMs: 2_000)
             XCTAssertEqual(hits.map(\.id), [e1.id])
             XCTAssertEqual(hits.first?.useCount, 1)
+            XCTAssertEqual(try store.loadAll().first?.useCount, 1)
 
             // Tombstone delete keeps deleted experience suppressed across subsequent search & rebuild.
             try store.delete(id: e1.id, nowMs: 3_000)
@@ -88,5 +105,38 @@ final class ExperienceStoreTests: XCTestCase {
             try store.rebuildFromCanonical()
             XCTAssertTrue(try store.search(query: "CSV").isEmpty)
         }
+
+        // Restored/crafted `experiences.json` with out-of-range `useCount = 2147483648` must clamp safely without crashing.
+        let overflowDir = FileManager.default.temporaryDirectory.appendingPathComponent("exp-overflow-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: overflowDir) }
+        try FileManager.default.createDirectory(at: overflowDir.appendingPathComponent("Team"), withIntermediateDirectories: true)
+        let overflowURL = overflowDir.appendingPathComponent("Team/experiences.json")
+        let overflowJSON = """
+        {
+          "schemaVersion": 1,
+          "updatedAtMs": 1000,
+          "retractedHashes": [],
+          "records": [
+            {
+              "id": "e-big",
+              "title": "大计数恢复校验",
+              "content": "恢复超大 useCount 时不崩溃。",
+              "tags": ["safe"],
+              "createdAtMs": 1000,
+              "updatedAtMs": 1000,
+              "useCount": 2147483648,
+              "source": "user"
+            }
+          ]
+        }
+        """
+        try Data(overflowJSON.utf8).write(to: overflowURL)
+        let overflowStore = ExperienceStore(
+            canonicalFileURL: overflowURL,
+            databaseURL: overflowDir.appendingPathComponent("ClioMemory/clio-memory.db")
+        )
+        let saturatedHits = try overflowStore.search(query: "恢复校验", markUsedNowMs: 2_000)
+        XCTAssertEqual(saturatedHits.map(\.id), ["e-big"])
+        XCTAssertEqual(saturatedHits.first?.useCount, Int(Int32.max))
     }
 }

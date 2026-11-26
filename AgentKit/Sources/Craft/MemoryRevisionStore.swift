@@ -38,6 +38,7 @@ public struct MemoryPendingJournal: Codable, Equatable, Sendable {
     public var preCommitSHA256: String
     public var postCommitSHA256: String
     public var preCommitSnapshotID: String?
+    public var preCommitExisted: Bool
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -46,7 +47,8 @@ public struct MemoryPendingJournal: Codable, Equatable, Sendable {
         targetCanonicalGeneration: UInt64,
         preCommitSHA256: String,
         postCommitSHA256: String,
-        preCommitSnapshotID: String? = nil
+        preCommitSnapshotID: String? = nil,
+        preCommitExisted: Bool = true
     ) {
         self.id = id
         self.createdAtMs = createdAtMs
@@ -55,6 +57,23 @@ public struct MemoryPendingJournal: Codable, Equatable, Sendable {
         self.preCommitSHA256 = preCommitSHA256
         self.postCommitSHA256 = postCommitSHA256
         self.preCommitSnapshotID = preCommitSnapshotID
+        self.preCommitExisted = preCommitExisted
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, createdAtMs, phase, targetCanonicalGeneration, preCommitSHA256, postCommitSHA256, preCommitSnapshotID, preCommitExisted
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.createdAtMs = try c.decode(Double.self, forKey: .createdAtMs)
+        self.phase = try c.decode(Phase.self, forKey: .phase)
+        self.targetCanonicalGeneration = try c.decode(UInt64.self, forKey: .targetCanonicalGeneration)
+        self.preCommitSHA256 = try c.decode(String.self, forKey: .preCommitSHA256)
+        self.postCommitSHA256 = try c.decode(String.self, forKey: .postCommitSHA256)
+        self.preCommitSnapshotID = try c.decodeIfPresent(String.self, forKey: .preCommitSnapshotID)
+        self.preCommitExisted = try c.decodeIfPresent(Bool.self, forKey: .preCommitExisted) ?? true
     }
 }
 
@@ -124,6 +143,7 @@ public final class MemoryRevisionStore: @unchecked Sendable {
     public static let maxRollingSnapshots = 10
     public static let journalFileName = "commit.journal"
     public static let rollbackBackupFileName = "commit-prev.bak.journal"
+    public static let projectionRebuildMarkerFileName = "projection-rebuild.journal"
     public static let healthFileName = "health.json"
 
     public let memoryFileURL: URL
@@ -158,6 +178,28 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         revisionsDirectoryURL.appendingPathComponent(Self.rollbackBackupFileName)
     }
 
+    public var projectionRebuildMarkerURL: URL {
+        revisionsDirectoryURL.appendingPathComponent(Self.projectionRebuildMarkerFileName)
+    }
+
+    public var hasPendingProjectionRebuild: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return FileManager.default.fileExists(atPath: projectionRebuildMarkerURL.path)
+    }
+
+    public func markPendingProjectionRebuild() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try markPendingProjectionRebuildLocked()
+    }
+
+    public func clearPendingProjectionRebuild() {
+        lock.lock()
+        defer { lock.unlock() }
+        try? FileManager.default.removeItem(at: projectionRebuildMarkerURL)
+    }
+
     public var healthFileURL: URL {
         revisionsDirectoryURL.appendingPathComponent(Self.healthFileName)
     }
@@ -182,6 +224,7 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         }
 
         let currentDiskData = try? Data(contentsOf: memoryFileURL)
+        let preCommitExisted = (currentDiskData != nil)
         let preCommitSHA256 = currentDiskData.map(Self.sha256Hex) ?? ""
         let diskBook = currentDiskData.flatMap { try? JSONDecoder().decode(CanonicalMemoryBook.self, from: $0) }
         let diskGeneration = diskBook?.generation ?? 0
@@ -193,29 +236,23 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         let nextData = try jsonEncoder.encode(nextBook)
         let postCommitSHA256 = Self.sha256Hex(nextData)
 
-        // Persist transient pre-commit fallback backup (excluded from backups via `.journal`)
-        if let currentDiskData, !currentDiskData.isEmpty {
-            try Self.atomicWrite(data: currentDiskData, to: rollbackBackupURL)
-        } else {
-            let emptyData = try jsonEncoder.encode(CanonicalMemoryBook())
-            try Self.atomicWrite(data: emptyData, to: rollbackBackupURL)
-        }
-
-        // Optionally capture a rolling user-visible snapshot before overwriting disk
         var createdSnapshot: MemoryRevisionSnapshot?
-        let shouldCreateSnapshot = snapshotReason != nil || (try? listSnapshotFilesLocked())?.isEmpty == true
-        if shouldCreateSnapshot, let baselineBook = diskBook ?? (currentDiskData == nil ? nextBook : nil) {
-            let reason = snapshotReason ?? "baseline"
-            let snapSHA = preCommitSHA256.isEmpty ? postCommitSHA256 : preCommitSHA256
-            createdSnapshot = try writeSnapshotLocked(
-                book: baselineBook,
-                reason: reason,
-                canonicalSHA256: snapSHA,
-                nowMs: nowMs
-            )
+        if preCommitExisted, let currentDiskData {
+            try Self.atomicWrite(data: currentDiskData, to: rollbackBackupURL)
+            let shouldCreatePreSnapshot = snapshotReason != nil || (try? listSnapshotFilesLocked())?.isEmpty == true
+            if shouldCreatePreSnapshot, let diskBook {
+                createdSnapshot = try writeSnapshotLocked(
+                    book: diskBook,
+                    reason: snapshotReason ?? "baseline",
+                    canonicalSHA256: preCommitSHA256,
+                    nowMs: nowMs
+                )
+            }
+        } else {
+            try? fm.removeItem(at: rollbackBackupURL)
         }
 
-        // Phase 1: write `.prepared` journal
+        // Phase 1: write `.prepared` journal (explicitly recording whether pre-commit file existed)
         var journal = MemoryPendingJournal(
             id: UUID().uuidString.lowercased(),
             createdAtMs: nowMs,
@@ -223,7 +260,8 @@ public final class MemoryRevisionStore: @unchecked Sendable {
             targetCanonicalGeneration: targetGeneration,
             preCommitSHA256: preCommitSHA256,
             postCommitSHA256: postCommitSHA256,
-            preCommitSnapshotID: createdSnapshot?.id
+            preCommitSnapshotID: preCommitExisted ? createdSnapshot?.id : nil,
+            preCommitExisted: preCommitExisted
         )
         try writeJournalLocked(journal)
 
@@ -236,6 +274,15 @@ public final class MemoryRevisionStore: @unchecked Sendable {
 
         try? fm.removeItem(at: journalFileURL)
         try? fm.removeItem(at: rollbackBackupURL)
+
+        if !preCommitExisted, (snapshotReason != nil || (try? listSnapshotFilesLocked())?.isEmpty == true) {
+            createdSnapshot = try writeSnapshotLocked(
+                book: nextBook,
+                reason: snapshotReason ?? "baseline",
+                canonicalSHA256: postCommitSHA256,
+                nowMs: nowMs
+            )
+        }
 
         return (book: nextBook, digest: postCommitSHA256, snapshot: createdSnapshot)
     }
@@ -283,8 +330,8 @@ public final class MemoryRevisionStore: @unchecked Sendable {
             return .finalizedCommittedJournal(journalID: journal.id)
         }
 
-        // 3. Uncommitted / partial crash (`diskSHA != postCommitSHA256`): roll back to pre-commit state
-        // while preserving the union of local tombstones and `memory-retracted.json`.
+        // 3. Uncommitted / partial crash (`diskSHA != postCommitSHA256`): mark durable SQLite rebuild FIRST
+        // so any subsequent crash between writing `memory.json` and rebuilding SQLite cannot resurrect old rows.
         var combinedRetracted = extraRetractedHashes
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty }
@@ -295,20 +342,46 @@ public final class MemoryRevisionStore: @unchecked Sendable {
             combinedRetracted.formUnion(diskBook.tombstones.map { $0.textSHA256.lowercased() })
         }
 
-        let (restoredBookRaw, restoredLabel): (CanonicalMemoryBook, String)
-        if let preID = journal.preCommitSnapshotID,
-           let snap = try? loadSnapshotLocked(id: preID) {
-            restoredBookRaw = snap.book
-            restoredLabel = snap.id
-        } else if fm.fileExists(atPath: rollbackBackupURL.path),
-                  let backupData = try? Data(contentsOf: rollbackBackupURL),
-                  let decoded = try? JSONDecoder().decode(CanonicalMemoryBook.self, from: backupData) {
-            restoredBookRaw = decoded
-            restoredLabel = Self.rollbackBackupFileName
-        } else {
-            throw MemoryRevisionStoreError.rollbackUnavailable("缺少可回滚的提交前快照")
+        if !journal.preCommitExisted {
+            try markPendingProjectionRebuildLocked()
+            if combinedRetracted.isEmpty {
+                try? fm.removeItem(at: memoryFileURL)
+            } else {
+                let emptySanitized = Self.applyTombstoneUnion(
+                    to: CanonicalMemoryBook(),
+                    retractedHashes: combinedRetracted,
+                    minimumGeneration: max(diskGeneration, 0),
+                    nowMs: nowMs
+                )
+                try Self.atomicWrite(data: try jsonEncoder.encode(emptySanitized), to: memoryFileURL)
+            }
+            try? fm.removeItem(at: journalFileURL)
+            try? fm.removeItem(at: rollbackBackupURL)
+            updateHealthRecoveryReasonLocked("rolledBack:\(journal.id)->empty")
+            return .rolledBackToSnapshot(journalID: journal.id, snapshotID: "empty")
         }
 
+        guard !journal.preCommitSHA256.isEmpty else {
+            throw MemoryRevisionStoreError.rollbackUnavailable("提交前 SHA-256 摘要缺失")
+        }
+
+        let (restoredBookRaw, restoredLabel): (CanonicalMemoryBook, String)
+        if fm.fileExists(atPath: rollbackBackupURL.path),
+           let backupData = try? Data(contentsOf: rollbackBackupURL),
+           Self.sha256Hex(backupData) == journal.preCommitSHA256,
+           let decoded = try? CanonicalMemoryBook.decodeFlexible(from: backupData) {
+            restoredBookRaw = decoded
+            restoredLabel = Self.rollbackBackupFileName
+        } else if let preID = journal.preCommitSnapshotID,
+                  let snap = try? loadSnapshotLocked(id: preID),
+                  snap.canonicalSHA256.lowercased() == journal.preCommitSHA256.lowercased() {
+            restoredBookRaw = snap.book
+            restoredLabel = snap.id
+        } else {
+            throw MemoryRevisionStoreError.rollbackUnavailable("缺少匹配的提交前镜像（preCommitSHA256 校验未通过）")
+        }
+
+        try markPendingProjectionRebuildLocked()
         let sanitized = Self.applyTombstoneUnion(
             to: restoredBookRaw,
             retractedHashes: combinedRetracted,
@@ -400,6 +473,7 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         )
         let encoded = try jsonEncoder.encode(restoredBook)
         let digest = Self.sha256Hex(encoded)
+        try markPendingProjectionRebuildLocked()
         try Self.atomicWrite(data: encoded, to: memoryFileURL)
         return (book: restoredBook, preRestoreSnapshot: preRestore, digest: digest)
     }
@@ -499,22 +573,33 @@ public final class MemoryRevisionStore: @unchecked Sendable {
 
     private func pruneExcessSnapshotsLocked() {
         guard let urls = try? listSnapshotFilesLocked(), urls.count > maxSnapshots else { return }
-        let loaded = urls.compactMap { url -> (url: URL, createdAtMs: Double, id: String)? in
+        let fm = FileManager.default
+        var valid: [(url: URL, createdAtMs: Double, id: String)] = []
+        for url in urls {
             guard let data = try? Data(contentsOf: url),
                   let snap = try? JSONDecoder().decode(MemoryRevisionSnapshot.self, from: data) else {
-                return nil
+                // Corrupt snapshot files must never evade the rolling 10-snapshot cap.
+                try? fm.removeItem(at: url)
+                continue
             }
-            return (url, snap.createdAtMs, snap.id)
-        }.sorted { lhs, rhs in
+            valid.append((url, snap.createdAtMs, snap.id))
+        }
+        valid.sort { lhs, rhs in
             if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs > rhs.createdAtMs }
             return lhs.id > rhs.id
         }
 
-        guard loaded.count > maxSnapshots else { return }
-        let fm = FileManager.default
-        for entry in loaded.dropFirst(maxSnapshots) {
+        guard valid.count > maxSnapshots else { return }
+        for entry in valid.dropFirst(maxSnapshots) {
             try? fm.removeItem(at: entry.url)
         }
+    }
+
+    private func markPendingProjectionRebuildLocked() throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: revisionsDirectoryURL, withIntermediateDirectories: true)
+        let payload = Data("{\"pendingRebuild\":true}\n".utf8)
+        try Self.atomicWrite(data: payload, to: projectionRebuildMarkerURL)
     }
 
     private func writeJournalLocked(_ journal: MemoryPendingJournal) throws {

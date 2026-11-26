@@ -157,7 +157,7 @@ extension TeamModel {
             state: memoryPromptState,
             recalledHits: allowed ? recalledHints : [],
             isRecallAllowed: { Grant.memory.policy != .off && !Disk.frozen && (key.map { gate.isAllowed($0) } ?? true) },
-            isMemoryEnabled: { key.map { gate.isAllowed($0) } ?? true },
+            isMemoryEnabled: { Grant.memory.policy != .off && (key.map { gate.isAllowed($0) } ?? true) },
             activeSecrets: { Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } }
         )
         let token = UUID()
@@ -254,7 +254,7 @@ extension TeamModel {
             vocabularyLine: Words.promptLine,
             skillsBlock: SkillShelf.promptBlock,
             memories: liveMemoryFacts(),
-            memoryEnabled: memory,
+            memoryEnabled: memory && Grant.memory.policy != .off,
             staticRules: MemorySafety.defaultStaticRules,
             timestampLine: timestampLine,
             diaryLine: diary,

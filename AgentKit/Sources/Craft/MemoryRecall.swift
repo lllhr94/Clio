@@ -1749,6 +1749,7 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
     private var frozenBaseInput: MemorySafety.SystemPromptInput
     private var liveMemories: [MemorySafety.Fact]
     private var frozenFactsByID: [String: MemorySafety.Fact]
+    private var lastLiveFactsByID: [String: MemorySafety.Fact]
     private var envChangeLedger = MemorySafety.EnvChangeLedger()
     private let state: MemorySafety.PromptState
     private var recalledHits: [MemoryRecall.Hit]
@@ -1790,10 +1791,12 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
 
         self.frozenBaseInput = input
         self.liveMemories = input.memories
-        self.frozenFactsByID = Dictionary(
+        let initialMap = Dictionary(
             input.memories.map { ($0.id, $0) },
             uniquingKeysWith: { _, latest in latest }
         )
+        self.frozenFactsByID = initialMap
+        self.lastLiveFactsByID = initialMap
         self.state = state
         self.recalledHits = reconciled
         self.lastObservedGeneration = gen
@@ -1836,10 +1839,12 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
                 envChangeLedger.purge(retractedIDs: retractedIDs, suppressedHashes: suppressedHashes)
                 if frozenBaseInput.memories != liveMemories {
                     frozenBaseInput.memories = liveMemories
-                    frozenFactsByID = Dictionary(
+                    let refreshedMap = Dictionary(
                         liveMemories.map { ($0.id, $0) },
                         uniquingKeysWith: { _, latest in latest }
                     )
+                    frozenFactsByID = refreshedMap
+                    lastLiveFactsByID = refreshedMap
                     Self.dropCoveredMemoryEnvChanges(
                         ledger: &envChangeLedger,
                         coveredIDs: Set(frozenFactsByID.keys)
@@ -1893,9 +1898,10 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
             || memoryEnabled != lastObservedMemoryEnabled
             || allowed != lastObservedRecallAllowed
             || secretsDigest != lastObservedSecretsDigest
-            || Self.requiresHardPrefixInvalidation(frozenByID: frozenFactsByID, incomingByID: incomingByID)
+            || Self.requiresHardPrefixInvalidation(previousByID: lastLiveFactsByID, incomingByID: incomingByID)
 
         liveMemories = memories
+        lastLiveFactsByID = incomingByID
         envChangeLedger.purge(retractedIDs: retractedIDs, suppressedHashes: suppressedHashes)
 
         if hardInvalidation {
@@ -2047,23 +2053,41 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
     }
 
     private static func requiresHardPrefixInvalidation(
-        frozenByID: [String: MemorySafety.Fact],
+        previousByID: [String: MemorySafety.Fact],
         incomingByID: [String: MemorySafety.Fact]
     ) -> Bool {
-        for (id, frozen) in frozenByID {
+        for (id, previous) in previousByID {
             guard let incoming = incomingByID[id] else {
                 return true
             }
-            if incoming.isDeep != frozen.isDeep {
+            if incoming.isDeep != previous.isDeep {
                 return true
             }
-            let oldText = frozen.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let oldText = previous.text.trimmingCharacters(in: .whitespacesAndNewlines)
             let newText = incoming.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if oldText != newText {
                 return true
             }
         }
         return false
+    }
+
+    private static func redactFacts(
+        _ facts: [MemorySafety.Fact],
+        orderedSecrets: [String]
+    ) -> [MemorySafety.Fact] {
+        guard !orderedSecrets.isEmpty else { return facts }
+        return facts.compactMap { fact in
+            let safeText = MemorySafety.redactSecrets(fact.text, secrets: orderedSecrets)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let withoutMask = safeText.replacingOccurrences(of: "〔隐去〕", with: "")
+            guard !safeText.isEmpty, !MemorySafety.normalizedFactKey(withoutMask).isEmpty else {
+                return nil
+            }
+            var copy = fact
+            copy.text = safeText
+            return copy
+        }
     }
 
     private static func dropCoveredMemoryEnvChanges(
@@ -2238,6 +2262,7 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         }
 
         var effectiveInput = baseInput
+        effectiveInput.memories = redactFacts(baseInput.memories, orderedSecrets: orderedSecrets)
         effectiveInput.memoryEnabled = effectiveMemoryEnabled
         effectiveInput.extraTail = combinedTailParts.isEmpty ? nil : combinedTailParts.joined(separator: "\n\n")
         return MemorySafety.assembleSystemPrompt(effectiveInput, state: state)

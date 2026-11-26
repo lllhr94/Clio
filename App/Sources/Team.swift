@@ -943,13 +943,22 @@ final class TeamModel: ObservableObject {
         /// 插话: handed to the companion between its steps, not after the turn.
         var interject: Bool
         var userInitiated: Bool
+        var experienceSource: ExperienceWriteSource
 
-        init(id: UUID = UUID(), text: String, photos: [Data], interject: Bool = false, userInitiated: Bool = true) {
+        init(
+            id: UUID = UUID(),
+            text: String,
+            photos: [Data],
+            interject: Bool = false,
+            userInitiated: Bool = true,
+            experienceSource: ExperienceWriteSource? = nil
+        ) {
             self.id = id
             self.text = text
             self.photos = photos
             self.interject = interject
             self.userInitiated = userInitiated
+            self.experienceSource = experienceSource ?? (userInitiated ? .mainChat : .routine)
         }
     }
 
@@ -1050,13 +1059,16 @@ final class TeamModel: ObservableObject {
     }
 
     @discardableResult
-    func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true) -> Bool {
+    func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true, experienceSource: ExperienceWriteSource? = nil) -> Bool {
         guard phase != .demo, canAcceptInput(for: key) else { return false }
+        let resolvedSource = experienceSource ?? (userInitiated ? .mainChat : .routine)
         MemoryNight.recordActivity()
         if archived.contains(key) { archive(key, false) }
         // Busy with its own turn, or helping another companion: the message waits its turn.
         if runs[key] != nil || helping.contains(key) {
-            withAnimation(.smooth) { queued[key, default: []].append(Queued(text: text, photos: photos, userInitiated: userInitiated)) }
+            withAnimation(.smooth) {
+                queued[key, default: []].append(Queued(text: text, photos: photos, userInitiated: userInitiated, experienceSource: resolvedSource))
+            }
             persistQueued(key)
             return true
         }
@@ -1065,7 +1077,7 @@ final class TeamModel: ObservableObject {
         if let plan = plans[key], plan.allSatisfy({ $0.state == "done" }) { clearPlan(key) }
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names), to: key)
         touch(key, preview: nil)
-        start(key, userInitiated: userInitiated)
+        start(key, userInitiated: userInitiated, experienceSource: resolvedSource)
         return true
     }
 
@@ -1165,7 +1177,8 @@ final class TeamModel: ObservableObject {
             }
         }
         touch(key, preview: nil)
-        start(key, userInitiated: waiting.contains(where: \.userInitiated))
+        let queueSource: ExperienceWriteSource = waiting.contains(where: { $0.userInitiated }) ? .mainChat : (waiting.first?.experienceSource ?? .routine)
+        start(key, userInitiated: waiting.contains(where: \.userInitiated), experienceSource: queueSource)
     }
 
     func stop(_ key: String, keepSendNow: Bool = false) {
@@ -1184,7 +1197,7 @@ final class TeamModel: ObservableObject {
         runs[key]?.task.cancel()
     }
 
-    func start(_ key: String, userInitiated: Bool = true) {
+    func start(_ key: String, userInitiated: Bool = true, experienceSource: ExperienceWriteSource = .mainChat) {
         guard canAcceptInput(for: key) else { return }
         let previous = runs[key]?.task
         stop(key)
@@ -1208,7 +1221,7 @@ final class TeamModel: ObservableObject {
         LiveTurns.begin(chat: key, name: chatName(key), face: LiveFace.png(for: bots.first { Self.key(bot: $0.id) == key }))
         let task = Task { [weak self] in
             await previous?.value
-            await self?.run(key, token: token, userInitiated: userInitiated)
+            await self?.run(key, token: token, userInitiated: userInitiated, experienceSource: experienceSource)
         }
         runs[key] = (token, task, Date(), nil)
         WidgetFeed.publish(self)
@@ -1324,7 +1337,7 @@ final class TeamModel: ObservableObject {
         start(key, userInitiated: false)
     }
 
-    func run(_ key: String, token: UUID, userInitiated: Bool) async {
+    func run(_ key: String, token: UUID, userInitiated: Bool, experienceSource: ExperienceWriteSource = .mainChat) async {
         if userInitiated, !Task.isCancelled, runs[key]?.token == token {
             BackgroundTurn.begin(chat: key, name: chatName(key), token: token)
         }
@@ -1342,7 +1355,7 @@ final class TeamModel: ObservableObject {
                 for member in members {
                     if Task.isCancelled { break }
                     busyBots.insert(member.id)
-                    going = await turn(member, in: key, room: room)
+                    going = await turn(member, in: key, room: room, experienceSource: experienceSource)
                     busyBots.remove(member.id)
                     if !going { break }
                 }
@@ -1355,13 +1368,13 @@ final class TeamModel: ObservableObject {
                     relays += 1
                     doing[key] = "\(member.name)接着说"
                     busyBots.insert(member.id)
-                    going = await turn(member, in: key, room: room)
+                    going = await turn(member, in: key, room: room, experienceSource: experienceSource)
                     busyBots.remove(member.id)
                 }
                 ok = going
             }
         } else if let bot = bots.first(where: { Self.key(bot: $0.id) == key }) {
-            ok = await turn(bot, in: key, room: nil)
+            ok = await turn(bot, in: key, room: nil, experienceSource: experienceSource)
         }
         let cancelled = Task.isCancelled
         settleUsage(key)
@@ -1410,7 +1423,7 @@ final class TeamModel: ObservableObject {
 
     /// One Bot speaks once. False when the group should not go on.
     @discardableResult
-    func turn(_ bot: BotInfo, in key: String, room: RoomInfo?, using forced: String? = nil) async -> Bool {
+    func turn(_ bot: BotInfo, in key: String, room: RoomInfo?, using forced: String? = nil, experienceSource: ExperienceWriteSource = .mainChat) async -> Bool {
         runs[key]?.companion = bot.id
         let picked = forced ?? options(key).model ?? bot.model ?? settings.defaultModel
         guard let found = resolve(picked) ?? resolve(settings.defaultModel) else {
@@ -1478,11 +1491,11 @@ final class TeamModel: ObservableObject {
         )
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         let turnTools: [AgentTool] = traits.tools
-            ? await toolsAsync(for: bot, key: key, canSee: traits.sees, workplace: workplace)
+            ? await toolsAsync(for: bot, key: key, canSee: traits.sees, workplace: workplace, experienceSource: experienceSource)
             : []
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
-        let liveUsesMemory = !options(key).off.contains(Grant.memory.rawValue)
-        let recallAllowedNow = liveUsesMemory && Grant.memory.policy != .off && !Disk.frozen
+        let liveUsesMemory = !options(key).off.contains(Grant.memory.rawValue) && Grant.memory.policy != .off
+        let recallAllowedNow = liveUsesMemory && !Disk.frozen
         let liveDeepIDs = Set(memories.filter { $0.deep == true }.map(\.id))
         let liveRetracted = memoryPromptState.retractedIDsSnapshot()
         let liveSuppressed = memoryPromptState.suppressedFlushHashesSnapshot()
@@ -1994,17 +2007,43 @@ final class TeamModel: ObservableObject {
         assembledSystemPrompt(for: bot, room: room, memory: memory).full
     }
 
-    func toolsAsync(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false, displayChat: String? = nil, workplace: WorkPlace? = nil) async -> [AgentTool] {
+    func toolsAsync(
+        for bot: BotInfo,
+        key: String,
+        canSee: Bool,
+        helping: Bool = false,
+        displayChat: String? = nil,
+        workplace: WorkPlace? = nil,
+        experienceSource: ExperienceWriteSource = .mainChat
+    ) async -> [AgentTool] {
         let imageAPIKey: String?
         if phase != .demo, let selected = imageModelSelection {
             imageAPIKey = await readAPIKey(for: selected.endpoint.id)
         } else {
             imageAPIKey = nil
         }
-        return tools(for: bot, key: key, canSee: canSee, helping: helping, displayChat: displayChat, workplace: workplace, imageAPIKey: imageAPIKey)
+        return tools(
+            for: bot,
+            key: key,
+            canSee: canSee,
+            helping: helping,
+            displayChat: displayChat,
+            workplace: workplace,
+            imageAPIKey: imageAPIKey,
+            experienceSource: experienceSource
+        )
     }
 
-    func tools(for bot: BotInfo, key: String, canSee: Bool, helping: Bool = false, displayChat: String? = nil, workplace: WorkPlace? = nil, imageAPIKey: String? = nil) -> [AgentTool] {
+    func tools(
+        for bot: BotInfo,
+        key: String,
+        canSee: Bool,
+        helping: Bool = false,
+        displayChat: String? = nil,
+        workplace: WorkPlace? = nil,
+        imageAPIKey: String? = nil,
+        experienceSource: ExperienceWriteSource = .mainChat
+    ) -> [AgentTool] {
         let botId = bot.id
         let approvalChat = displayChat ?? key
         var all: [AgentTool] = [WebSearchTool(), WebReadTool(), WeatherTool()]
@@ -2018,8 +2057,8 @@ final class TeamModel: ObservableObject {
         all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
         all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
         all.append(RecallTool { [weak self] words in await self?.recall(words) ?? [] })
-        let experienceSource: ExperienceWriteSource = helping ? .subtask : .mainChat
-        all.append(RecordExperienceTool(source: experienceSource) { title, content, tags, source in
+        let effectiveExperienceSource: ExperienceWriteSource = helping ? .subtask : experienceSource
+        all.append(RecordExperienceTool(source: effectiveExperienceSource) { title, content, tags, source in
             await ExperienceStoreBridge.shared.recordTool(title: title, content: content, tags: tags, source: source)
         })
         all.append(RecallExperienceTool { query, limit in
@@ -2613,7 +2652,7 @@ extension TeamModel {
                     try await review(source, day: batch.day, lines: batch.lines, cutoff: cutoff)
                 } catch {
                     // Network/model/disk failures leave every entry eligible for another attempt.
-                    if !Task.isCancelled {
+                    if !Task.isCancelled && !(error is CancellationError) {
                         memoryReviewAttempts[source.id] = now
                         MemoryStoreBridge.shared.recordReviewFailure(message: error.localizedDescription)
                     }
@@ -2673,10 +2712,12 @@ extension TeamModel {
                 return ReviewScanResult(day: nil, lines: [], markClean: false)
             }
             let byDay = Dictionary(grouping: eligible, by: Self.reviewDay)
+            // Union entry IDs across all retained day buckets so 05:00 -> 04:00 boundary migration
+            // never re-processes an entry already recorded under yesterday's legacy bucket.
+            let allProcessedIDs = Self.processedEntryIDs(in: processedByDay)
             for day in byDay.keys.sorted() {
                 guard let lines = byDay[day], lines.contains(where: { $0.message.role == .user }) else { continue }
-                let processed = processedByDay[day] ?? []
-                let pending = lines.filter { !processed.contains($0.id) }
+                let pending = lines.filter { !allProcessedIDs.contains($0.id) }
                 if !pending.isEmpty {
                     return ReviewScanResult(day: day, lines: Array(pending.prefix(12)), markClean: false)
                 }
@@ -2704,6 +2745,14 @@ extension TeamModel {
 
     private nonisolated static func reviewDay(_ entry: Entry) -> String {
         LogicalDay.day(of: Date(timeIntervalSince1970: entry.at / 1000))
+    }
+
+    nonisolated static func processedEntryIDs(in processedByDay: [String: Set<String>]) -> Set<String> {
+        var combined = Set<String>()
+        for ids in processedByDay.values {
+            combined.formUnion(ids)
+        }
+        return combined
     }
 
     private struct ReviewPromptPrep {

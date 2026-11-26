@@ -89,16 +89,23 @@ final class ExperienceStoreBridge: @unchecked Sendable {
 
     func rebuildFromCanonicalOffMain() async {
         await withCheckedContinuation { continuation in
-            queue.async { [store] in
-                guard !Disk.frozen else {
-                    continuation.resume()
-                    return
-                }
-                let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
-                try? store.rebuildFromCanonical(secrets: secrets)
+            queue.async { [weak self] in
+                self?.rebuildFromCanonicalLocked()
                 continuation.resume()
             }
         }
+    }
+
+    func rebuildFromCanonicalSync() {
+        queue.sync {
+            rebuildFromCanonicalLocked()
+        }
+    }
+
+    private func rebuildFromCanonicalLocked() {
+        guard !Disk.frozen else { return }
+        let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+        try? store.rebuildFromCanonical(secrets: secrets)
     }
 
     func mergeRetractedHashesSync(_ hashes: Set<String>) {
@@ -142,13 +149,12 @@ final class ExperienceStoreBridge: @unchecked Sendable {
         return await withCheckedContinuation { continuation in
             queue.async { [store] in
                 let secrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
-                let markUsed = Disk.frozen ? nil : Now.ms
                 let hits = (try? store.search(
                     query: query,
                     limit: limit,
                     suppressedHashes: suppressed,
                     secrets: secrets,
-                    markUsedNowMs: markUsed
+                    markUsedNowMs: nil
                 )) ?? []
                 continuation.resume(returning: hits)
             }

@@ -101,6 +101,7 @@ public final class MemoryStore: @unchecked Sendable {
         closeLocked()
         unlinkDatabaseFiles()
         _needsBootstrapFromCanonical = true
+        ClioMemoryDatabaseCoordinator.bump(for: databaseURL)
         lock.unlock()
     }
 
@@ -1293,6 +1294,7 @@ public final class MemoryStore: @unchecked Sendable {
             unlinkDatabaseFiles()
         }
         try createFreshDatabaseLocked(reason: reason)
+        ClioMemoryDatabaseCoordinator.bump(for: databaseURL)
     }
 
     private func quarantineCorruptDatabaseFilesLocked() {

@@ -155,14 +155,20 @@ final class MemoryRecallBridge: @unchecked Sendable {
             return []
         }
 
-        if !keeping || diskFrozen {
+        if !keeping || diskFrozen || (scope == .allActive && !recordUsage) {
+            let sourceRecords: [MemoryRecord]
+            if keeping && scope == .allActive && !recordUsage {
+                sourceRecords = MemoryStoreBridge.shared.recordsSnapshot()
+            } else {
+                sourceRecords = fallbackRecords
+            }
             return await Task.detached(priority: .userInitiated) {
                 let secrets = Self.orderedSecrets(Vault.allStrings())
                 switch scope {
                 case .deepOnly:
                     return MemoryRecall.searchDeep(
                         query: rawQuery,
-                        records: fallbackRecords,
+                        records: sourceRecords,
                         excludedIDs: retractedIDs,
                         suppressedHashes: suppressedHashes,
                         existingSurfaceTexts: fallbackSurfaceTexts,
@@ -172,7 +178,7 @@ final class MemoryRecallBridge: @unchecked Sendable {
                 case .allActive:
                     return MemoryRecall.searchAll(
                         query: rawQuery,
-                        records: fallbackRecords,
+                        records: sourceRecords,
                         excludedIDs: retractedIDs,
                         suppressedHashes: suppressedHashes,
                         secrets: secrets,

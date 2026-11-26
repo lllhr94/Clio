@@ -22,20 +22,44 @@ final class MemorySafetyV37Tests: XCTestCase {
         XCTAssertTrue(active.fullBlock.contains("记忆与用户当前亲口说的话有冲突时，一律以当前对话为准"))
     }
 
-    func testPromptPrefixFreezeOnAdditiveMemoryAndEnvChangeTailPurgeOnRetract() {
+    func testPromptPrefixFreezeEnvChangeTailAndMidTurnVaultSecretMasking() {
         let state = MemorySafety.PromptState()
+        let secretLock = NSLock()
+        var vaultSecrets: [String] = []
+        var memoryAllowed = true
+
         let initialSurface = MemorySafety.Fact(id: "s1", text: "用户每天晨跑三公里", at: 100, isDeep: false)
+        let secretBearingSurface = MemorySafety.Fact(id: "s-sec", text: "测试令牌是 sk-midturn-987654321", at: 150, isDeep: false)
         let input = MemorySafety.SystemPromptInput(
             identity: "你是「小克」。",
-            memories: [initialSurface],
+            memories: [initialSurface, secretBearingSurface],
             memoryEnabled: true
         )
-        let refresher = MemoryRecallPromptRefresher(input: input, state: state)
+        let refresher = MemoryRecallPromptRefresher(
+            input: input,
+            state: state,
+            isRecallAllowed: {
+                secretLock.lock()
+                defer { secretLock.unlock() }
+                return memoryAllowed
+            },
+            isMemoryEnabled: {
+                secretLock.lock()
+                defer { secretLock.unlock() }
+                return memoryAllowed
+            },
+            activeSecrets: {
+                secretLock.lock()
+                defer { secretLock.unlock() }
+                return vaultSecrets
+            }
+        )
         let before = refresher.currentPrompt()
+        XCTAssertTrue(before.prefix.contains("sk-midturn-987654321"))
 
         // 1. Additive remember: prefix MUST remain 100% byte-identical, while new memory enters <env-change> tail.
         let addedFact = MemorySafety.Fact(id: "s2", text: "用户最近改喝美式咖啡", at: 200, isDeep: false)
-        refresher.refresh(memories: [initialSurface, addedFact])
+        refresher.refresh(memories: [initialSurface, secretBearingSurface, addedFact])
         let afterAdd = refresher.currentPrompt()
         XCTAssertEqual(afterAdd.prefix, before.prefix)
         XCTAssertTrue(afterAdd.tail.contains("<env-change>"))
@@ -48,17 +72,30 @@ final class MemorySafetyV37Tests: XCTestCase {
         XCTAssertEqual(afterMount.prefix, before.prefix)
         XCTAssertTrue(afterMount.tail.contains("挂载了书案/挂载/Docs/"))
 
-        // 3. Forget / retract: triggers hard invalidation and immediately purges from BOTH prefix & <env-change>.
-        state.retract(id: addedFact.id, textForInFlightGuard: addedFact.text)
-        refresher.refresh(memories: [initialSurface])
-        let afterRetract = refresher.currentPrompt()
-        XCTAssertFalse(afterRetract.full.contains("用户最近改喝美式咖啡"))
-        XCTAssertTrue(afterRetract.tail.contains("挂载了书案/挂载/Docs/"))
+        // 3. Post-freeze added fact modified/demoted -> no stale text lingers in tail or prefix.
+        let modifiedAdded = MemorySafety.Fact(id: "s2", text: "用户最近改喝拿铁", at: 200, isDeep: false)
+        refresher.refresh(memories: [initialSurface, secretBearingSurface, modifiedAdded])
+        let afterEdit = refresher.currentPrompt()
+        XCTAssertFalse(afterEdit.full.contains("用户最近改喝美式咖啡"))
+        XCTAssertTrue(afterEdit.full.contains("用户最近改喝拿铁"))
 
-        state.retract(id: initialSurface.id, textForInFlightGuard: initialSurface.text)
-        let afterRetractInitial = refresher.currentPrompt()
-        XCTAssertFalse(afterRetractInitial.prefix.contains("用户每天晨跑三公里"))
-        XCTAssertFalse(afterRetractInitial.full.contains("用户每天晨跑三公里"))
+        // 4. Vault secret added mid-turn -> immediately masks frozen surface facts in BOTH prefix & full.
+        secretLock.lock()
+        vaultSecrets = ["sk-midturn-987654321"]
+        secretLock.unlock()
+        let afterSecret = refresher.currentPrompt()
+        XCTAssertFalse(afterSecret.prefix.contains("sk-midturn-987654321"))
+        XCTAssertFalse(afterSecret.full.contains("sk-midturn-987654321"))
+        XCTAssertTrue(afterSecret.prefix.contains("〔隐去〕"))
+
+        // 5. Permission tightening disables ALL memory injection (prefix & .memoryAdded tail) immediately.
+        secretLock.lock()
+        memoryAllowed = false
+        secretLock.unlock()
+        let afterDisable = refresher.currentPrompt()
+        XCTAssertFalse(afterDisable.full.contains("用户每天晨跑三公里"))
+        XCTAssertFalse(afterDisable.full.contains("用户最近改喝拿铁"))
+        XCTAssertTrue(afterDisable.tail.contains("挂载了书案/挂载/Docs/"))
     }
 
     func testCurrentStatusToolIsZeroApprovalReadOnly() async throws {

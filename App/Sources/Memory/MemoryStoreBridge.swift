@@ -188,15 +188,25 @@ final class MemoryStoreBridge: @unchecked Sendable {
         if pendingRebuild {
             UserDefaults.standard.removeObject(forKey: Self.pendingRestoreRebuildDefaultsKey)
         }
+        if revisionStore.hasPendingProjectionRebuild {
+            pendingRebuild = true
+        }
+        var journalRecoveryFailed = false
         if !Disk.frozen && !pendingRebuild {
-            if let recovery = try? revisionStore.recoverPendingJournalIfNeeded(
-                extraRetractedHashes: retractedHashes,
-                nowMs: Now.ms
-            ), case .rolledBackToSnapshot(_, _) = recovery {
-                pendingRebuild = true
+            do {
+                let recovery = try revisionStore.recoverPendingJournalIfNeeded(
+                    extraRetractedHashes: retractedHashes,
+                    nowMs: Now.ms
+                )
+                if case .rolledBackToSnapshot(_, _) = recovery {
+                    pendingRebuild = true
+                }
+            } catch {
+                journalRecoveryFailed = true
             }
         }
-        if pendingRebuild {
+        if pendingRebuild || revisionStore.hasPendingProjectionRebuild {
+            pendingRebuild = true
             store.destroyFiles()
             MemoryMarkdownMirror.clearMirrors(mirrorsRoot: mirrorRoot)
         }
@@ -208,7 +218,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         let jsonNeedsRewrite: Bool
         switch diskLoad {
         case .missing:
-            stateLock.withLock { canonicalLoadFailed = false }
+            stateLock.withLock { canonicalLoadFailed = journalRecoveryFailed }
             incomingBook = nil
             initialDigest = nil
             jsonNeedsRewrite = false
@@ -218,7 +228,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
             initialDigest = nil
             jsonNeedsRewrite = false
         case .corrupt(let rawData):
-            stateLock.withLock { canonicalLoadFailed = false }
+            stateLock.withLock { canonicalLoadFailed = journalRecoveryFailed }
             if !Disk.frozen {
                 let aside = memoryURL.deletingLastPathComponent()
                     .appendingPathComponent("memory.broken-\(Int(Date().timeIntervalSince1970)).json")
@@ -228,7 +238,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
             initialDigest = nil
             jsonNeedsRewrite = true
         case .decoded(let decoded, let digest):
-            stateLock.withLock { canonicalLoadFailed = false }
+            stateLock.withLock { canonicalLoadFailed = journalRecoveryFailed }
             incomingBook = decoded
             initialDigest = digest
             jsonNeedsRewrite = false
@@ -284,6 +294,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
                     mirrorsRoot: mirrorRoot
                 )
             }
+            revisionStore.clearPendingProjectionRebuild()
 
             return BootstrapResult(
                 book: appBook,
@@ -1540,11 +1551,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                             )
                         }
                         if isShared {
-                            Task.detached(priority: .utility) {
-                                await ExperienceStoreBridge.shared.rebuildFromCanonicalOffMain()
-                            }
+                            ExperienceStoreBridge.shared.rebuildFromCanonicalSync()
                             MemoryRecallBridge.shared.scheduleSync()
                         }
+                        self.revisionStore.clearPendingProjectionRebuild()
                         continuation.resume(returning: (book: appBook, preRestore: restored.preRestoreSnapshot))
                     } catch {
                         continuation.resume(throwing: error)
