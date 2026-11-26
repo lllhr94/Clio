@@ -71,13 +71,16 @@ final class CoreTextCostAndTypographyTests: XCTestCase {
         let tight = NSMutableAttributedString(string: "使用Swift与Rust2026版", attributes: [fontAttr: font])
         ClioMixedScriptKerning.apply(to: tight, fontSize: 17.0)
 
-        var appliedKerns: [(Int, Double)] = []
+        var kernBoundaryChars = 0
         tight.enumerateAttribute(.kern, in: NSRange(location: 0, length: tight.length)) { val, range, _ in
-            if let num = val as? NSNumber {
-                appliedKerns.append((range.location, num.doubleValue))
+            if let num = val as? NSNumber, num.doubleValue > 0 {
+                // enumerateAttribute merges adjacent equal attributes (e.g. "t" and "与" in "Swift与Rust"),
+                // so sum range.length to count every kerned boundary character accurately.
+                kernBoundaryChars += range.length
             }
         }
-        XCTAssertGreaterThanOrEqual(appliedKerns.count, 5, "Direct CJK<->Latin/Digit boundaries must receive optical kern")
+        // Boundaries in "使用Swift与Rust2026版": 用|S, t|与, 与|R, 6|版 -> 4 boundaries.
+        XCTAssertEqual(kernBoundaryChars, 4, "Every direct CJK<->Latin/Digit boundary must receive optical kern")
 
         // When source already contains spaces (halfwidth or fullwidth), zero additional kern may be added.
         let spaced = NSMutableAttributedString(string: "使用 Swift 与 Rust 2026 版\u{3000}Test", attributes: [fontAttr: font])

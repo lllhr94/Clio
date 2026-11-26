@@ -13,9 +13,13 @@ final class TextRevealControllerTests: XCTestCase {
         XCTAssertFalse(controller.isFinalizing)
 
         controller.observeUpdate(latestLength: 50, at: 0.05)
-        let first = controller.tick(now: 0.066)
-        XCTAssertGreaterThan(first.revealedGlyphCount, 0)
-        XCTAssertFalse(first.isComplete)
+        // First tick initializes TextRevealController.lastFrameTime (dt == 0), subsequent frame advances reveal.
+        let initFrame = controller.tick(now: 0.066)
+        XCTAssertEqual(initFrame.revealedGlyphCount, 0)
+        XCTAssertFalse(initFrame.isComplete)
+        let secondFrame = controller.tick(now: 0.082)
+        XCTAssertGreaterThan(secondFrame.revealedGlyphCount, 0)
+        XCTAssertFalse(secondFrame.isComplete)
 
         // Burst while finalizing must still drain cleanly without overshooting latestLength.
         controller.observeUpdate(latestLength: 120, at: 0.12)

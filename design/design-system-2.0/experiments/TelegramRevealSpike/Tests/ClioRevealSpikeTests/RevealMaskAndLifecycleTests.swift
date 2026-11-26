@@ -174,6 +174,12 @@ final class RevealMaskAndLifecycleTests: XCTestCase {
         // 3. Active selection locks structural settle & defers cleanup until endSelection().
         adapter.beginSelection(range: NSRange(location: 4, length: 6))
         adapter.finishStream(at: 0.8)
+        XCTAssertTrue(adapter.displayState.isFinalizing)
+        // Advance frames through finalize drain (up to 5s @ 60Hz under durationMultiplier=10.0) while selection stays active.
+        for step in 1...300 {
+            if !scheduler.isRunning { break }
+            scheduler.stepFrame(at: 0.8 + Double(step) * (1.0 / 60.0))
+        }
         XCTAssertTrue(adapter.displayState.hasPendingDeferredCommit)
         XCTAssertFalse(adapter.displayState.isSettled)
         XCTAssertEqual(adapter.activeSelectionUTF16Range, NSRange(location: 4, length: 6))
