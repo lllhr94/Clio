@@ -392,6 +392,7 @@ extension ChatPage {
             reach: reach,
             petPerch: petPerch,
             chrome: chrome,
+            chromeCoordinator: chromeCoordinator,
             viewport: viewport,
             followState: followState,
             dictationSlot: dictationSlot,

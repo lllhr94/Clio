@@ -79,6 +79,7 @@ struct ChatFloatingJumpOverlay: View {
     let petPerch: PetPerch
     let inHistory: Bool
     let following: Bool
+    var suppressed: Bool = false
     let onPrevious: () -> Void
     let onNext: () -> Void
     let onLatest: () -> Void
@@ -88,21 +89,17 @@ struct ChatFloatingJumpOverlay: View {
     }
 
     private func updateKeepOut() {
-        let width: CGFloat
-        if chrome.jumpVisible && latestIsFloating {
-            width = 104 * UIScale.factor + Ink.Space.xs + Ink.Space.s
-        } else if chrome.jumpVisible {
-            width = 70 * UIScale.factor + Ink.Space.s
-        } else if latestIsFloating {
-            width = 32 * UIScale.factor + Ink.Space.s
-        } else {
-            width = 0
-        }
+        let width = ChatChromeCoordinator.jumpKeepOutWidth(
+            jumpVisible: !suppressed && chrome.jumpVisible,
+            latestVisible: !suppressed && latestIsFloating
+        )
         withAnimation(Ink.Motion.settle) { petPerch.keepOutRight = width }
     }
 
     var body: some View {
         let controlHeight = 32 * UIScale.factor
+        let showGroup = !suppressed && chrome.jumpVisible
+        let showLatest = !suppressed && latestIsFloating
         HStack(spacing: Ink.Space.xs) {
             HStack(spacing: 0) {
                 jumpButton("arrow.up", title: "chat.previousQuestion", action: onPrevious)
@@ -113,11 +110,11 @@ struct ChatFloatingJumpOverlay: View {
             }
             .frame(height: controlHeight)
             .glassBacking(in: Capsule())
-            .opacity(chrome.jumpVisible ? 1 : 0)
-            .allowsHitTesting(chrome.jumpVisible)
-            .accessibilityHidden(!chrome.jumpVisible)
+            .opacity(showGroup ? 1 : 0)
+            .allowsHitTesting(showGroup)
+            .accessibilityHidden(!showGroup)
 
-            if latestIsFloating {
+            if showLatest {
                 Button(action: onLatest) {
                     Image(systemName: "arrow.down.to.line")
                         .font(.system(size: Ink.Size.small, weight: .semibold))
@@ -134,8 +131,9 @@ struct ChatFloatingJumpOverlay: View {
         .offset(y: -(controlHeight + Ink.Space.s))
         .onChange(of: chrome.jumpVisible, initial: true) { _, _ in updateKeepOut() }
         .onChange(of: latestIsFloating, initial: true) { _, _ in updateKeepOut() }
-        .animation(Ink.Motion.settle, value: chrome.jumpVisible)
-        .animation(Ink.Motion.settle, value: latestIsFloating)
+        .onChange(of: suppressed, initial: true) { _, _ in updateKeepOut() }
+        .animation(Ink.Motion.settle, value: showGroup)
+        .animation(Ink.Motion.settle, value: showLatest)
     }
 
     private func jumpButton(_ symbol: String, title: String, action: @escaping () -> Void) -> some View {

@@ -905,6 +905,9 @@ final class ChatListActions {
     var onVisibleIDsChanged: ([String]) -> Void = { _ in }
     var onActiveTurnChanged: (String?) -> Void = { _ in }
     var onScrollPhaseChanged: (String) -> Void = { _ in }
+    var onScrollDelta: (CGFloat, CGFloat, Bool) -> Void = { _, _, _ in }
+    var onKeyboardVisibilityChanged: (Bool) -> Void = { _ in }
+    var onProgrammaticScroll: () -> Void = {}
     var onDragStarted: () -> Void = {}
     var onScrollEnded: () -> Void = {}
     var onPickStarter: (String) -> Void = { _ in }
@@ -958,9 +961,21 @@ final class ChatListControllerProxy {
 /// Shared layout constants matching Clio's SwiftUI chat rows.
 @MainActor
 enum ChatCellMetrics {
-    static var rowSpacing: CGFloat { Ink.Space.m }
+    @MainActor static var rowSpacing: CGFloat {
+        switch Pref.uiDensity {
+        case .compact: return Ink.Space.s
+        case .standard: return Ink.Space.m
+        case .comfortable: return Ink.Space.l
+        }
+    }
     static var sectionSpacing: CGFloat { Ink.Space.s }
-    static var userTurnTopPad: CGFloat { Ink.Space.l }
+    @MainActor static var userTurnTopPad: CGFloat {
+        switch Pref.uiDensity {
+        case .compact: return Ink.Space.m
+        case .standard: return Ink.Space.l
+        case .comfortable: return Ink.Space.xl
+        }
+    }
     static var speakerRowGap: CGFloat { Ink.Space.s }
     static var faceSize: CGFloat { ChatPage.face }
     static var compactSpeakerSize: CGFloat { 22 * UIScale.factor }
@@ -970,7 +985,13 @@ enum ChatCellMetrics {
     static var photoSpacing: CGFloat { Ink.Space.s }
     static var userBubblePadH: CGFloat { Ink.Space.l }
     static var userBubblePadV: CGFloat { 10 * UIScale.factor }
-    static var botBlockGap: CGFloat { Ink.Space.m }
+    @MainActor static var botBlockGap: CGFloat {
+        switch Pref.uiDensity {
+        case .compact: return Ink.Space.s
+        case .standard: return Ink.Space.m
+        case .comfortable: return Ink.Space.l
+        }
+    }
     static var disclosureHeaderHeight: CGFloat { 22 * UIScale.factor }
     static var disclosureGap: CGFloat { Ink.Space.s }
     static var sourcesPillHeight: CGFloat { 28 * UIScale.factor }

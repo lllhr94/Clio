@@ -85,6 +85,7 @@ struct ChatPage: View {
     }
     @State var hideJumps: Task<Void, Never>?
     @State var chrome = ChatChrome()
+    @State var chromeCoordinator = ChatChromeCoordinator()
     @State var viewport = ChatViewport()
     @State var selecting: Set<UUID> = []
     @State var sharing: ShareFile?
@@ -836,6 +837,7 @@ struct ChatPage: View {
             team: team,
             bot: bot,
             chrome: chrome,
+            chromeCoordinator: chromeCoordinator,
             petPerch: petPerch,
             asker: asker,
             dictationSlot: dictationSlot,
@@ -1041,6 +1043,9 @@ struct ChatPage: View {
             Ink.paper.ignoresSafeArea()
             conversation
             if !roaming {
+                let roamTop = chromeCoordinator.isImmersive
+                    ? (headerHeight > 0 ? headerHeight : 52) + Ink.Space.xs
+                    : (headerHeight > 0 ? headerHeight : Ink.Bar.height + Ink.Space.s) + Ink.Space.s
                 HStack {
                     Spacer()
                     ChatRoamThumbOverlay(browser: team.browser, chrome: chrome) {
@@ -1048,22 +1053,40 @@ struct ChatPage: View {
                         roaming = true
                     }
                 }
-                .padding(.top, (headerHeight > 0 ? headerHeight : Ink.Bar.height + Ink.Space.s) + Ink.Space.s)
+                .padding(.top, roamTop)
                 .padding(.trailing, Ink.Bar.edge)
                 .zIndex(3)
             }
         }
-        .background { observers }
+        .background {
+            observers
+            chromeLockObserver
+        }
         .safeAreaInset(edge: .bottom) { bottomStack }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
             if chatViewport != newSize { chatViewport = newSize }
         }
     }
 
+    private var chromeLockObserver: some View {
+        ChatChromeLockObserver(
+            coordinator: chromeCoordinator,
+            chatKey: chat.key,
+            team: team,
+            asker: asker,
+            dictationSlot: dictationSlot,
+            composerFocused: typing,
+            activeSelection: !selecting.isEmpty,
+            quoteOrEdit: quote != nil || editing != nil,
+            finding: finding
+        )
+    }
+
     private func withLifecycleModifiers<Content: View>(_ content: Content) -> some View {
         content
             .onAppear { handleAppear() }
             .task(id: chat.key) { await loadDraftAsync(for: chat.key) }
+            .onChange(of: chat.key) { _, _ in chromeCoordinator.resetForChatSwitch() }
             .onChange(of: photos) { _, _ in
                 if !isApplyingLoadedAttachments { draftAttachmentsEdited = true }
             }
@@ -1326,6 +1349,7 @@ struct ChatPage: View {
 
     private func handleDisappear() {
         DiagTrail.record("关对话")
+        chromeCoordinator.restore()
         if PetNews.shared.focused == chat.key { PetNews.shared.focused = nil }
         followPending?.cancel()
         settleEnd?.cancel()
@@ -1477,6 +1501,76 @@ struct ChatPage: View {
     @State var tuningOpen = false
     @State var careOpen = false
     @State var petSettingsOpen = false
+}
+
+private struct ChatChromeLockObserver: View {
+    let coordinator: ChatChromeCoordinator
+    let chatKey: String
+    @ObservedObject var team: TeamModel
+    @ObservedObject var asker: Asker
+    let dictationSlot: ChatDictationSlot
+    let composerFocused: Bool
+    let activeSelection: Bool
+    let quoteOrEdit: Bool
+    let finding: Bool
+
+    private var hasPendingApproval: Bool {
+        team.approvals.contains { $0.chat == chatKey }
+    }
+
+    private var hasInlineAsk: Bool {
+        guard let current = asker.current, current.inline,
+              current.chat == nil || current.chat == chatKey else { return false }
+        return team.isWorking(chatKey)
+    }
+
+    private var hasBrowserTakeover: Bool {
+        guard team.browser.handoff != nil else { return false }
+        return team.browser.handoffChat == nil || team.browser.handoffChat == chatKey
+    }
+
+    var body: some View {
+        let syncSignal = "\(composerFocused)|\(activeSelection)|\(quoteOrEdit)|\(hasPendingApproval)|\(hasInlineAsk)|\(hasBrowserTakeover)|\(finding)"
+        Group {
+            if let dictation = dictationSlot.instance {
+                ChatActiveDictationLockObserver(coordinator: coordinator, dictation: dictation)
+            } else {
+                Color.clear
+                    .frame(width: 0, height: 0)
+                    .onAppear { coordinator.syncLocks(dictating: false) }
+            }
+        }
+        .frame(width: 0, height: 0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .onChange(of: syncSignal, initial: true) { _, _ in
+            coordinator.syncLocks(
+                composerFocused: composerFocused,
+                activeSelection: activeSelection,
+                quoteOrEdit: quoteOrEdit,
+                pendingApproval: hasPendingApproval,
+                inlineAsk: hasInlineAsk,
+                browserTakeover: hasBrowserTakeover,
+                finding: finding
+            )
+        }
+    }
+}
+
+private struct ChatActiveDictationLockObserver: View {
+    let coordinator: ChatChromeCoordinator
+    @ObservedObject var dictation: Dictation
+
+    var body: some View {
+        let dictating = dictation.listening || dictation.transcribing
+        Color.clear
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onChange(of: dictating, initial: true) { _, next in
+                coordinator.syncLocks(dictating: next)
+            }
+    }
 }
 
 @MainActor @Observable

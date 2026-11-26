@@ -99,6 +99,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var pendingMountRefresh = false
     private var deferredState: ChatListState?
     private var pendingKeyboardSync = false
+    private var lastReportedKeyboardOpen: Bool?
     private var styleObservationGeneration: UInt64 = 0
 
     private let keyboardSpacerView = UIView()
@@ -152,6 +153,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         pendingMountRefresh = false
         deferredState = nil
         pendingKeyboardSync = false
+        lastReportedKeyboardOpen = nil
         styleObservationGeneration &+= 1
         pendingHostMetricFlush = false
         pendingDynamicRefresh = false
@@ -1903,6 +1905,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if insetDisplayLink != nil && abs(insetCatchUpToBottom - insetCatchUpFromBottom) > 0.5 && duration > 0.01 {
             insetCatchUpDuration = max(0.08, duration)
         }
+        let kbOpen = endOverlap > 10
+        if lastReportedKeyboardOpen != kbOpen {
+            lastReportedKeyboardOpen = kbOpen
+            actions.onKeyboardVisibilityChanged(kbOpen)
+        }
     }
 
     private func handleKeyboardDidChangeFrame(endScreen: CGRect?) {
@@ -1916,6 +1923,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if let endScreen {
             activeKeyboardEndOverlap = keyboardOverlap(forScreenRect: endScreen)
             activeKeyboardStartOverlap = activeKeyboardEndOverlap
+        }
+        let kbOpen = activeKeyboardEndOverlap > 10
+        if lastReportedKeyboardOpen != kbOpen {
+            lastReportedKeyboardOpen = kbOpen
+            actions.onKeyboardVisibilityChanged(kbOpen)
         }
         activeKeyboardDeadline = 0
         if insetDisplayLink != nil {
@@ -2010,7 +2022,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             : max(view.safeAreaInsets.top, windowTop + (currentState?.headerHeight ?? 0))
         let resolvedBottom = hostBottomInset > 0 ? hostBottomInset : view.safeAreaInsets.bottom
         let desiredTop = resolvedTop + Ink.Space.s
-        let desiredBottom = resolvedBottom + Ink.Space.xs
+        let desiredBottom = resolvedBottom + Ink.Space.m
 
         let comparedTop = insetDisplayLink != nil ? targetTopInset : collectionView.contentInset.top
         let comparedBottom = insetDisplayLink != nil ? targetBottomInset : collectionView.contentInset.bottom
@@ -2253,6 +2265,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func performScrollToRow(section: Int, anchor: UnitPoint, animated: Bool) {
+        actions.onProgrammaticScroll()
         prewarmAroundSection(section)
         let indexPath = IndexPath(item: 0, section: section)
         collectionView.layoutIfNeeded()
@@ -2310,6 +2323,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func scrollToBottom(animated: Bool, layoutIfNeeded: Bool = true, publishMetrics: Bool = true) {
+        actions.onProgrammaticScroll()
         let targetY = bottomOffsetY(for: collectionView)
         isPinnedToBottom = true
         if animated {
@@ -2492,6 +2506,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                     isPinnedToBottom = false
                     actions.onFollowingChanged(false)
                     actions.onDragStarted()
+                }
+            }
+            if touching {
+                let deltaY = currentY - prevY
+                if abs(deltaY) > 0.25 {
+                    let distanceFromBottom = max(0, bottomY - currentY)
+                    let totalContentH = scrollView.contentSize.height + scrollView.contentInset.top + scrollView.contentInset.bottom
+                    let isScrollable = totalContentH > scrollView.bounds.height + 60
+                    actions.onScrollDelta(deltaY, distanceFromBottom, isScrollable)
                 }
             }
         }

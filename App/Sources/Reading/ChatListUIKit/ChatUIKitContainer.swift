@@ -524,6 +524,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
     let reach: String
     let petPerch: PetPerch
     let chrome: ChatChrome
+    let chromeCoordinator: ChatChromeCoordinator
     let viewport: ChatViewport
     let followState: ChatFollowState
     let dictationSlot: ChatDictationSlot
@@ -581,6 +582,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
         reach: String,
         petPerch: PetPerch,
         chrome: ChatChrome,
+        chromeCoordinator: ChatChromeCoordinator,
         viewport: ChatViewport,
         followState: ChatFollowState,
         dictationSlot: ChatDictationSlot,
@@ -622,6 +624,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
         self.reach = reach
         self.petPerch = petPerch
         self.chrome = chrome
+        self.chromeCoordinator = chromeCoordinator
         self.viewport = viewport
         self.followState = followState
         self.dictationSlot = dictationSlot
@@ -695,6 +698,7 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 quote: $quote,
                 photoHero: $photoHero,
                 chrome: chrome,
+                chromeCoordinator: chromeCoordinator,
                 viewport: viewport,
                 followState: followState,
                 petPerch: petPerch,
@@ -741,7 +745,11 @@ struct ChatUIKitContainer<Minimap: View>: View {
                 }
                 .overlay(alignment: .trailing) { minimap() }
 
-            ChatTopPaperFadeView(safeTopInset: safeTopInset, headerHeight: headerHeight)
+            ChatTopPaperFadeView(
+                safeTopInset: safeTopInset,
+                headerHeight: headerHeight,
+                isImmersive: chromeCoordinator.isImmersive
+            )
         }
         .onAppear {
             teamSlice.bind(team: team, chatKey: chat.key)
@@ -900,6 +908,7 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     @Binding var quote: String?
     @Binding var photoHero: ChatPhotoHeroTarget?
     let chrome: ChatChrome
+    let chromeCoordinator: ChatChromeCoordinator
     let viewport: ChatViewport
     let followState: ChatFollowState
     let petPerch: PetPerch
@@ -1095,6 +1104,25 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             }
         }
 
+        actions.onScrollDelta = { [weak coordinator] deltaY, distanceFromBottom, isScrollable in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            chromeCoordinator.handleUserScroll(
+                deltaY: deltaY,
+                distanceFromBottom: distanceFromBottom,
+                isScrollable: isScrollable
+            )
+        }
+
+        actions.onKeyboardVisibilityChanged = { [weak coordinator] isOpen in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            chromeCoordinator.syncLocks(keyboardOpen: isOpen)
+        }
+
+        actions.onProgrammaticScroll = { [weak coordinator] in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            chromeCoordinator.markProgrammaticScroll()
+        }
+
         actions.onDragStarted = { [weak coordinator] in
             guard let coordinator, !coordinator.isDismantled else { return }
             onDragStarted()
@@ -1164,10 +1192,12 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
 private struct ChatTopPaperFadeView: View {
     let safeTopInset: CGFloat
     let headerHeight: CGFloat
+    let isImmersive: Bool
 
     var body: some View {
-        let topBarExtent = max(safeTopInset, headerHeight)
-        let fadeTail = Ink.Space.l
+        let collapsedExtent = safeTopInset + Ink.Space.s
+        let topBarExtent = isImmersive ? collapsedExtent : max(safeTopInset, headerHeight)
+        let fadeTail = isImmersive ? Ink.Space.s : Ink.Space.l
         let totalHeight = topBarExtent + fadeTail
         let holdStop = totalHeight > 0 ? min(0.95, topBarExtent / totalHeight) : 0
         VStack(spacing: 0) {

@@ -20,6 +20,7 @@ extension ChatPage {
     /// Everything said is looked through, not only what is on screen.
     func startFinding() {
         Haptics.light()
+        chromeCoordinator.restore()
         settleJump?.cancel()
         viewport.advanceNavigation()
         withAnimation(Ink.Motion.settle) { finding = true }

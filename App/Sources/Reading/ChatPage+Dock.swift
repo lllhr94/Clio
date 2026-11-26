@@ -16,7 +16,16 @@ extension ChatPage {
     enum DockCard: Hashable { case waiting, roam, working, away }
 
     var dockCards: [DockCard] {
-        Self.dockCards(team: team, chatKey: chat.key, waiting: waiting, working: working, liveWords: liveWords, awayItems: awayState.items)
+        Self.dockCards(
+            team: team,
+            chatKey: chat.key,
+            waiting: waiting,
+            working: working,
+            liveWords: liveWords,
+            awayItems: awayState.items,
+            hasStreaming: chat.hasStreaming,
+            following: followState.following
+        )
     }
 
     static func dockCards(
@@ -25,13 +34,16 @@ extension ChatPage {
         waiting: Approval?,
         working: Bool,
         liveWords: String?,
-        awayItems: [Happening]
+        awayItems: [Happening],
+        hasStreaming: Bool = false,
+        following: Bool = true
     ) -> [DockCard] {
         var cards: [DockCard] = []
         if waiting != nil { cards.append(.waiting) }
         // Only the conversation that asked for the takeover shows it.
         if team.browser.handoff != nil, team.browser.handoffChat == nil || team.browser.handoffChat == chatKey { cards.append(.roam) }
-        if working, waiting == nil, liveWords != nil { cards.append(.working) }
+        let hideStreamingBar = hasStreaming && following && waiting == nil
+        if working, waiting == nil, liveWords != nil, !hideStreamingBar { cards.append(.working) }
         if !awayItems.isEmpty, waiting == nil { cards.append(.away) }
         return cards
     }
@@ -149,6 +161,7 @@ extension ChatPage {
 
     func jump(to id: String, animated: Bool = true, source: String = "小地图") {
         Haptics.tick(0.4)
+        chromeCoordinator.markProgrammaticScroll()
         following = false
         jumpedTo = id
         lingerJumpButtons()
@@ -177,6 +190,7 @@ extension ChatPage {
         guard let target = question(earlier: earlier) else { return }
         let label = earlier ? "点了上一句" : "点了下一句"
         Haptics.light()
+        chromeCoordinator.markProgrammaticScroll()
         following = false
         jumpedTo = target
         lingerJumpButtons()
@@ -198,6 +212,8 @@ extension ChatPage {
 
     func returnToLatest() {
         Haptics.light()
+        chromeCoordinator.restore()
+        chromeCoordinator.markProgrammaticScroll(duration: 0.35)
         settleJump?.cancel()
         viewport.recordJump("回到最新")
         following = true
@@ -236,6 +252,7 @@ extension ChatPage {
 
     func presentApproval(_ approval: Approval) {
         DiagTrail.record("开审批详情")
+        chromeCoordinator.restore()
         followPending?.cancel()
         settleEnd?.cancel()
         settleJump?.cancel()
@@ -288,6 +305,7 @@ extension ChatPage {
 
     func toEnd(animated: Bool = false) {
         guard historyPage == nil, selecting.isEmpty, let scroller else { return }
+        chromeCoordinator.markProgrammaticScroll(duration: animated ? 0.45 : 0.16)
         settleJump?.cancel()
         viewport.advanceNavigation()
         if animated {
@@ -350,6 +368,7 @@ struct ChatBottomStackView<FindBar: View>: View {
     let team: TeamModel
     let bot: BotInfo
     let chrome: ChatChrome
+    let chromeCoordinator: ChatChromeCoordinator
     let petPerch: PetPerch
     let asker: Asker
     let dictationSlot: ChatDictationSlot
@@ -406,64 +425,131 @@ struct ChatBottomStackView<FindBar: View>: View {
     }
 
     var body: some View {
+        let suppressPet = coveredByPage || chromeCoordinator.isImmersive
         VStack(spacing: 0) {
-            PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: viewportMetrics.size)
-            VStack(spacing: 0) {
-                ChatDockedFormSlot(
-                    chatKey: chat.key,
-                    viewportMetrics: viewportMetrics,
-                    calmPetMotion: calmPetMotion,
-                    team: team,
-                    asker: asker
-                )
-                if finding {
-                    findBar()
-                } else {
-                    ChatComposerBarView(
+            if !chromeCoordinator.isImmersive {
+                PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: viewportMetrics.size)
+            }
+            Group {
+                if chromeCoordinator.isImmersive {
+                    ChatImmersiveBottomBar(
                         chat: chat,
                         team: team,
-                        bot: bot,
-                        chrome: chrome,
-                        petPerch: petPerch,
-                        dictationSlot: dictationSlot,
-                        draftState: draftState,
-                        followState: followState,
-                        notice: notice,
-                        awayState: awayState,
-                        contextMetrics: contextMetrics,
-                        workTimer: workTimer,
-                        historyInView: historyInView,
-                        largeText: largeText,
                         confirmStop: confirmStop,
-                        calmPetMotion: calmPetMotion,
-                        viewportMetrics: viewportMetrics,
-                        typing: typing,
-                        usageOpen: $usageOpen,
-                        pickerShown: $pickerShown,
-                        importingFile: $importingFile,
-                        picks: $picks,
-                        attaching: $attaching,
-                        dockOpen: $dockOpen,
                         askingStop: $askingStop,
-                        detailOpen: $detailOpen,
-                        roaming: $roaming,
-                        editing: $editing,
-                        quote: $quote,
-                        photos: $photos,
-                        files: $files,
-                        onPresentApproval: onPresentApproval,
-                        onToEnd: onToEnd,
-                        onPreviousQuestion: onPreviousQuestion,
-                        onNextQuestion: onNextQuestion,
-                        onReturnToLatest: onReturnToLatest,
-                        onClearComposer: onClearComposer,
-                        onListen: onListen,
-                        onRedoFrom: onRedoFrom,
-                        onPasteChange: onPasteChange,
-                        onReceiveURLs: onReceiveURLs,
-                        fileNote: fileNote,
-                        outgoingText: outgoingText
+                        onRestore: {
+                            withAnimation(petDockMotion) {
+                                chromeCoordinator.restore()
+                            }
+                        },
+                        onLatest: onReturnToLatest
                     )
+                    .padding(.horizontal, Ink.Bar.edge)
+                    .padding(.bottom, Ink.Space.s)
+                    .background(alignment: .top) {
+                        LinearGradient(
+                            colors: [Ink.paper.opacity(0), Ink.paper.opacity(0.94)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 18)
+                        .offset(y: -18)
+                        .allowsHitTesting(false)
+                    }
+                    .background {
+                        Ink.paper.opacity(0.94)
+                            .ignoresSafeArea(edges: .bottom)
+                            .allowsHitTesting(false)
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else {
+                    VStack(spacing: 0) {
+                        ChatDockedFormSlot(
+                            chatKey: chat.key,
+                            viewportMetrics: viewportMetrics,
+                            calmPetMotion: calmPetMotion,
+                            team: team,
+                            asker: asker
+                        )
+                        if finding {
+                            findBar()
+                        } else {
+                            ChatComposerBarView(
+                                chat: chat,
+                                team: team,
+                                bot: bot,
+                                chrome: chrome,
+                                petPerch: petPerch,
+                                dictationSlot: dictationSlot,
+                                draftState: draftState,
+                                followState: followState,
+                                notice: notice,
+                                awayState: awayState,
+                                contextMetrics: contextMetrics,
+                                workTimer: workTimer,
+                                historyInView: historyInView,
+                                largeText: largeText,
+                                confirmStop: confirmStop,
+                                calmPetMotion: calmPetMotion,
+                                viewportMetrics: viewportMetrics,
+                                typing: typing,
+                                usageOpen: $usageOpen,
+                                pickerShown: $pickerShown,
+                                importingFile: $importingFile,
+                                picks: $picks,
+                                attaching: $attaching,
+                                dockOpen: $dockOpen,
+                                askingStop: $askingStop,
+                                detailOpen: $detailOpen,
+                                roaming: $roaming,
+                                editing: $editing,
+                                quote: $quote,
+                                photos: $photos,
+                                files: $files,
+                                onPresentApproval: onPresentApproval,
+                                onToEnd: onToEnd,
+                                onPreviousQuestion: onPreviousQuestion,
+                                onNextQuestion: onNextQuestion,
+                                onReturnToLatest: onReturnToLatest,
+                                onClearComposer: onClearComposer,
+                                onListen: onListen,
+                                onRedoFrom: onRedoFrom,
+                                onPasteChange: onPasteChange,
+                                onReceiveURLs: onReceiveURLs,
+                                fileNote: fileNote,
+                                outgoingText: outgoingText
+                            )
+                        }
+                    }
+                    .overlay(alignment: .top) {
+                        ChatDockedJumpOverlaySlot(
+                            chatKey: chat.key,
+                            team: team,
+                            asker: asker,
+                            chrome: chrome,
+                            petPerch: petPerch,
+                            inHistory: historyInView,
+                            followState: followState,
+                            onPrevious: onPreviousQuestion,
+                            onNext: onNextQuestion,
+                            onLatest: onReturnToLatest
+                        )
+                    }
+                    .background(alignment: .top) {
+                        LinearGradient(
+                            colors: [Ink.paper.opacity(0), Ink.paper.opacity(0.96)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 18)
+                        .offset(y: -18)
+                        .allowsHitTesting(false)
+                    }
+                    .background {
+                        Ink.paper.opacity(0.96)
+                            .ignoresSafeArea(edges: .bottom)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
             .background(alignment: .top) {
@@ -475,21 +561,12 @@ struct ChatBottomStackView<FindBar: View>: View {
                     petPerch: petPerch,
                     face: isRoom ? nil : bot.avatar,
                     baseSheetOpen: baseSheetOpen,
-                    coveredByPage: coveredByPage,
+                    coveredByPage: suppressPet,
                     onOpenSettings: { petSettingsOpen = true }
                 )
             }
-            .background(alignment: .bottom) {
-                LinearGradient(stops: [
-                    .init(color: Ink.paper.opacity(0), location: 0),
-                    .init(color: Ink.paper.opacity(0.92), location: 0.35),
-                    .init(color: Ink.paper, location: 1),
-                ], startPoint: .top, endPoint: .bottom)
-                .padding(.top, -Ink.Space.xl)
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
-            }
         }
+        .animation(petDockMotion, value: chromeCoordinator.isImmersive)
         .animation(petDockMotion, value: finding)
     }
 }
@@ -614,6 +691,7 @@ struct ChatComposerBarView: View {
     let team: TeamModel
     let bot: BotInfo
     let chrome: ChatChrome
+    let chromeCoordinator: ChatChromeCoordinator
     let petPerch: PetPerch
     let dictationSlot: ChatDictationSlot
     let draftState: ChatDraft
@@ -709,17 +787,6 @@ struct ChatComposerBarView: View {
         }
         .padding(.horizontal, Ink.Bar.edge)
         .padding(.bottom, Ink.Space.s)
-        .overlay(alignment: .top) {
-            ChatFloatingJumpOverlaySlot(
-                chrome: chrome,
-                petPerch: petPerch,
-                inHistory: historyInView,
-                followState: followState,
-                onPrevious: onPreviousQuestion,
-                onNext: onNextQuestion,
-                onLatest: onReturnToLatest
-            )
-        }
     }
 }
 
@@ -765,7 +832,9 @@ private struct ChatDockAreaView: View {
             waiting: waiting,
             working: working,
             liveWords: liveWords,
-            awayItems: awayState.items
+            awayItems: awayState.items,
+            hasStreaming: chat.hasStreaming,
+            following: followState.following
         )
     }
 
@@ -1019,7 +1088,7 @@ private struct ChatComposerMainCard: View {
         }
         .padding(.horizontal, Ink.Space.s)
         .padding(.vertical, 6 * UIScale.factor)
-        .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet, style: .continuous))
+        .composerGlassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.sheet, style: .continuous))
     }
 }
 
@@ -1872,7 +1941,10 @@ private struct ChatComposerHintToast: View {
     }
 }
 
-private struct ChatFloatingJumpOverlaySlot: View {
+private struct ChatDockedJumpOverlaySlot: View {
+    let chatKey: String
+    @ObservedObject var team: TeamModel
+    @ObservedObject var asker: Asker
     let chrome: ChatChrome
     let petPerch: PetPerch
     let inHistory: Bool
@@ -1881,15 +1953,94 @@ private struct ChatFloatingJumpOverlaySlot: View {
     let onNext: () -> Void
     let onLatest: () -> Void
 
+    private var hasInlineAsk: Bool {
+        guard let current = asker.current, current.inline,
+              current.chat == nil || current.chat == chatKey else { return false }
+        return team.isWorking(chatKey)
+    }
+
+    private var hasPendingApproval: Bool {
+        team.approvals.contains { $0.chat == chatKey }
+    }
+
     var body: some View {
         ChatFloatingJumpOverlay(
             chrome: chrome,
             petPerch: petPerch,
             inHistory: inHistory,
             following: followState.following,
+            suppressed: hasInlineAsk || hasPendingApproval,
             onPrevious: onPrevious,
             onNext: onNext,
             onLatest: onLatest
         )
+        .padding(.horizontal, Ink.Bar.edge)
+    }
+}
+
+private struct ChatImmersiveBottomBar: View {
+    let chat: ChatModel
+    @ObservedObject var team: TeamModel
+    let confirmStop: Bool
+    @Binding var askingStop: Bool
+    let onRestore: () -> Void
+    let onLatest: () -> Void
+
+    private var working: Bool {
+        team.workDetail(for: chat.key).words != nil || chat.hasStreaming
+    }
+
+    var body: some View {
+        HStack(spacing: Ink.Space.s) {
+            Spacer(minLength: 0)
+            if working {
+                Button {
+                    if confirmStop {
+                        Haptics.light()
+                        onRestore()
+                        askingStop = true
+                    } else {
+                        Haptics.lock()
+                        chat.stop()
+                    }
+                } label: {
+                    Label(L.t("chat.stopGenerating"), systemImage: "stop.fill")
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .foregroundStyle(Ink.stop)
+                        .padding(.horizontal, Ink.Space.m)
+                        .frame(minHeight: 44)
+                        .contentShape(Capsule())
+                        .glassFace(in: Capsule())
+                }
+                .buttonStyle(PressStyle(haptic: false))
+                .accessibilityLabel(L.t("chat.stopGenerating"))
+            }
+
+            Button {
+                Haptics.light()
+                onRestore()
+                onLatest()
+            } label: {
+                Label(L.t("chat.latest"), systemImage: "arrow.down.to.line")
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                    .foregroundStyle(Ink.ink)
+                    .padding(.horizontal, Ink.Space.m)
+                    .frame(minHeight: 44)
+                    .contentShape(Capsule())
+                    .glassFace(in: Capsule())
+            }
+            .buttonStyle(PressStyle(haptic: false))
+            .accessibilityLabel(L.t("chat.latest"))
+        }
+        .padding(.top, Ink.Space.xs)
+        .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
+            Button(L.t("chat.stopNow"), role: .destructive) {
+                Haptics.lock()
+                if working { chat.stop() }
+            }
+            Button(L.t("actions.cancel"), role: .cancel) {}
+        } message: {
+            Text(L.t("chat.stopAskNote"))
+        }
     }
 }
