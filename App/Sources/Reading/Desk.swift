@@ -190,8 +190,13 @@ struct Desk: View {
     @State private var drawer = false
     @State private var picked: DrawerItem?
     @State private var roomEditing: RoomInfo?
-    @State private var searching = false
     @State private var showArchived = false
+    @State private var unifiedSearchOpen = false
+    @State private var companionsOpen = false
+    @State private var memoryOpen = false
+    @State private var roaming = false
+    @State private var timing = false
+    @State private var pendingCompanionAction: CompanionSheetAction?
     @AppStorage("desk.threadFilter") private var listFilter = 0
     @AppStorage("desk.threadColorFilter") private var labelFilter = ""
     @Environment(\.scenePhase) private var scenePhase
@@ -213,9 +218,6 @@ struct Desk: View {
     @State private var deletingThread: DeskSideConversation?
     @State private var deletingEpoch = 0
     @State private var renameText = ""
-    @State private var sideQuery = ""
-    @State private var query = ""
-    @State private var searchHits: [TeamModel.Hit] = []
     /// A conversation waiting for the user to confirm it should be emptied (or a gathering dissolved).
     @State private var clearing: Opened?
     /// 看名帖: the card, large.
@@ -322,13 +324,11 @@ struct Desk: View {
                 cardBot: $cardBot,
                 roomEditing: $roomEditing,
                 clearing: $clearing,
-                searching: $searching,
-                query: $query,
-                searchHits: $searchHits,
                 showArchived: $showArchived,
                 listFilter: $listFilter,
                 labelFilter: $labelFilter,
                 startFresh: { startFresh(first: $0) },
+                openUnifiedSearch: { unifiedSearchOpen = true },
                 openDrawerItem: { open($0) },
                 startRename: startRename,
                 startRenamePast: startRenamePast,
@@ -352,7 +352,6 @@ struct Desk: View {
                     DeskSidebarView(
                         team: team,
                         opened: opened,
-                        sideQuery: $sideQuery,
                         listFilter: $listFilter,
                         labelFilter: $labelFilter,
                         studying: $studying,
@@ -360,6 +359,12 @@ struct Desk: View {
                         tuning: $tuning,
                         closeSide: closeSide,
                         startFresh: { startFresh() },
+                        openUnifiedSearch: { unifiedSearchOpen = true },
+                        openCompanions: { companionsOpen = true },
+                        openMemory: { memoryOpen = true },
+                        openBrowser: { roaming = true },
+                        openHosts: { hilling = true },
+                        openTiming: { timing = true },
                         jump: jump,
                         startRename: startRename,
                         startRenamePast: startRenamePast,
@@ -451,6 +456,35 @@ struct Desk: View {
             .sheet(isPresented: $hilling) { HillsPage() }
             .sheet(isPresented: $vaulting) { SecretsPage() }
             .sheet(isPresented: $caring) { CarePage(team: team, openRestore: team.phase == .setup) }
+            .sheet(isPresented: $unifiedSearchOpen) {
+                UnifiedGlobalSearchSheet(
+                    team: team,
+                    onOpenChat: { target, leaf in
+                        if let leaf { team.openLeaf(target.id, leaf) }
+                        withAnimation(sideMotion) { opened = target }
+                    },
+                    onOpenMemory: { memoryOpen = true },
+                    onOpenStudy: { studying = true }
+                )
+            }
+            .sheet(isPresented: $companionsOpen, onDismiss: { handleCompanionSheetAction() }) {
+                DeskCompanionsSheet(
+                    team: team,
+                    onSelectChat: { target in
+                        withAnimation(sideMotion) { opened = target }
+                    },
+                    onAction: { action in
+                        pendingCompanionAction = action
+                    }
+                )
+            }
+            .sheet(isPresented: $memoryOpen) {
+                NavigationStack {
+                    MemoryPageV2(team: team, showsDone: true)
+                }
+            }
+            .sheet(isPresented: $timing) { RoutinesPage(team: team) }
+            .fullScreenCover(isPresented: $roaming) { RoamPage(browser: team.browser) }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .plainText, .data]) { receiveCard($0) }
             .fullScreenCover(isPresented: $tuning, onDismiss: {
                 settingsPage = nil
@@ -620,6 +654,17 @@ struct Desk: View {
         case .look: settingsPage = "look"; tuning = true
         case .grants: granting = true
         case .care: caring = true
+        }
+    }
+
+    private func handleCompanionSheetAction() {
+        guard let action = pendingCompanionAction else { return }
+        pendingCompanionAction = nil
+        switch action {
+        case .newCompanion: editing = DeskEditTarget(id: "new", bot: nil)
+        case .newRoom: gathering = true
+        case .importCard: importing = true
+        case .manageSettings: settingsPage = "companions"; tuning = true
         }
     }
 

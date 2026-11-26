@@ -12,14 +12,12 @@ struct DeskHomeView: View {
     @Binding var cardBot: BotInfo?
     @Binding var roomEditing: RoomInfo?
     @Binding var clearing: Opened?
-    @Binding var searching: Bool
-    @Binding var query: String
-    @Binding var searchHits: [TeamModel.Hit]
     @Binding var showArchived: Bool
     @Binding var listFilter: Int
     @Binding var labelFilter: String
 
     let startFresh: (String?) -> Void
+    let openUnifiedSearch: () -> Void
     let openDrawerItem: (DrawerItem) -> Void
     let startRename: (String) -> Void
     let startRenamePast: (DeskPastLeaf) -> Void
@@ -74,14 +72,7 @@ struct DeskHomeView: View {
         waitingCard
         if let next = team.nextLetter { letter(next) }
         recentHeader
-        if searching {
-            searchBar
-        }
-        if searching && !query.trimmingCharacters(in: .whitespaces).isEmpty {
-            searchResultsSection
-        } else {
-            mainFeedSections
-        }
+        mainFeedSections
     }
 
     private var recentHeader: some View {
@@ -92,79 +83,17 @@ struct DeskHomeView: View {
             Spacer()
             Button {
                 Haptics.light()
-                withAnimation(Ink.Motion.settle) {
-                    searching.toggle()
-                    if !searching { query = "" }
-                }
+                openUnifiedSearch()
             } label: {
-                Image(systemName: searching ? "xmark" : "magnifyingglass")
+                Image(systemName: "magnifyingglass")
                     .font(.system(size: Ink.Size.body, weight: .medium))
                     .foregroundStyle(Ink.inkSoft)
                     .frame(width: 36, height: 36)
             }
-            .accessibilityLabel(searching ? "不找了" : "找一找")
+            .accessibilityLabel(L.t("unifiedSearch.title"))
         }
         .padding(.top, Ink.Space.xxl)
         .padding(.bottom, Ink.Space.s)
-    }
-
-    private var searchBar: some View {
-        TextField("找过去聊过的话", text: $query)
-            .font(.system(size: Ink.Size.body))
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .submitLabel(.search)
-            .padding(.horizontal, Ink.Space.l)
-            .frame(height: 44)
-            .paperCard()
-            .padding(.bottom, Ink.Space.m)
-            .transition(.opacity)
-            // Looked up a moment after typing stops, off the main thread (it reads every conversation).
-            .task(id: query) {
-                let words = query
-                guard !words.trimmingCharacters(in: .whitespaces).isEmpty else { searchHits = []; return }
-                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-                let found = await team.search(words)
-                if !Task.isCancelled, words == query { searchHits = found }
-            }
-    }
-
-    @ViewBuilder
-    private var searchResultsSection: some View {
-        let hits = searchHits
-        if hits.isEmpty {
-            Text("没找到「\(query)」。").font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(.vertical, Ink.Space.l)
-        }
-        ForEach(hits) { hit in
-            Button {
-                Haptics.light()
-                if let leaf = hit.leaf, let found = team.leaves(hit.key).first(where: { $0.id == leaf }) {
-                    team.openLeaf(hit.key, found)
-                }
-                if hit.key.hasPrefix("bot-") {
-                    opened = .companion(String(hit.key.dropFirst(4)))
-                } else {
-                    opened = .gathering(String(hit.key.dropFirst(5)))
-                }
-            } label: {
-                VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                    HStack {
-                        Text(hit.name).font(.system(size: Ink.Size.sub, weight: .semibold)).foregroundStyle(Ink.ink)
-                        if hit.leaf != nil { Text(Words.t("收起的一叶")).font(.system(size: Ink.Size.micro)).foregroundStyle(Ink.inkFaint) }
-                        Spacer()
-                        Text(Date(timeIntervalSince1970: hit.at / 1000).formatted(.relative(presentation: .named))).font(Ink.footnote).foregroundStyle(Ink.inkFaint)
-                    }
-                    Text(hit.snippet).font(Ink.secondary).foregroundStyle(Ink.inkSoft).lineLimit(2).multilineTextAlignment(.leading)
-                }
-                .padding(.vertical, Ink.Space.m)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(PressStyle())
-            .contextMenu {
-                DeskThreadHelpers.archiveMenu(hit.leaf.map { TeamModel.threadKey(hit.key, leaf: $0) } ?? hit.key, team: team, changeArchive: changeArchive)
-            }
-            Kit.rule(inset: 0)
-        }
     }
 
     @ViewBuilder

@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// Slide-out conversation drawer showing search, navigation places, pinned/recent/earlier threads, and settings entry.
+/// Slide-out conversation drawer showing unified search trigger, 4+1 capabilities, pinned/recent/earlier/archived threads, and settings footer.
 struct DeskSidebarView: View {
     @ObservedObject var team: TeamModel
     let opened: Opened?
-    @Binding var sideQuery: String
     @Binding var listFilter: Int
     @Binding var labelFilter: String
     @Binding var studying: Bool
@@ -13,11 +12,20 @@ struct DeskSidebarView: View {
 
     let closeSide: () -> Void
     let startFresh: () -> Void
+    let openUnifiedSearch: () -> Void
+    let openCompanions: () -> Void
+    let openMemory: () -> Void
+    let openBrowser: () -> Void
+    let openHosts: () -> Void
+    let openTiming: () -> Void
     let jump: (Opened?) -> Void
     let startRename: (String) -> Void
     let startRenamePast: (DeskPastLeaf) -> Void
     let requestDelete: (DeskSideConversation) -> Void
     let changeArchive: (String, Bool) -> Void
+
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var showArchived = false
 
     private var recent: [DeskThread] {
         DeskThreadHelpers.recent(team: team)
@@ -29,59 +37,35 @@ struct DeskSidebarView: View {
         }
     }
 
-    private var sideThreads: [DeskThread] {
-        let words = sideQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !words.isEmpty else { return shownThreads }
-        return recent.filter { item in
-            [item.name, item.preview, team.title(of: item.id.id) ?? ""].contains { $0.localizedCaseInsensitiveContains(words) }
-        }
-    }
-
     private var sideSections: [DeskSideSection] {
-        // 主人定：侧边栏也按 置顶 / 最近 / 更早。
         let past = DeskThreadHelpers.pastLeaves(
             team: team,
-            matching: sideQuery,
+            matching: "",
             listFilter: listFilter,
             labelFilter: labelFilter
         )
-        return DeskThreadHelpers.sections(team: team, threads: sideThreads, past: past, byDate: true)
+        return DeskThreadHelpers.sections(team: team, threads: shownThreads, past: past, byDate: true)
+    }
+
+    private var archivedRows: [DeskSideConversation] {
+        DeskThreadHelpers.archivedRows(team: team, recent: recent)
     }
 
     var body: some View {
         let sections = sideSections
+        let archived = archivedRows
         VStack(alignment: .leading, spacing: 0) {
             topHeader
-            searchField
+            searchButton
             DeskFilterChips(listFilter: $listFilter, labelFilter: $labelFilter)
                 .padding(.horizontal, Ink.Space.l)
                 .padding(.bottom, Ink.Space.s)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                    if sideQuery.isEmpty {
-                        sideNav("house", Words.t("案头")) { jump(nil) }
-                        sideNav("books.vertical", Words.t("书案")) { closeSide(); studying = true }
-                        sideNav("terminal", Words.t("斗室")) { closeSide(); denning = true }
-                    }
-                    ForEach(sections, id: \.title) { section in
-                        Text(section.title)
-                            .font(.system(size: Ink.Size.small, weight: .semibold))
-                            .foregroundStyle(Ink.inkFaint)
-                            .padding(.horizontal, Ink.Space.l)
-                            .padding(.top, Ink.Space.l)
-                            .padding(.bottom, Ink.Space.xs)
-                        ForEach(section.rows) { row in
-                            switch row {
-                            case .current(let item): sideThread(item)
-                            case .past(let past): pastRow(past)
-                            }
-                        }
-                    }
-                    if sections.isEmpty {
-                        Text(sideQuery.isEmpty ? "还没有对话。" : "没找到「\(sideQuery)」。")
-                            .font(Ink.secondary).foregroundStyle(Ink.inkSoft).padding(Ink.Space.l)
-                    }
+                    primaryPlaces
+                    workspaceQuickBar
+                    threadList(sections: sections, archived: archived)
                 }
                 .padding(.horizontal, Ink.Space.s)
                 .padding(.bottom, Ink.Space.l)
@@ -89,24 +73,7 @@ struct DeskSidebarView: View {
             .scrollIndicators(.hidden)
             .scrollDismissesKeyboard(.interactively)
 
-            // Settings sits at the foot as a full row, like the places above it, not a lone button in a corner.
-            Kit.rule(inset: 0)
-            Button {
-                Haptics.light()
-                closeSide()
-                tuning = true
-            } label: {
-                HStack(spacing: Ink.Space.m) {
-                    Image(systemName: "gearshape").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.inkSoft).frame(width: 26)
-                    Text(Words.t("调弦")).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
-                    Spacer()
-                    Text("\(team.bots.count) 位\(Words.t("旅伴"))").font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint)
-                }
-                .padding(.horizontal, Ink.Space.s + Ink.Space.m)
-                .frame(height: 52)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(PressStyle(haptic: false))
+            settingsFooter
         }
         .background(Ink.paper.ignoresSafeArea())
     }
@@ -128,7 +95,6 @@ struct DeskSidebarView: View {
             Spacer()
             Button {
                 Haptics.light()
-                // A gathering starts a fresh page too, not only a companion.
                 closeSide()
                 startFresh()
             } label: {
@@ -147,37 +113,226 @@ struct DeskSidebarView: View {
         .padding(.top, Ink.Space.s)
     }
 
-    private var searchField: some View {
-        HStack(spacing: Ink.Space.s) {
-            Image(systemName: "magnifyingglass").foregroundStyle(Ink.inkFaint)
-            TextField("搜索对话", text: $sideQuery)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            if !sideQuery.isEmpty {
-                Button { sideQuery = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Ink.inkFaint) }
-                    .accessibilityLabel("清除搜索")
-                    .buttonStyle(.plain)
+    private var searchButton: some View {
+        Button {
+            Haptics.light()
+            closeSide()
+            openUnifiedSearch()
+        } label: {
+            HStack(spacing: Ink.Space.s) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: Ink.Size.sub))
+                    .foregroundStyle(Ink.inkFaint)
+                Text(L.t("unifiedSearch.sidebarPrompt"))
+                    .font(.system(size: Ink.Size.sub))
+                    .foregroundStyle(Ink.inkFaint)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, Ink.Space.m)
+            .frame(height: 40 * UIScale.factor)
+            .background(Ink.paperRaised, in: Capsule())
+            .overlay(Capsule().strokeBorder(Ink.rule, lineWidth: 0.5))
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.m)
         }
-        .font(.system(size: Ink.Size.body))
-        .padding(.horizontal, Ink.Space.m)
-        .frame(height: 42)
-        .background(Ink.paperRaised, in: .capsule)
-        .padding(Ink.Space.l)
+        .buttonStyle(PressStyle(haptic: false))
+        .accessibilityLabel(L.t("unifiedSearch.title"))
     }
 
-    private func sideNav(_ icon: String, _ title: String, _ run: @escaping () -> Void) -> some View {
+    private var primaryPlaces: some View {
+        VStack(spacing: 0) {
+            sideNav("house", L.t("nav.home")) { jump(nil) }
+            sideNav(
+                "person.2",
+                L.t("sidebar.companions"),
+                count: team.bots.isEmpty ? nil : "\(team.bots.count)"
+            ) {
+                closeSide()
+                openCompanions()
+            }
+            sideNav(
+                "brain",
+                L.t("nav.memory"),
+                count: team.memories.isEmpty ? nil : "\(team.memories.count)"
+            ) {
+                closeSide()
+                openMemory()
+            }
+            sideNav("books.vertical", L.t("nav.files")) {
+                closeSide()
+                studying = true
+            }
+        }
+    }
+
+    private var workspaceQuickBar: some View {
+        let twoByTwo = typeSize.isAccessibilitySize
+        let columns = Array(
+            repeating: GridItem(.flexible(), spacing: Ink.Space.xs),
+            count: twoByTwo ? 2 : 4
+        )
+        return VStack(alignment: .leading, spacing: Ink.Space.xs) {
+            Text(L.t("sidebar.workspace"))
+                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                .foregroundStyle(Ink.inkFaint)
+                .padding(.horizontal, Ink.Space.m)
+                .padding(.top, Ink.Space.s)
+            LazyVGrid(columns: columns, spacing: Ink.Space.xs) {
+                workspaceTile("terminal", L.t("nav.terminal")) { closeSide(); denning = true }
+                workspaceTile("safari", L.t("nav.browser")) { closeSide(); openBrowser() }
+                workspaceTile("server.rack", L.t("nav.remoteHost")) { closeSide(); openHosts() }
+                workspaceTile("alarm", L.t("agent.scheduledJobs")) { closeSide(); openTiming() }
+            }
+            .padding(.horizontal, Ink.Space.m)
+            .padding(.bottom, Ink.Space.xs)
+        }
+    }
+
+    private func workspaceTile(_ symbol: String, _ title: String, action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.light()
+            action()
+        } label: {
+            VStack(spacing: Ink.Space.xs) {
+                Image(systemName: symbol)
+                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                    .foregroundStyle(Ink.inkSoft)
+                Text(title)
+                    .font(.system(size: Ink.Size.micro))
+                    .foregroundStyle(Ink.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 50 * UIScale.factor)
+            .background(Ink.paperRaised, in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous)
+                    .strokeBorder(Ink.rule, lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: false))
+    }
+
+    @ViewBuilder
+    private func threadList(sections: [DeskSideSection], archived: [DeskSideConversation]) -> some View {
+        ForEach(sections, id: \.title) { section in
+            Text(section.title)
+                .font(.system(size: Ink.Size.small, weight: .semibold))
+                .foregroundStyle(Ink.inkFaint)
+                .padding(.horizontal, Ink.Space.l)
+                .padding(.top, Ink.Space.l)
+                .padding(.bottom, Ink.Space.xs)
+            ForEach(section.rows) { row in
+                switch row {
+                case .current(let item): sideThread(item)
+                case .past(let past): pastRow(past)
+                }
+            }
+        }
+        if !archived.isEmpty {
+            archivedDisclosure(archived)
+        }
+        if sections.isEmpty && archived.isEmpty {
+            Text(L.t("sidebar.noThreads"))
+                .font(Ink.secondary)
+                .foregroundStyle(Ink.inkSoft)
+                .padding(Ink.Space.l)
+        }
+    }
+
+    @ViewBuilder
+    private func archivedDisclosure(_ archived: [DeskSideConversation]) -> some View {
+        Button {
+            Haptics.light()
+            withAnimation(Ink.Motion.unfold) { showArchived.toggle() }
+        } label: {
+            HStack(spacing: Ink.Space.s) {
+                Image(systemName: "archivebox")
+                    .font(.system(size: Ink.Size.small))
+                Text("\(L.t("sidebar.archived")) \(archived.count)")
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: Ink.Size.micro, weight: .semibold))
+                    .rotationEffect(.degrees(showArchived ? 180 : 0))
+                Spacer()
+            }
+            .foregroundStyle(Ink.inkFaint)
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.top, Ink.Space.l)
+            .padding(.bottom, Ink.Space.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle(haptic: false))
+
+        if showArchived {
+            ForEach(archived) { row in
+                Group {
+                    switch row {
+                    case .current(let item): sideThread(item)
+                    case .past(let past): pastRow(past)
+                    }
+                }
+                .opacity(0.76)
+            }
+        }
+    }
+
+    private var settingsFooter: some View {
+        let toneName = Theme.shared.plain ? L.t("styleSwitcher.dailyLabel") : L.t("styleSwitcher.literaryLabel")
+        let summary = "\(L.format("settingsHome.companionsCount", team.bots.count)) · \(toneName)"
+        return VStack(spacing: 0) {
+            Kit.rule(inset: 0)
+            Button {
+                Haptics.light()
+                closeSide()
+                tuning = true
+            } label: {
+                HStack(spacing: Ink.Space.m) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: Ink.Size.body))
+                        .foregroundStyle(Ink.inkSoft)
+                        .frame(width: 26)
+                    Text(L.t("nav.settings"))
+                        .font(.system(size: Ink.Size.body))
+                        .foregroundStyle(Ink.ink)
+                    Spacer()
+                    Text(summary)
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkFaint)
+                }
+                .padding(.horizontal, Ink.Space.s + Ink.Space.m)
+                .frame(height: 52)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle(haptic: false))
+        }
+    }
+
+    private func sideNav(_ icon: String, _ title: String, count: String? = nil, _ run: @escaping () -> Void) -> some View {
         Button {
             Haptics.light()
             run()
         } label: {
             HStack(spacing: Ink.Space.m) {
-                Image(systemName: icon).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.inkSoft).frame(width: 26)
-                Text(title).font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ink)
+                Image(systemName: icon)
+                    .font(.system(size: Ink.Size.body))
+                    .foregroundStyle(Ink.inkSoft)
+                    .frame(width: 26)
+                Text(title)
+                    .font(.system(size: Ink.Size.body))
+                    .foregroundStyle(Ink.ink)
                 Spacer()
+                if let count {
+                    Text(count)
+                        .font(.system(size: Ink.Size.small).monospacedDigit())
+                        .foregroundStyle(Ink.inkFaint)
+                }
             }
             .padding(.horizontal, Ink.Space.m)
-            .frame(height: 44)
+            .frame(height: 42 * UIScale.factor)
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle(haptic: false))
@@ -224,7 +379,6 @@ struct DeskSidebarView: View {
                     DeskThreadHelpers.threadColor(key, team: team)
                     VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                         Text(item.name).font(.system(size: Ink.Size.sub, weight: here ? .semibold : .regular)).foregroundStyle(Ink.ink).lineLimit(1)
-                        // What the conversation is about (its title, which you can rename), else its last words.
                         let line = team.title(of: key) ?? item.preview
                         if !line.isEmpty {
                             Text(line).font(.system(size: Ink.Size.small)).foregroundStyle(Ink.inkFaint).lineLimit(1)
