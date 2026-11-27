@@ -1453,5 +1453,15 @@
   "chatMenu": {
     "workbench": "工作台",
     "manageExport": "管理与导出"
+  },
+  "plan": {
+    "executeAction": "按此方案执行",
+    "executePrompt": "按上面的方案开始执行。",
+    "statusCapsule": "规划模式 · 只看不动",
+    "exitAction": "退出规划",
+    "modeTitle": "规划模式",
+    "modeSubtitle": "只读调研并先列方案，确认后再动手",
+    "enterMenu": "进入规划模式（只看不动）",
+    "exitMenu": "退出规划模式"
   }
 }

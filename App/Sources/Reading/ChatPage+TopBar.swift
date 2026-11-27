@@ -705,9 +705,45 @@ private struct ChatCompanionHubPopover: View {
                 hairlineDivider
                 rootThinkingSection
             }
+            if !chat.key.hasPrefix("casual-") {
+                hairlineDivider
+                rootPlanModeSection
+            }
             hairlineDivider
             rootContextSection
         }
+    }
+
+    private var rootPlanModeSection: some View {
+        let active = team.isPlanModeActive(for: chat.key)
+        return Button {
+            Haptics.light()
+            team.setPlanMode(!active, in: chat.key)
+        } label: {
+            HStack(spacing: Ink.Space.s) {
+                Image(systemName: active ? "map.fill" : "map")
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(active ? Ink.accent : Ink.inkSoft)
+                    .frame(width: 24 * UIScale.factor, height: 24 * UIScale.factor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(L.t("plan.modeTitle"))
+                        .font(.system(size: Ink.Size.small, weight: .medium))
+                        .foregroundStyle(Ink.ink)
+                    Text(L.t(active ? "plan.statusCapsule" : "plan.modeSubtitle"))
+                        .font(.system(size: Ink.Size.micro))
+                        .foregroundStyle(active ? Ink.accent : Ink.inkFaint)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                    .foregroundStyle(active ? Ink.accent : Ink.inkFaint)
+            }
+            .padding(.horizontal, Ink.Space.m)
+            .padding(.vertical, Ink.Space.s)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
     }
 
     private var rootHeaderSection: some View {
@@ -1300,6 +1336,18 @@ private struct ChatTopBarControlsView: View {
                     Task {
                         outlinePairs = await onLoadOutlinePairs()
                         outlining = true
+                    }
+                }
+                if !chat.key.hasPrefix("casual-") {
+                    let planOn = team.isPlanModeActive(for: chat.key)
+                    Button {
+                        Haptics.light()
+                        team.setPlanMode(!planOn, in: chat.key)
+                    } label: {
+                        Label(
+                            L.t(planOn ? "plan.exitMenu" : "plan.enterMenu"),
+                            systemImage: planOn ? "map.fill" : "map"
+                        )
                     }
                 }
             }
