@@ -19,10 +19,57 @@ extension TeamModel {
         var title: String?
         /// Tokens this conversation has used, as the services reported them (counted from 0.27 on).
         var spend: Spend?
-        /// How hard the model thinks here; nil: the model's own default.
+        /// Legacy 6-stop thinking field kept for backward compatibility (read only when `thinkingSelection` is absent).
         var thinking: Thinking?
+        /// Versioned high-fidelity thinking selection (v2, authoritative when present).
+        var thinkingSelection: ThinkingSelection?
 
         var web: Bool { !off.contains(Grant.web.rawValue) && !off.contains(Grant.browser.rawValue) }
+
+        /// Locked read order: v2 `thinkingSelection` first; legacy `thinking` only when v2 is absent.
+        var effectiveThinkingSelection: ThinkingSelection {
+            ThinkingSelection.readEffective(v2: thinkingSelection, legacy: thinking)
+        }
+
+        /// Locked write order: persists v2 primarily and writes legacy `thinking` ONLY when faithfully expressible.
+        mutating func setThinkingSelection(_ selection: ThinkingSelection) {
+            let pair = ThinkingSelection.writePair(selection)
+            thinkingSelection = pair.v2
+            thinking = pair.legacy
+        }
+
+        init(
+            off: [String] = [],
+            model: String? = nil,
+            place: String? = nil,
+            title: String? = nil,
+            spend: Spend? = nil,
+            thinking: Thinking? = nil,
+            thinkingSelection: ThinkingSelection? = nil
+        ) {
+            self.off = off
+            self.model = model
+            self.place = place
+            self.title = title
+            self.spend = spend
+            self.thinking = thinking
+            self.thinkingSelection = thinkingSelection
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case off, model, place, title, spend, thinking, thinkingSelection
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            off = (try? c.decodeIfPresent([String].self, forKey: .off)) ?? []
+            model = try? c.decodeIfPresent(String.self, forKey: .model)
+            place = try? c.decodeIfPresent(String.self, forKey: .place)
+            title = try? c.decodeIfPresent(String.self, forKey: .title)
+            spend = try? c.decodeIfPresent(Spend.self, forKey: .spend)
+            thinking = try? c.decodeIfPresent(Thinking.self, forKey: .thinking)
+            thinkingSelection = try? c.decodeIfPresent(ThinkingSelection.self, forKey: .thinkingSelection)
+        }
     }
 
     static func optionsFile(_ key: String) -> String { "chats/\(key)~options.json" }
@@ -98,9 +145,92 @@ extension TeamModel {
     func model(for key: String, bot: BotInfo) -> String? { options(key).model ?? bot.model ?? settings.defaultModel }
 
     func setThinking(_ level: Thinking?, in key: String) {
+        setThinkingSelection(ThinkingSelection.fromLegacy(level), in: key)
+    }
+
+    func setThinkingSelection(_ selection: ThinkingSelection, in key: String) {
         var value = options(key)
-        value.thinking = level == .auto ? nil : level
+        value.setThinkingSelection(selection)
         setOptions(key, value)
+    }
+
+    /// Resolves the confirmed thinking contract for one `(endpoint, model)` pair using an optional frozen snapshot.
+    func thinkingContract(
+        for endpoint: Endpoint,
+        model: String,
+        snapshot: ModelsDevCatalogSnapshot? = nil
+    ) -> ThinkingRuleResolver.ConfirmedContract {
+        let activeSnapshot = snapshot ?? ModelsDev.currentSnapshot()
+        let resolution = endpoint.traitsResolution(model, snapshot: activeSnapshot)
+        var contract = endpoint.thinkingContract(for: model, snapshot: activeSnapshot)
+        // Honor explicit user-manual override (`thinks == false`) while never letting legacy probe suppress confirmed contracts.
+        if resolution.traits.effectiveThinksSource == .userManual && !resolution.traits.thinks {
+            contract.supportsThinking = false
+            contract.canExplicitlyDisable = false
+            contract.offeredSelections = [.inheritDefault]
+        } else if resolution.traits.effectiveLevelsSource == .userManual,
+                  let customLevels = resolution.traits.levels {
+            let parsed = customLevels.compactMap(Thinking.init(rawValue:)).filter { $0 != .auto }
+            var offered: [ThinkingSelection] = [.inheritDefault]
+            for level in parsed {
+                let sel = ThinkingSelection.fromLegacy(level)
+                if !offered.contains(sel) { offered.append(sel) }
+            }
+            contract.offeredSelections = offered
+        } else if !resolution.traits.thinks && !contract.isKnownContract {
+            contract.supportsThinking = false
+            contract.offeredSelections = [.inheritDefault]
+        }
+        return contract
+    }
+
+    /// Resolves the thinking options offered in a chat (1:1 or gathering) using one frozen catalog snapshot.
+    /// Precedence: when a gathering has a conversation-level model override (`options.model != nil`),
+    /// resolves directly against that override model; ONLY when `options.model == nil` does it intersect
+    /// all room members' realizable intents.
+    func offeredThinkingSelections(
+        in key: String,
+        roomId: String?,
+        fallback bot: BotInfo,
+        snapshot: ModelsDevCatalogSnapshot? = nil
+    ) -> [ThinkingSelection] {
+        let activeSnapshot = snapshot ?? ModelsDev.currentSnapshot()
+        let chatOptions = options(key)
+        let speakers: [BotInfo]
+        if let roomID = roomId, chatOptions.model == nil,
+           let members = rooms.first(where: { $0.id == roomID })?.members, !members.isEmpty {
+            speakers = members.compactMap { id in bots.first { $0.id == id } }
+        } else {
+            let activeBot = roomId != nil ? (alwaysOnTurn(key).bot ?? bot) : bot
+            speakers = [activeBot]
+        }
+        guard !speakers.isEmpty else { return [.inheritDefault] }
+        let contracts: [ThinkingRuleResolver.ConfirmedContract] = speakers.compactMap { speaker in
+            guard let found = current(key, bot: speaker) else { return nil }
+            return thinkingContract(for: found.endpoint, model: found.model, snapshot: activeSnapshot)
+        }
+        guard contracts.count == speakers.count, !contracts.isEmpty else { return [.inheritDefault] }
+        return ThinkingRuleResolver.intersectOfferings(contracts)
+    }
+
+    /// Shared frozen resolution of the saved `ThinkingSelection` for one concrete speaker/turn.
+    func resolvedThinking(
+        for key: String,
+        endpoint: Endpoint,
+        model: String,
+        intent: ThinkingCallIntent = .userChat,
+        snapshot: ModelsDevCatalogSnapshot? = nil
+    ) -> ThinkingRuleResolver.Resolution {
+        let activeSnapshot = snapshot ?? ModelsDev.currentSnapshot()
+        let contract = thinkingContract(for: endpoint, model: model, snapshot: activeSnapshot)
+        let selection = options(key).effectiveThinkingSelection
+        let style: ThinkingStyle? = endpoint.kind.supportsThinkingStyleSelection ? endpoint.thinkingStyle : nil
+        return ThinkingRuleResolver.resolve(
+            selection: selection,
+            contract: contract,
+            style: style,
+            intent: intent
+        )
     }
 
     /// The service and model a chat would use now, with what the model can do.

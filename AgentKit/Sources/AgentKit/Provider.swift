@@ -32,6 +32,9 @@ public struct ModelRequest: Sendable {
     public var outputLimit: Int?
     /// How hard to think; `.auto` leaves it to the model.
     public var thinking: Thinking
+    /// Optional pre-resolved v2 thinking wire fields from `ThinkingRuleResolver` (preserves exact efforts such as
+    /// `minimal` / `xhigh` and vendor mutual-exclusion contracts). When non-nil, overrides legacy `style.fields(thinking)`.
+    public var thinkingBodyFields: [String: ThinkingWireValue]?
     /// Optional cache-stable prefix of `system` captured from the same snapshot as `system`.
     public var systemCachePrefix: String?
 
@@ -44,6 +47,7 @@ public struct ModelRequest: Sendable {
         temperature: Double? = nil,
         outputLimit: Int? = nil,
         thinking: Thinking = .auto,
+        thinkingBodyFields: [String: ThinkingWireValue]? = nil,
         systemCachePrefix: String? = nil
     ) {
         self.model = model
@@ -54,6 +58,7 @@ public struct ModelRequest: Sendable {
         self.temperature = temperature
         self.outputLimit = outputLimit
         self.thinking = thinking
+        self.thinkingBodyFields = thinkingBodyFields
         self.systemCachePrefix = systemCachePrefix
     }
 }

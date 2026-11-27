@@ -179,7 +179,11 @@ public struct OpenAIProvider: ModelProvider {
             "stream_options": ["include_usage": true],
         ]
         if let temperature = request.temperature { body["temperature"] = temperature }
-        for (field, value) in style.fields(request.thinking) { body[field] = value }
+        if let resolvedFields = request.thinkingBodyFields {
+            for (field, value) in resolvedFields { body[field] = value.foundationValue }
+        } else {
+            for (field, value) in style.fields(request.thinking) { body[field] = value }
+        }
         if let limit = request.outputLimit { body["max_tokens"] = limit }
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { tool in

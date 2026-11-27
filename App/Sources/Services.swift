@@ -4,12 +4,13 @@ import Foundation
 
 extension Endpoint {
     var recipientIdentity: RecipientIdentity? {
+        guard isActiveProtocol else { return nil }
         let base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parts = URLComponents(string: base), parts.query == nil, parts.fragment == nil,
               parts.user == nil, parts.password == nil,
               let origin = EndpointAddressPolicy.rawOrigin(base) else { return nil }
         let prefix = parts.percentEncodedPath.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
-        let route = prefix + (kind == .openai ? "/chat/completions" : "/v1/messages")
+        let route = prefix + kind.defaultRoutePath
         return RecipientIdentity(endpointID: id, canonicalOrigin: origin, protocolKind: kind.rawValue,
                                  route: route, identityRevision: identityRevision)
     }

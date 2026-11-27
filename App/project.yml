@@ -47,6 +47,9 @@ targets:
       - path: Fonts
         buildPhase: resources
         excludes: ["*.md"]
+      - path: Resources
+        buildPhase: resources
+        excludes: ["*.md"]
     dependencies:
       - target: ClioWidget
       - package: AgentKit

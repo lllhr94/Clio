@@ -1,137 +1,264 @@
+import AgentKit
 import Craft
 import Foundation
 
-/// What models can do, from models.dev: an open catalog (MIT) of thousands of models from every service, with
-/// whether each takes pictures, calls tools and thinks, and its context window. Open Minis reads the same catalog.
-/// Fetched at most once a day and kept on the phone; Clio's guess from the name is only the fallback.
+/// App-layer resource loader and single-flight refresher for the `models.dev` catalog (MIT).
 ///
-/// Matching follows Open Minis' rules, written anew: relay prefixes are dropped (「openai/gpt-5」「cn:deepseek-v4-pro」),
-/// dates and version tags at the end are tried away, and when one model is listed by several services their
-/// answers are folded together (the larger window, any of them saying it can).
+/// Architectural boundary:
+/// - `AgentKit` never reads the App Bundle directly.
+/// - App loads the offline bundled trimmed snapshot (`App/Resources/models-dev-catalog.json`)
+///   or a validated on-disk cache (`Caches/models-dev-v2.json`) and injects an immutable
+///   `ModelsDevCatalogSnapshot` into `ThinkingRuleResolver`.
+/// - Network refreshes coalesce through a single-flight actor and pass through
+///   `ModelsDevCatalogSnapshot.parseAndValidate` (size cap, schema version, provider/model bounds,
+///   required field completeness, and anti-degradation guard against dropped `reasoning_options`/`interleaved`).
 enum ModelsDev {
     struct Entry: Codable, Equatable, Sendable {
         var sees: Bool
         var tools: Bool
         var thinks: Bool
         var window: Int
+        var outputLimit: Int = 0
+        var catalogProviderKey: String? = nil
+        var confidence: CatalogMatchConfidence = .ambiguousUnknown
+        var supportedEfforts: [String] = []
+        var canToggleOff: Bool = false
+        var interleavedField: String? = nil
     }
 
     private static let source = URL(string: "https://models.dev/api.json")!
-    private static var file: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("models-dev.json")
+    private static var cacheFile: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("models-dev-v2.json")
     }
 
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var index: [String: Entry]? = nil
+    nonisolated(unsafe) private static var cachedSnapshot: ModelsDevCatalogSnapshot? = nil
+    nonisolated(unsafe) private static var generationCounter: UInt64 = 0
 
-    /// What the catalog says about `model`, or nil when it does not know it.
-    static func lookup(_ model: String) -> Entry? {
-        let table = loaded()
-        guard !table.isEmpty else { return nil }
-        for name in candidates(model) {
-            if let entry = table[name] { return entry }
+    private actor RefreshCoordinator {
+        private var inFlight: Task<Bool, Never>?
+
+        func run(_ operation: @escaping @Sendable () async -> Bool) async -> Bool {
+            if let existing = inFlight {
+                return await existing.value
+            }
+            let task = Task { await operation() }
+            inFlight = task
+            let result = await task.value
+            inFlight = nil
+            return result
+        }
+    }
+
+    private static let refreshCoordinator = RefreshCoordinator()
+
+    /// Returns the currently active immutable catalog snapshot (loading cache or bundled offline
+    /// snapshot lazily once if needed and installing it into `ThinkingRuleResolver`).
+    static func currentSnapshot() -> ModelsDevCatalogSnapshot {
+        lock.lock()
+        if let existing = cachedSnapshot {
+            lock.unlock()
+            return existing
+        }
+        lock.unlock()
+
+        let loaded = loadFromDiskOrBundle()
+        lock.lock()
+        if let existing = cachedSnapshot {
+            lock.unlock()
+            return existing
+        }
+        cachedSnapshot = loaded
+        generationCounter = max(generationCounter, loaded.generation)
+        lock.unlock()
+        ThinkingRuleResolver.install(snapshot: loaded)
+        return loaded
+    }
+
+    /// Looks up `model` in the active snapshot (using verified `providerKey` when available).
+    static func lookup(
+        _ model: String,
+        providerKey: String? = nil,
+        snapshot: ModelsDevCatalogSnapshot? = nil
+    ) -> Entry? {
+        let active = snapshot ?? currentSnapshot()
+        let result = ThinkingRuleResolver.matchCatalog(
+            modelID: model,
+            officialProviderKey: providerKey,
+            in: active
+        )
+        guard let entry = result.entry else { return nil }
+        return Entry(
+            sees: entry.sees,
+            tools: entry.tools,
+            thinks: entry.thinks,
+            window: entry.contextWindow,
+            outputLimit: entry.outputLimit,
+            catalogProviderKey: entry.catalogProviderKey,
+            confidence: result.confidence,
+            supportedEfforts: entry.supportedEfforts,
+            canToggleOff: entry.canToggleOff,
+            interleavedField: entry.interleavedField
+        )
+    }
+
+    /// Segment-boundary normalized alias candidates for `model`.
+    static func candidates(_ model: String) -> [String] {
+        ModelsDevCatalogSnapshot.normalizedAliases(for: model)
+    }
+
+    /// Locates the bundled offline snapshot in `Clio.app` (works in both app runtime and `ClioAppTests`).
+    static func bundledSnapshotURL() -> URL? {
+        let bundles = [Bundle.main] + Bundle.allBundles.filter { $0 !== Bundle.main }
+        for bundle in bundles {
+            if let url = bundle.url(forResource: "models-dev-catalog", withExtension: "json") {
+                return url
+            }
+            if let url = bundle.url(forResource: "models-dev-catalog", withExtension: "json", subdirectory: "Resources") {
+                return url
+            }
         }
         return nil
     }
 
-    /// The names to try, most exact first: the id itself, without a relay's prefix, then with trailing dates,
-    /// 「-latest」「-preview」 and similar tags taken off one by one.
-    static func candidates(_ model: String) -> [String] {
-        var name = model.lowercased().trimmingCharacters(in: .whitespaces)
-        var out: [String] = [name]
-        if let slash = name.lastIndex(of: "/") { name = String(name[name.index(after: slash)...]); out.append(name) }
-        if let colon = name.lastIndex(of: ":") { name = String(name[name.index(after: colon)...]); out.append(name) }
-        var parts = name.split(separator: "-").map(String.init)
-        while parts.count > 1 {
-            let last = parts.removeLast()
-            let tag = last.allSatisfy(\.isNumber) || ["latest", "preview", "exp", "beta", "free", "online", "chat"].contains(last)
-            guard tag else { break }
-            out.append(parts.joined(separator: "-"))
-        }
-        var seen = Set<String>()
-        return out.filter { seen.insert($0).inserted }
+    static func bundledSnapshotData() -> Data? {
+        guard let url = bundledSnapshotURL() else { return nil }
+        return try? Data(contentsOf: url)
     }
 
-    private static func loaded() -> [String: Entry] {
-        lock.lock()
-        if let index {
-            lock.unlock()
-            return index
+    private static func loadFromDiskOrBundle() -> ModelsDevCatalogSnapshot {
+        // 1. Prefer previously validated on-disk cache if readable and structurally healthy.
+        if let cacheData = try? Data(contentsOf: cacheFile),
+           let decoded = try? JSONDecoder().decode(ModelsDevCatalogSnapshot.self, from: cacheData),
+           decoded.schemaVersion == ModelsDevCatalogSnapshot.currentSchemaVersion,
+           decoded.totalProviders >= ModelsDevCatalogSnapshot.ValidationPolicy.default.minProviders,
+           decoded.totalModels >= ModelsDevCatalogSnapshot.ValidationPolicy.default.minModels,
+           decoded.modelsWithReasoningOptions >= ModelsDevCatalogSnapshot.ValidationPolicy.default.minReasoningOptionsModels,
+           decoded.modelsWithInterleaved >= ModelsDevCatalogSnapshot.ValidationPolicy.default.minInterleavedModels {
+            return decoded
         }
-        lock.unlock()
-        let kept = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([String: Entry].self, from: $0) } ?? [:]
-        lock.lock()
-        if let existing = index {
-            lock.unlock()
-            return existing
+
+        // 2. Fall back to the offline bundled trimmed snapshot.
+        if let bundleData = bundledSnapshotData(),
+           let parsed = try? ModelsDevCatalogSnapshot.parseAndValidate(data: bundleData, generation: 1) {
+            return parsed
         }
-        index = kept
-        lock.unlock()
-        return kept
+
+        return .empty
     }
 
-    /// Fetches the catalog again if what is kept is older than a day. Pre-warms cached JSON off the main actor.
+    /// Pre-warms the offline/cached snapshot off the main actor, then refreshes from `models.dev`
+    /// at most once per 24 hours through a single-flight coordinator.
     static func refreshIfStale() async {
-        let age = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).map { Date().timeIntervalSince($0) }
-        await Task.detached(priority: .utility) { _ = loaded() }.value
+        await Task.detached(priority: .utility) { _ = currentSnapshot() }.value
+        let age = (try? cacheFile.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            .map { Date().timeIntervalSince($0) }
         if let age, age < 24 * 3600 { return }
-        await refresh()
+        _ = await refresh()
     }
 
-    static func refresh() async {
-        do {
-            var request = URLRequest(url: source)
-            request.timeoutInterval = 30
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return }
-            let table = try parse(data)
-            guard table.count > 100 else { return }
-            try JSONEncoder().encode(table).write(to: file, options: .atomic)
-            lock.lock()
-            index = table
-            lock.unlock()
-        } catch {
-            Diag.note("模型资料库没取到：\(error.localizedDescription)")
-        }
-    }
-
-    /// `{ service: { models: { id: { reasoning, tool_call, attachment, modalities: { input }, limit: { context } } } } }`
-    static func parse(_ data: Data) throws -> [String: Entry] {
-        guard let services = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-        var table: [String: Entry] = [:]
-        for case let service as [String: Any] in services.values {
-            guard let models = service["models"] as? [String: Any] else { continue }
-            for (id, value) in models {
-                guard let model = value as? [String: Any] else { continue }
-                let inputs = (model["modalities"] as? [String: Any])?["input"] as? [String] ?? []
-                let window = ((model["limit"] as? [String: Any])?["context"] as? NSNumber)?.intValue ?? 0
-                let entry = Entry(sees: inputs.contains("image") || (model["attachment"] as? Bool ?? false) && inputs.isEmpty,
-                                  tools: model["tool_call"] as? Bool ?? true,
-                                  thinks: model["reasoning"] as? Bool ?? false,
-                                  window: window)
-                // Every name it goes by: the id as listed, and without a service's prefix.
-                for name in Set([id.lowercased(), String(id.lowercased().split(separator: "/").last ?? "")]) where !name.isEmpty {
-                    if let known = table[name] {
-                        table[name] = Entry(sees: known.sees || entry.sees, tools: known.tools || entry.tools,
-                                            thinks: known.thinks || entry.thinks, window: max(known.window, entry.window))
-                    } else {
-                        table[name] = entry
+    /// Single-flight catalog refresh with streaming byte cap + strict structural & anti-degradation validation.
+    @discardableResult
+    static func refresh() async -> Bool {
+        await refreshCoordinator.run {
+            do {
+                let policy = ModelsDevCatalogSnapshot.ValidationPolicy.default
+                var request = URLRequest(url: source)
+                request.timeoutInterval = 30
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+                if let expected = (response as? HTTPURLResponse)?.expectedContentLength,
+                   expected > 0, Int(expected) > policy.maxBytes {
+                    throw CatalogValidationError.oversize(bytes: Int(expected), limit: policy.maxBytes)
+                }
+                var data = Data()
+                for try await byte in bytes {
+                    data.append(byte)
+                    if data.count > policy.maxBytes {
+                        throw CatalogValidationError.oversize(bytes: data.count, limit: policy.maxBytes)
                     }
                 }
+                _ = try applyValidatedRefreshData(data, writeCache: true, policy: policy)
+                return true
+            } catch {
+                Diag.note("模型资料库没更新：\(error.localizedDescription)")
+                return false
             }
         }
-        return table
+    }
+
+    /// Strict validation boundary for raw catalog payloads; atomically publishes on success and
+    /// preserves the last valid snapshot on rejection.
+    @discardableResult
+    static func applyValidatedRefreshData(
+        _ data: Data,
+        writeCache: Bool = true,
+        policy: ModelsDevCatalogSnapshot.ValidationPolicy = .default
+    ) throws -> ModelsDevCatalogSnapshot {
+        let existing = lock.withLock { cachedSnapshot }
+        let baseline = (existing?.totalModels ?? 0) >= policy.minModels ? existing : nil
+        let nextGen = nextGeneration()
+        let validated = try ModelsDevCatalogSnapshot.parseAndValidate(
+            data: data,
+            generation: nextGen,
+            policy: policy,
+            previous: baseline
+        )
+        if writeCache {
+            let encoded = try JSONEncoder().encode(validated)
+            try encoded.write(to: cacheFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
+        installInMemory(validated)
+        return validated
+    }
+
+    /// Installs an already-validated snapshot in memory and pushes it to `ThinkingRuleResolver`.
+    static func installInMemory(_ snapshot: ModelsDevCatalogSnapshot) {
+        lock.lock()
+        cachedSnapshot = snapshot
+        generationCounter = max(generationCounter, snapshot.generation)
+        lock.unlock()
+        ThinkingRuleResolver.install(snapshot: snapshot)
+    }
+
+    /// Resets in-memory state (for unit tests verifying cold-start loading and fallback).
+    static func resetForTesting() {
+        lock.lock()
+        cachedSnapshot = nil
+        generationCounter = 0
+        lock.unlock()
+        ThinkingRuleResolver.install(snapshot: .empty)
+    }
+
+    private static func nextGeneration() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        generationCounter = max(generationCounter, cachedSnapshot?.generation ?? 0) &+ 1
+        return generationCounter
+    }
+
+    /// Parses and validates raw catalog JSON without flat `services.values` OR-merging.
+    static func parse(_ data: Data) throws -> ModelsDevCatalogSnapshot {
+        try ModelsDevCatalogSnapshot.parseAndValidate(data: data, generation: nextGeneration())
     }
 }
 
 extension ModelTraits {
-    /// What a model can do, best source first: the catalog, else the guess from the name.
-    static func known(_ model: String) -> ModelTraits {
+    /// What a model can do, best source first: the validated catalog (preserving provider provenance),
+    /// else the guess from the name.
+    static func known(
+        _ model: String,
+        providerKey: String? = nil,
+        snapshot: ModelsDevCatalogSnapshot? = nil
+    ) -> ModelTraits {
         var traits = ModelTraits.guess(model)
-        if let entry = ModelsDev.lookup(model) {
+        if let entry = ModelsDev.lookup(model, providerKey: providerKey, snapshot: snapshot) {
             traits.sees = entry.sees
             traits.tools = entry.tools
             traits.thinks = entry.thinks
+            traits.thinksSource = .catalog
+            traits.levelsSource = .catalog
             if entry.window > 0 { traits.window = entry.window }
         }
         return traits

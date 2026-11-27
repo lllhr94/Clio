@@ -72,10 +72,7 @@ extension ChatPage {
     static func selectModel(_ reference: String?, in chat: ChatModel, team: TeamModel, bot: BotInfo, notice: ChatComposerNotice) {
         Haptics.selection()
         team.setModel(reference, in: chat.key)
-        let offered = offeredThinkingLevels(in: chat, team: team, fallback: bot)
-        if let selection = team.options(chat.key).thinking, !offered.contains(selection) {
-            team.setThinking(.auto, in: chat.key)
-        }
+        // Preserve the user's saved `ThinkingSelection` across model switches (never destructively wipe to `.auto`).
         let speaker = speakerForModel(in: chat, team: team, fallback: bot)
         if let current = team.current(chat.key, bot: speaker) {
             let displayName = current.endpoint.distinguishableDisplayName(for: current.model)
@@ -83,10 +80,12 @@ extension ChatPage {
         }
     }
 
-    func resetUnavailableThinking(in offered: [Thinking]) {
-        if let selection = options.thinking, !offered.contains(selection) {
-            team.setThinking(.auto, in: chat.key)
-        }
+    var offeredThinkingSelections: [ThinkingSelection] {
+        Self.offeredThinkingSelections(in: chat, team: team, fallback: bot)
+    }
+
+    static func offeredThinkingSelections(in chat: ChatModel, team: TeamModel, fallback: BotInfo) -> [ThinkingSelection] {
+        team.offeredThinkingSelections(in: chat.key, roomId: chat.roomId, fallback: fallback)
     }
 
     var offeredThinking: [Thinking] {
@@ -94,30 +93,14 @@ extension ChatPage {
     }
 
     static func offeredThinkingLevels(in chat: ChatModel, team: TeamModel, fallback: BotInfo) -> [Thinking] {
-        let options = team.options(chat.key)
-        let speakers: [BotInfo]
-        if let roomID = chat.roomId, options.model == nil,
-           let members = team.rooms.first(where: { $0.id == roomID })?.members, !members.isEmpty {
-            speakers = members.compactMap { id in team.bots.first { $0.id == id } }
-        } else {
-            speakers = [speakerForModel(in: chat, team: team, fallback: fallback)]
-        }
-        guard !speakers.isEmpty else { return [.auto] }
-        return speakers.reduce(Thinking.allCases) { offered, speaker in
-            guard let current = team.current(chat.key, bot: speaker) else { return [.auto] }
-            let levels: [Thinking]
-            if !current.traits.thinks {
-                levels = [.auto]
-            } else if let tested = current.traits.levels {
-                let parsed = tested.compactMap(Thinking.init(rawValue:)).filter { $0 != .auto }
-                levels = [.auto] + parsed
-            } else if current.endpoint.kind == .openai {
-                levels = current.endpoint.thinkingStyle.levels(thinks: true)
-            } else {
-                levels = Thinking.allCases
+        let selections = offeredThinkingSelections(in: chat, team: team, fallback: fallback)
+        var levels: [Thinking] = [.auto]
+        for selection in selections {
+            if let legacy = selection.legacyMirror, !levels.contains(legacy) {
+                levels.append(legacy)
             }
-            return offered.filter { levels.contains($0) }
         }
+        return levels
     }
 
     var thinkingChoices: some View {
@@ -156,19 +139,27 @@ struct ChatThinkingChoicesSection: View {
     let notice: ChatComposerNotice
 
     var body: some View {
-        let level = team.options(chat.key).thinking ?? .auto
-        let offered = ChatPage.offeredThinkingLevels(in: chat, team: team, fallback: bot)
+        let saved = team.options(chat.key).effectiveThinkingSelection
+        let offered = ChatPage.offeredThinkingSelections(in: chat, team: team, fallback: bot)
+        let unfulfilled = !saved.isDefault && !offered.contains(saved)
         Section(L.t("chat.thinking")) {
-            ForEach(offered, id: \.self) { option in
+            if unfulfilled {
+                Button {} label: {
+                    Label("已保留：\(saved.title)（当前模型暂不支持）", systemImage: "exclamationmark.circle")
+                    Text("切换回支持的模型会自动恢复，或下方另选一档。")
+                }
+                .disabled(true)
+            }
+            ForEach(offered, id: \.stableID) { option in
                 Button {
                     Haptics.tick(0.5)
-                    team.setThinking(option, in: chat.key)
+                    team.setThinkingSelection(option, in: chat.key)
                     ChatPage.postComposerNotice(
-                        option == .auto ? "思考强度交给模型自己定。" : "思考强度：\(option.title)。\(option.line)。",
+                        option.isDefault ? "思考强度交给模型自己定。" : "思考强度：\(option.title)。\(option.line)。",
                         to: notice
                     )
                 } label: {
-                    Label(option.title, systemImage: option == level ? "checkmark" : option.symbol)
+                    Label(option.title, systemImage: option == saved ? "checkmark" : option.symbol)
                     Text(option.line)
                 }
             }
@@ -191,10 +182,11 @@ struct ChatModelMenuView: View {
         let speaker = ChatPage.speakerForModel(in: chat, team: team, fallback: bot)
         let rawName = team.current(chat.key, bot: speaker)?.model ?? L.t("settings.models")
         let labelName = compact ? ChatPage.shortModelName(rawName) : rawName
-        let offered = ChatPage.offeredThinkingLevels(in: chat, team: team, fallback: bot)
-        let level = offered.contains(options.thinking ?? .auto) ? (options.thinking ?? .auto) : .auto
+        let offered = ChatPage.offeredThinkingSelections(in: chat, team: team, fallback: bot)
+        let saved = options.effectiveThinkingSelection
+        let isRealizable = offered.contains(saved)
         let maxPillWidth = ChatPage.modelPillMaxWidth(viewportWidth: viewportWidth, team: team)
-        if isRoom && offered.count <= 1 {
+        if isRoom && offered.count <= 1 && saved.isDefault {
             HStack(spacing: Ink.Space.xs) {
                 Text(labelName)
                     .font(Ink.mono(Ink.Size.micro, weight: .medium))
@@ -229,10 +221,10 @@ struct ChatModelMenuView: View {
                         .font(Ink.mono(Ink.Size.micro, weight: .medium))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    if level != .auto {
-                        Image(systemName: level.symbol)
+                    if !saved.isDefault {
+                        Image(systemName: saved.symbol)
                             .font(.system(size: Ink.Size.micro, weight: .medium))
-                            .foregroundStyle(Ink.accent)
+                            .foregroundStyle(isRealizable ? Ink.accent : Ink.warn)
                     }
                     Image(systemName: "chevron.down")
                         .font(.system(size: Ink.Size.micro, weight: .semibold))
@@ -248,7 +240,7 @@ struct ChatModelMenuView: View {
             }
             .menuOrder(.fixed)
             .accessibilityLabel("\(L.t("settings.models"))：\(rawName)")
-            .accessibilityValue("\(L.t("chat.thinking"))：\(level.title)")
+            .accessibilityValue("\(L.t("chat.thinking"))：\(saved.title)")
         }
     }
 }

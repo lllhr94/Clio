@@ -190,8 +190,8 @@ extension TeamModel {
         let vision = directVision || (found.map { canUseAuxiliaryVision(for: $0.endpoint, model: $0.model) } ?? false)
         let chatOptions = options(key)
         let echoes = found?.endpoint.thinkingStyle.echoesReasoning ?? false
-        let thinking = chatOptions.thinking ?? .auto
-        let signedReasoning = found?.endpoint.kind == .anthropic && thinking != .auto && thinking != .off
+        let selection = chatOptions.effectiveThinkingSelection
+        let signedReasoning = found?.endpoint.kind.isAnthropic == true && !selection.isDefault && !selection.isExplicitOff
         estimate.model = found?.model ?? ""
         estimate.window = traits?.window ?? Tokens.window(for: estimate.model)
         let workplace = place(of: key)

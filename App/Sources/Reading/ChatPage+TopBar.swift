@@ -428,15 +428,14 @@ private struct ChatCenteredIdentityPill: View {
             $0.endpoint.distinguishableDisplayName(for: $0.model)
         } ?? L.t("settings.models")
         let options = team.options(chat.key)
-        let offered = ChatPage.offeredThinkingLevels(in: chat, team: team, fallback: bot)
-        let level = offered.contains(options.thinking ?? .auto) ? (options.thinking ?? .auto) : .auto
+        let savedSelection = options.effectiveThinkingSelection
 
         Button(action: toggleCompanionHub) {
             pillContent
         }
         .buttonStyle(PressStyle())
         .accessibilityLabel("\(bot.name)，\(headerLine)")
-        .accessibilityValue("\(displayName)，\(level.title)")
+        .accessibilityValue("\(displayName)，\(savedSelection.title)")
         .accessibilityHint(L.t("chatHub.details"))
         .onChange(of: isImmersiveCollapsed) { _, hidden in
             if hidden && showCompanionHub {
@@ -626,20 +625,23 @@ private struct ChatCompanionHubPopover: View {
         return ChatPage.companionStatus(waiting: nil, doing: nil, streaming: false)
     }
 
-    private var offeredThinking: [Thinking] {
-        ChatPage.offeredThinkingLevels(in: chat, team: team, fallback: bot)
+    private var offeredSelections: [ThinkingSelection] {
+        ChatPage.offeredThinkingSelections(in: chat, team: team, fallback: bot)
     }
 
-    private var selectedThinking: Thinking {
-        let current = team.options(chat.key).thinking ?? .auto
-        return offeredThinking.contains(current) ? current : .auto
+    private var savedSelection: ThinkingSelection {
+        team.options(chat.key).effectiveThinkingSelection
     }
 
-    private var thinkingBinding: Binding<Thinking> {
+    private var displayedSelection: ThinkingSelection {
+        offeredSelections.contains(savedSelection) ? savedSelection : .inheritDefault
+    }
+
+    private var thinkingSelectionBinding: Binding<ThinkingSelection> {
         Binding(
-            get: { selectedThinking },
+            get: { displayedSelection },
             set: { next in
-                team.setThinking(next, in: chat.key)
+                team.setThinkingSelection(next, in: chat.key)
             }
         )
     }
@@ -699,7 +701,7 @@ private struct ChatCompanionHubPopover: View {
             rootHeaderSection
             hairlineDivider
             rootModelRowSection
-            if offeredThinking.count > 1 {
+            if offeredSelections.count > 1 || !savedSelection.isDefault {
                 hairlineDivider
                 rootThinkingSection
             }
@@ -835,22 +837,31 @@ private struct ChatCompanionHubPopover: View {
     }
 
     private var rootThinkingSection: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.xs) {
+        let unfulfilled = !savedSelection.isDefault && !offeredSelections.contains(savedSelection)
+        return VStack(alignment: .leading, spacing: Ink.Space.xs) {
             HStack {
                 Text(L.t("chatHub.thinking"))
                     .font(.system(size: Ink.Size.micro, weight: .medium))
                     .foregroundStyle(Ink.inkFaint)
                 Spacer(minLength: 0)
-                Text(selectedThinking.title)
+                Text(savedSelection.title)
                     .font(.system(size: Ink.Size.micro, weight: .medium))
-                    .foregroundStyle(Ink.inkSoft)
+                    .foregroundStyle(unfulfilled ? Ink.warn : Ink.inkSoft)
             }
-            SlidingCapsuleControl(
-                selection: thinkingBinding,
-                options: offeredThinking,
-                compact: true
-            ) { option in
-                option.title
+            if offeredSelections.count > 1 {
+                SlidingCapsuleControl(
+                    selection: thinkingSelectionBinding,
+                    options: offeredSelections,
+                    compact: true
+                ) { option in
+                    option.title
+                }
+            }
+            if unfulfilled {
+                Text("当前模型暂不支持已保存的「\(savedSelection.title)」，已保留原设定。")
+                    .font(.system(size: Ink.Size.micro))
+                    .foregroundStyle(Ink.warn)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, Ink.Space.m)
@@ -1256,7 +1267,6 @@ private struct ChatTopBarControlsView: View {
 
     private var isRoom: Bool { chat.roomId != nil }
     private var working: Bool { team.workDetail(for: chat.key).words != nil || chat.hasStreaming }
-    private var offeredThinking: [Thinking] { ChatPage.offeredThinkingLevels(in: chat, team: team, fallback: bot) }
 
     var body: some View {
         HStack(spacing: Ink.Space.xs) {
@@ -1271,11 +1281,6 @@ private struct ChatTopBarControlsView: View {
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("chatTopBar")) } action: { rect in
                     onHitRectChanged?(2, rect)
                 }
-        }
-        .onChange(of: offeredThinking, initial: true) { _, offered in
-            if let selection = team.options(chat.key).thinking, !offered.contains(selection) {
-                team.setThinking(.auto, in: chat.key)
-            }
         }
     }
 
