@@ -28,7 +28,10 @@ struct CarePage: View {
     @State private var made: URL?
     @State private var sizeText = ""
     @State private var storage: StorageBreakdown?
+    @State private var denTempBytes: Int64 = 0
     @State private var cleaningCache = false
+    @State private var cleaningDenTemp = false
+    @State private var denRunningBusy = false
     @State private var cleanTask: Task<Void, Never>?
     @State private var making = false
     @State private var restoring = false
@@ -156,6 +159,12 @@ struct CarePage: View {
             if includeKeys { encryptLocal = true }
         }
         .onReceive(Den.shared.$state.removeDuplicates()) { denState = $0 }
+        .onReceive(
+            Den.shared.$running
+                .combineLatest(Den.shared.$cleaningTemp)
+                .map { !$0.isEmpty || $1 }
+                .removeDuplicates()
+        ) { denRunningBusy = $0 }
         .task {
             switch scope {
             case .backup:
@@ -467,6 +476,21 @@ struct CarePage: View {
                     }
                 }
                 .disabled(cleaningCache || storage.cleanableBytes == 0 || backupOrRestoreBusy)
+                row(Words.t("斗室临时文件"), Self.formatBytes(denTempBytes), bytes: denTempBytes)
+                Button {
+                    cleanDenTemp()
+                } label: {
+                    if cleaningDenTemp {
+                        Text(Words.t("正在清理斗室临时文件…"))
+                    } else if denRunningBusy {
+                        Text(Words.t("斗室运行中，空闲后可清理临时文件"))
+                    } else if denTempBytes > 0 {
+                        Text(Words.t("清理斗室临时文件（\(Self.formatBytes(denTempBytes))）"))
+                    } else {
+                        Text(Words.t("清理斗室临时文件（暂无）"))
+                    }
+                }
+                .disabled(cleaningDenTemp || denRunningBusy || denTempBytes == 0 || backupOrRestoreBusy)
             } else {
                 row(L.t("careStorage.total"), L.t("loading.calculating"))
             }
@@ -495,18 +519,21 @@ struct CarePage: View {
         let work = Task.detached(priority: .utility) {
             let hasWriteFailures = ChatDisk.finishWritesReportingFailures() > 0
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            return StorageCleanup.inspect(
+            let breakdown = StorageCleanup.inspect(
                 appSupportRoot: base,
                 teamRoot: teamRoot,
                 extraReferencedMedia: referenced,
                 skipOrphanMedia: hasWriteFailures,
                 workspaceRoot: Workspace.root
             )
+            let tempBytes = Den.managedTempBytes()
+            return (breakdown, tempBytes)
         }
-        let breakdown = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        let (breakdown, tempBytes) = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
         guard !Task.isCancelled else { return }
         withAnimation(Ink.Motion.prefersReduced(reduceMotion) ? nil : Ink.Motion.quick) {
             storage = breakdown
+            denTempBytes = tempBytes
             sizeText = Self.formatBytes(breakdown.totalBytes)
         }
     }
@@ -557,6 +584,26 @@ struct CarePage: View {
                 )
             } else {
                 notice = L.t("careStorage.nothingCleaned")
+            }
+        }
+    }
+
+    private func cleanDenTemp() {
+        guard !cleaningDenTemp, !backupOrRestoreBusy, Den.shared.running.isEmpty else { return }
+        cleaningDenTemp = true
+        Task {
+            defer { cleaningDenTemp = false }
+            let outcome = await Den.shared.cleanManagedTempFiles()
+            guard !Task.isCancelled else { return }
+            await measureStorage()
+            guard !Task.isCancelled else { return }
+            if outcome.skippedBecauseBusy {
+                notice = Words.t("斗室正在执行命令，请等待结束后再清理临时文件")
+            } else if outcome.removedCount > 0 || outcome.freedBytes > 0 {
+                Haptics.thud()
+                notice = Words.t("已清理斗室临时文件 \(Self.formatBytes(outcome.freedBytes))")
+            } else {
+                notice = Words.t("斗室暂时没有需要清理的临时文件")
             }
         }
     }

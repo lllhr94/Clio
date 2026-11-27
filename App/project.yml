@@ -82,21 +82,21 @@ targets:
         UIRequiresFullScreen: true
         NSSupportsLiveActivities: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
-        NSCameraUsageDescription: 拍照发给旅伴看。
-        NSMicrophoneUsageDescription: 按下说话时，用麦克风听你说的话。
-        NSSpeechRecognitionUsageDescription: 把你说的话转成文字，发给旅伴。
-        NSCalendarsFullAccessUsageDescription: 旅伴帮你查日程、加日程（加之前会问你）。
-        NSRemindersFullAccessUsageDescription: 旅伴帮你查提醒事项、加提醒（加之前会问你）。
-        NSPhotoLibraryAddUsageDescription: 保存旅伴给你的图片和笺。
-        NSPhotoLibraryUsageDescription: 在加号里显示最近的照片，点一下就能发给旅伴；你允许时，旅伴也可以看相册里最近照片的时间和地点。
-        NSLocationWhenInUseUsageDescription: 你问附近、天气、路线时，旅伴用它知道你大概在哪。
-        NSContactsUsageDescription: 你允许时，旅伴可以按名字查通讯录里的人。
-        NSFaceIDUsageDescription: 打开 Clio、看或复制信匣里的密码前，先确认是你本人。
+        NSCameraUsageDescription: 当你点击拍照发送时，Clio 使用相机拍摄照片并发送给你在对话中选择的模型或工具。
+        NSMicrophoneUsageDescription: 当你按住语音输入按钮时，Clio 使用麦克风采集你的语音以便转写或对话。
+        NSSpeechRecognitionUsageDescription: 当你使用语音输入时，Clio 使用系统的语音识别服务将你的语音转成文字并填入输入框。
+        NSCalendarsFullAccessUsageDescription: 当你要求查询、新增或修改日程时，Clio 会读写你的系统日历；任何修改操作前都会先请你确认。
+        NSRemindersFullAccessUsageDescription: 当你要求查看、创建或完成待办提醒时，Clio 会读写你的提醒事项；任何修改操作前都会先请你确认。
+        NSPhotoLibraryAddUsageDescription: 当你主动点击保存图片或导出卡片时，Clio 会将生成或查看的图片写入你的系统相册。
+        NSPhotoLibraryUsageDescription: 当你打开图片选择器发送照片时，Clio 会读取你选中的相册图片；仅在你明确授权时才会查看最近照片的时间与地点元数据。
+        NSLocationWhenInUseUsageDescription: 当你主动询问天气、周边或路线规划并请求查询位置时，Clio 仅在使用期间读取当前位置以回答你的问题。
+        NSContactsUsageDescription: 当你明确要求查找联系人信息并授权后，Clio 会按你的查询读取系统通讯录。
+        NSFaceIDUsageDescription: 当你解锁应用或查看、复制信匣中的敏感凭据与密钥前，Clio 使用面容 ID 验证你的本人身份。
         BGTaskSchedulerPermittedIdentifiers: [io.github.lllhr94.clio.turn.*, io.github.lllhr94.clio.memory-night]
-        NSLocalNetworkUsageDescription: 连你电脑上的模型（Ollama、LM Studio）时，要在同一个 Wi-Fi 里找到它。
-        NSMotionUsageDescription: 你允许时，旅伴可以读手机记的步数。
-        NSHealthShareUsageDescription: 你允许时，旅伴可以读「健康」里的步数、睡眠、心率、活动能量和体重。Clio 只读不写。
-        NSHealthUpdateUsageDescription: Clio 不会往「健康」里写任何东西。
+        NSLocalNetworkUsageDescription: 当你在设置中连接同一 Wi-Fi 下的本地模型或工具服务（例如 Ollama、LM Studio）时，Clio 需要访问本地网络以建立连接。
+        NSMotionUsageDescription: 当你明确要求读取活动数据时，Clio 会在你授权后读取设备的计步与运动摘要，不会向外部自动上传。
+        NSHealthShareUsageDescription: 当你明确授权后，Clio 仅读取你允许的健康数据（步数、睡眠、心率、活动能量与体重）用于对话回答，不会主动写入。
+        NSHealthUpdateUsageDescription: Clio 仅请求只读权限，不会向系统「健康」写入任何记录。
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         CFBundleURLTypes:

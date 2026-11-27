@@ -4,6 +4,7 @@
 // AppDelegate.m and ISHShellExecutor.m.
 
 #import <Foundation/Foundation.h>
+#include <stdint.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -15,6 +16,22 @@ typedef void (^DenDone)(int code, NSString *output, NSString *errorOutput);
 /// Boots the kernel on a root made by fakefsify (a folder holding data/ and meta.db).
 /// `desk` is a host folder shown inside Linux at /root/desk. Returns 0, or a negative Linux error.
 + (int)bootRoot:(NSString *)root desk:(nullable NSString *)desk;
+
+/// Boots the kernel with an optional host DNS directory mounted read-only at /etc/clio-dns
+/// and linked from /etc/resolv.conf.
++ (int)bootRoot:(NSString *)root desk:(nullable NSString *)desk dnsDir:(nullable NSString *)dnsDir;
+
+/// Updates the kernel's per-second and burst fork rate limits (for thermal throttling).
++ (void)setForkRateLimit:(uint32_t)perSecond burst:(uint32_t)burst;
+
+/// Reads current host resolver nameservers via res_ninit/res_getservers.
++ (NSArray<NSString *> *)systemDNSServers;
+
+/// Reads current host resolver search domains via res_ninit/dnsrch.
++ (NSArray<NSString *> *)systemSearchDomains;
+
+/// Non-nil if DNS mount/symlink fallback wrote with an error during boot.
++ (nullable NSString *)lastDNSFallbackError;
 
 + (BOOL)booted;
 

@@ -1,7 +1,9 @@
 import AgentKit
 import Craft
 import Foundation
+import Network
 import SwiftUI
+import UIKit
 
 /// 斗室: a small Alpine Linux living in the phone. Wakes on first use; stays up while the app runs.
 @MainActor
@@ -20,6 +22,7 @@ final class Den: ObservableObject {
     /// What the terminal page shows: commands and what they printed.
     @Published private(set) var log: [Line] = []
     @Published private(set) var running: Set<Int32> = []
+    @Published private(set) var cleaningTemp = false
 
     struct Line: Identifiable, Equatable, Sendable {
         enum Kind: Sendable { case command, out, error, note }
@@ -30,9 +33,323 @@ final class Den: ObservableObject {
 
     private nonisolated let output = LiveOutput()
     private var waiting: [CheckedContinuation<Bool, Never>] = []
+    private var cleanWaiters: [CheckedContinuation<Void, Never>] = []
+    private var pathMonitor: NWPathMonitor?
+    private let pathQueue = DispatchQueue(label: "clio.den.network")
+    private var thermalObserver: NSObjectProtocol?
+    private var foregroundObserver: NSObjectProtocol?
+    private var observersStarted = false
+
+    private nonisolated static let dnsWriteQueue = DispatchQueue(label: "clio.den.dns-write")
+    private nonisolated static let dnsRevisionLock = NSLock()
+    private nonisolated(unsafe) static var latestDNSRevision: UInt64 = 0
+
+    static let dnsModeDefaultsKey = "chat.denDNSMode"
+    static let customDNSDefaultsKey = "chat.denCustomDNS"
+
+    @Published var showingDNSSettings = false
+    @Published private(set) var appliedDNSMode: DenDNSMode = .auto
+    @Published private(set) var appliedDNSServers: [String] = []
+    @Published private(set) var appliedSearchDomains: [String] = []
+    @Published private(set) var lastDNSError: String?
+
+    struct TempCleanupOutcome: Equatable, Sendable {
+        let skippedBecauseBusy: Bool
+        let removedCount: Int
+        let freedBytes: Int64
+    }
 
     nonisolated private static var home: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Den", isDirectory: true)
+    }
+
+    nonisolated static var dnsDirectory: URL {
+        home.appendingPathComponent("dns", isDirectory: true)
+    }
+
+    nonisolated static var resolvConfURL: URL {
+        dnsDirectory.appendingPathComponent("resolv.conf", isDirectory: false)
+    }
+
+    nonisolated static var managedTempDirectory: URL {
+        home.appendingPathComponent("alpine/data/tmp", isDirectory: true)
+    }
+
+    nonisolated static func readDNSMode(defaults: UserDefaults = .standard) -> DenDNSMode {
+        guard let raw = defaults.string(forKey: dnsModeDefaultsKey),
+              let mode = DenDNSMode(rawValue: raw) else {
+            return .auto
+        }
+        return mode
+    }
+
+    nonisolated static func readCustomDNSInput(defaults: UserDefaults = .standard) -> String {
+        defaults.string(forKey: customDNSDefaultsKey) ?? ""
+    }
+
+    var dnsMode: DenDNSMode {
+        Self.readDNSMode()
+    }
+
+    var customDNSInput: String {
+        Self.readCustomDNSInput()
+    }
+
+    nonisolated private static func nextDNSRevision() -> UInt64 {
+        dnsRevisionLock.withLock {
+            latestDNSRevision &+= 1
+            return latestDNSRevision
+        }
+    }
+
+    nonisolated private static func isCurrentDNSRevision(_ revision: UInt64) -> Bool {
+        dnsRevisionLock.withLock { latestDNSRevision == revision }
+    }
+
+    /// Saves DNS preferences into backup-included `chat.*` keys and serializes `/etc/clio-dns/resolv.conf`.
+    @discardableResult
+    func updateDNSConfiguration(
+        mode: DenDNSMode,
+        customInput: String,
+        defaults: UserDefaults = .standard,
+        resolvURL: URL = Den.resolvConfURL
+    ) -> (valid: [String], invalid: [String]) {
+        let parsed = DenDNSConfig.parseCustomDNSList(customInput)
+        objectWillChange.send()
+        defaults.set(mode.rawValue, forKey: Self.dnsModeDefaultsKey)
+        defaults.set(parsed.valid.joined(separator: ", "), forKey: Self.customDNSDefaultsKey)
+        appliedDNSMode = mode
+        let validationError: String?
+        if mode == .custom && parsed.valid.isEmpty {
+            validationError = "请输入至少一个有效的 IPv4 或 IPv6 地址"
+        } else if !parsed.invalid.isEmpty {
+            validationError = "已忽略无效地址：\(parsed.invalid.joined(separator: "、"))"
+        } else {
+            validationError = nil
+        }
+        lastDNSError = validationError
+
+        let revision = Self.nextDNSRevision()
+        let capturedCustom = parsed.valid
+        Self.dnsWriteQueue.async {
+            guard Self.isCurrentDNSRevision(revision) else { return }
+            let outcome = Self.writeResolvConfNow(mode: mode, customServers: capturedCustom, resolvURL: resolvURL)
+            guard Self.isCurrentDNSRevision(revision) else { return }
+            Task { @MainActor in
+                guard Self.isCurrentDNSRevision(revision) else { return }
+                Den.shared.appliedDNSMode = mode
+                Den.shared.appliedDNSServers = outcome.servers
+                Den.shared.appliedSearchDomains = outcome.searchDomains
+                Den.shared.lastDNSError = outcome.errorMessage ?? validationError
+            }
+        }
+        return parsed
+    }
+
+    /// Refreshes host DNS into `/etc/clio-dns/resolv.conf` on a serialized revision-checked queue.
+    func refreshDNSFromHostIfAuto() {
+        let mode = Self.readDNSMode()
+        guard mode == .auto else { return }
+        let revision = Self.nextDNSRevision()
+        let custom = DenDNSConfig.parseCustomDNSList(Self.readCustomDNSInput()).valid
+        Self.dnsWriteQueue.async {
+            guard Self.isCurrentDNSRevision(revision) else { return }
+            let outcome = Self.writeResolvConfNow(mode: .auto, customServers: custom, resolvURL: Self.resolvConfURL)
+            guard Self.isCurrentDNSRevision(revision) else { return }
+            Task { @MainActor in
+                guard Self.isCurrentDNSRevision(revision) else { return }
+                Den.shared.appliedDNSMode = .auto
+                Den.shared.appliedDNSServers = outcome.servers
+                Den.shared.appliedSearchDomains = outcome.searchDomains
+                if let error = outcome.errorMessage {
+                    Den.shared.lastDNSError = error
+                }
+            }
+        }
+    }
+
+    nonisolated static func writeResolvConfNow(
+        mode: DenDNSMode,
+        customServers: [String],
+        resolvURL: URL = Den.resolvConfURL,
+        systemServersOverride: [String]? = nil,
+        searchDomainsOverride: [String]? = nil
+    ) -> (servers: [String], searchDomains: [String], wrote: Bool, errorMessage: String?) {
+        let sysServers = systemServersOverride ?? DenKernel.systemDNSServers()
+        let sysDomains = searchDomainsOverride ?? DenKernel.systemSearchDomains()
+        let existing = try? String(contentsOf: resolvURL, encoding: .utf8)
+        let decision = DenDNSConfig.renderResolvConf(
+            mode: mode,
+            systemServers: sysServers,
+            customServers: customServers,
+            searchDomains: sysDomains,
+            existingContent: existing
+        )
+        let cleanCustom = DenDNSConfig.normalizeNameservers(customServers)
+        let cleanSys = DenDNSConfig.normalizeNameservers(sysServers)
+        let effectiveServers = mode == .custom ? (cleanCustom.isEmpty ? cleanSys : cleanCustom) : cleanSys
+        let effectiveDomains = DenDNSConfig.sanitizeSearchDomains(sysDomains)
+
+        switch decision {
+        case .preserveExisting:
+            return (effectiveServers, effectiveDomains, false, nil)
+        case .write(let body):
+            do {
+                try DenDNSConfig.atomicWriteResolvConf(content: body, to: resolvURL)
+                return (effectiveServers, effectiveDomains, true, nil)
+            } catch {
+                return (effectiveServers, effectiveDomains, false, error.localizedDescription)
+            }
+        }
+    }
+
+    func applyThermalForkLimit(_ thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState) {
+        let limit = DenThermalForkLimit.limit(for: thermalState)
+        DenKernel.setForkRateLimit(limit.perSecond, burst: limit.burst)
+    }
+
+    private func startRuntimeObserversIfNeeded() {
+        guard !observersStarted else { return }
+        observersStarted = true
+        CPUGuard.shared.start()
+
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyThermalForkLimit()
+            }
+        }
+
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshDNSFromHostIfAuto()
+            }
+        }
+
+        let monitor = NWPathMonitor()
+        pathMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] _ in
+            // Always re-query res_ninit on path events even when interface/flags look identical (e.g. DHCP/VPN DNS swap).
+            Task { @MainActor [weak self] in
+                self?.refreshDNSFromHostIfAuto()
+            }
+        }
+        monitor.start(queue: pathQueue)
+    }
+
+    /// Measures host-visible temporary files owned by Den (`/tmp` mirror and `densock*` sockets).
+    nonisolated static func managedTempBytes(
+        home: URL = Den.home,
+        tempDirectory: URL = FileManager.default.temporaryDirectory
+    ) -> Int64 {
+        let fm = FileManager.default
+        var total: Int64 = 0
+        let alpineTmp = home.appendingPathComponent("alpine/data/tmp", isDirectory: true)
+        if let enumerator = fm.enumerator(at: alpineTmp, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey], options: [.skipsPackageDescendants]) {
+            for case let fileURL as URL in enumerator {
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if values?.isRegularFile == true, let size = values?.fileSize {
+                    total += Int64(size)
+                }
+            }
+        }
+        if let entries = try? fm.contentsOfDirectory(at: tempDirectory, includingPropertiesForKeys: [.fileSizeKey], options: []) {
+            for entry in entries where entry.lastPathComponent.hasPrefix("densock") {
+                let values = try? entry.resourceValues(forKeys: [.fileSizeKey])
+                total += Int64(values?.fileSize ?? 0)
+            }
+        }
+        return total
+    }
+
+    /// Cleans Den temporary files ONLY when `running.isEmpty` and no other cleanup is active.
+    /// Acquires `cleaningTemp` across the entire `await` window so `Den.run` cannot spawn commands concurrently.
+    func cleanManagedTempFiles() async -> TempCleanupOutcome {
+        guard running.isEmpty, !cleaningTemp else {
+            return TempCleanupOutcome(skippedBecauseBusy: true, removedCount: 0, freedBytes: 0)
+        }
+        cleaningTemp = true
+        defer {
+            cleaningTemp = false
+            let waiters = cleanWaiters
+            cleanWaiters.removeAll()
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+
+        if DenKernel.booted() {
+            return await Self.cleanHostTempFiles(
+                runningPIDs: running,
+                home: Self.home,
+                tempDirectory: FileManager.default.temporaryDirectory,
+                cleanInKernel: {
+                    _ = await self.runExecutingCommand("rm -rf /tmp/* /tmp/.[!.]* /tmp/..?* 2>/dev/null; true", timeout: 20, keep: 4_000, shown: false, onOutput: nil)
+                }
+            )
+        }
+        return await Self.cleanHostTempFiles(
+            runningPIDs: running,
+            home: Self.home,
+            tempDirectory: FileManager.default.temporaryDirectory,
+            cleanInKernel: nil
+        )
+    }
+
+    nonisolated static func cleanHostTempFiles(
+        runningPIDs: Set<Int32>,
+        home: URL = Den.home,
+        tempDirectory: URL = FileManager.default.temporaryDirectory,
+        cleanInKernel: (@Sendable () async -> Void)? = nil
+    ) async -> TempCleanupOutcome {
+        guard runningPIDs.isEmpty else {
+            return TempCleanupOutcome(skippedBecauseBusy: true, removedCount: 0, freedBytes: 0)
+        }
+        let beforeBytes = managedTempBytes(home: home, tempDirectory: tempDirectory)
+        var removedCount = 0
+
+        if let cleanInKernel {
+            await cleanInKernel()
+        } else {
+            let fm = FileManager.default
+            let alpineTmp = home.appendingPathComponent("alpine/data/tmp", isDirectory: true)
+            if let children = try? fm.contentsOfDirectory(at: alpineTmp, includingPropertiesForKeys: nil, options: []) {
+                for child in children {
+                    do {
+                        try fm.removeItem(at: child)
+                        removedCount += 1
+                    } catch {
+                        // Ignore locked entries
+                    }
+                }
+            }
+        }
+
+        let fm = FileManager.default
+        if let entries = try? fm.contentsOfDirectory(at: tempDirectory, includingPropertiesForKeys: nil, options: []) {
+            for entry in entries where entry.lastPathComponent.hasPrefix("densock") {
+                do {
+                    try fm.removeItem(at: entry)
+                    removedCount += 1
+                } catch {
+                    // Ignore in-use sockets
+                }
+            }
+        }
+
+        let afterBytes = managedTempBytes(home: home, tempDirectory: tempDirectory)
+        let freed = max(0, beforeBytes - afterBytes)
+        if cleanInKernel != nil && freed > 0 && removedCount == 0 {
+            removedCount = 1
+        }
+        return TempCleanupOutcome(skippedBecauseBusy: false, removedCount: removedCount, freedBytes: freed)
     }
 
     /// Unpacks the root the first time, then boots. Returns false when Linux cannot start.
@@ -67,17 +384,50 @@ final class Den: ObservableObject {
             return false
         }
         state = .waking
-        let code: Int32 = await withCheckedContinuation { continuation in
-            Thread.detachNewThread {
-                let code = DenKernel.bootRoot(root.path, desk: desk)
-                continuation.resume(returning: code)
+        let dnsMode = Self.readDNSMode()
+        let customServers = DenDNSConfig.parseCustomDNSList(Self.readCustomDNSInput()).valid
+        let dnsDir = Self.dnsDirectory
+        let resolvURL = Self.resolvConfURL
+        let bootRevision = Self.nextDNSRevision()
+        applyThermalForkLimit()
+
+        let bootOutcome: (code: Int32, dnsResult: (servers: [String], searchDomains: [String], wrote: Bool, errorMessage: String?), fallbackError: String?) = await withCheckedContinuation { continuation in
+            Self.dnsWriteQueue.async {
+                let dnsResult: (servers: [String], searchDomains: [String], wrote: Bool, errorMessage: String?)
+                if Self.isCurrentDNSRevision(bootRevision) {
+                    dnsResult = Self.writeResolvConfNow(
+                        mode: dnsMode,
+                        customServers: customServers,
+                        resolvURL: resolvURL
+                    )
+                } else {
+                    dnsResult = ([], [], false, nil)
+                }
+                Thread.detachNewThread {
+                    let code = DenKernel.bootRoot(root.path, desk: desk, dnsDir: dnsDir.path)
+                    let fallbackErr = DenKernel.lastDNSFallbackError()
+                    continuation.resume(returning: (code, dnsResult, fallbackErr))
+                }
             }
         }
+        if Self.isCurrentDNSRevision(bootRevision) {
+            appliedDNSMode = dnsMode
+            appliedDNSServers = bootOutcome.dnsResult.servers
+            appliedSearchDomains = bootOutcome.dnsResult.searchDomains
+            if let error = bootOutcome.fallbackError ?? bootOutcome.dnsResult.errorMessage {
+                lastDNSError = error
+            }
+        } else if let error = bootOutcome.fallbackError {
+            lastDNSError = error
+        }
+        let code = bootOutcome.code
         if code < 0 {
             finish(.broken("Linux 没能启动（错误 \(code)）"))
             Diag.note("斗室没能启动：\(code)")
             return false
         }
+        startRuntimeObserversIfNeeded()
+        applyThermalForkLimit()
         finish(.awake)
         return true
     }
@@ -99,6 +449,18 @@ final class Den: ObservableObject {
     /// Runs a shell command. Stops waiting after `timeout` seconds and kills it.
     /// Runs one command. `onOutput` hears each line as it is printed.
     func run(_ command: String, timeout: Double = 120, keep: Int = 400_000, shown: Bool = true, onOutput: (@Sendable (String) -> Void)? = nil) async -> Outcome {
+        while cleaningTemp {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                cleanWaiters.append(continuation)
+            }
+            if Task.isCancelled {
+                return Outcome(code: -1, output: "", errorOutput: "命令已取消。", timedOut: false)
+            }
+        }
+        return await runExecutingCommand(command, timeout: timeout, keep: keep, shown: shown, onOutput: onOutput)
+    }
+
+    private func runExecutingCommand(_ command: String, timeout: Double, keep: Int, shown: Bool, onOutput: (@Sendable (String) -> Void)?) async -> Outcome {
         guard await wake() else {
             if case .broken(let why) = state { return Outcome(code: -1, output: "", errorOutput: why, timedOut: false) }
             return Outcome(code: -1, output: "", errorOutput: Words.t("斗室没醒。"), timedOut: false)

@@ -1,4 +1,10 @@
 import Foundation
+#if canImport(CFNetwork)
+import CFNetwork
+#endif
+#if canImport(Network)
+import Network
+#endif
 
 /// A tool as a model sees it.
 public struct ToolSpec: Equatable, Sendable {
@@ -105,12 +111,238 @@ enum SSE {
 }
 
 enum HTTP {
-    static let session: URLSession = {
-        let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 120
-        configuration.timeoutIntervalForResource = 900
-        return URLSession(configuration: configuration)
-    }()
+    /// Manages a shared `URLSession` that rotates across network interface or proxy changes
+    /// via delayed `finishTasksAndInvalidate()` leases so active and newly-starting streams never hit an invalidated session.
+    final class SessionPool: @unchecked Sendable {
+        static let shared = SessionPool()
+
+        struct Lease {
+            let session: URLSession
+            let generation: Int
+        }
+
+        private let lock = NSLock()
+        private let factory: @Sendable (Int) -> URLSession
+        private let proxySignatureProvider: @Sendable () -> String
+        private var _currentSession: URLSession
+        private var _generation: Int = 0
+        private var _lastPathSignature: String?
+        private var _lastProxySignature: String
+        private var _retiredCount: Int = 0
+        private var _activeCheckouts: [Int: Int] = [:]
+        private var _pendingRetirement: [Int: URLSession] = [:]
+        #if canImport(Network)
+        private var monitor: NWPathMonitor?
+        private let monitorQueue = DispatchQueue(label: "clio.http.session-pool")
+        #endif
+
+        init(
+            initialSignature: String? = nil,
+            startMonitor: Bool = true,
+            proxySignatureProvider: @escaping @Sendable () -> String = SessionPool.currentProxySignature,
+            factory: @escaping @Sendable (Int) -> URLSession = SessionPool.makeDefaultSession
+        ) {
+            self.factory = factory
+            self.proxySignatureProvider = proxySignatureProvider
+            self._lastPathSignature = initialSignature
+            self._lastProxySignature = proxySignatureProvider()
+            self._currentSession = factory(0)
+            if startMonitor {
+                startMonitoringIfNeeded()
+            }
+        }
+
+        static func makeDefaultSession(_ generation: Int) -> URLSession {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = 120
+            configuration.timeoutIntervalForResource = 900
+            return URLSession(configuration: configuration)
+        }
+
+        var currentSession: URLSession {
+            refreshProxyIfNeeded()
+            lock.lock()
+            defer { lock.unlock() }
+            return _currentSession
+        }
+
+        var generation: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _generation
+        }
+
+        var retiredSessionCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _retiredCount
+        }
+
+        var pendingRetirementCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return _pendingRetirement.count
+        }
+
+        /// Acquires a pinned `URLSession` lease so a concurrent rotation defers `finishTasksAndInvalidate()`
+        /// until the caller creates its task inside the session.
+        func acquireLease() -> Lease {
+            let proxyNow = proxySignatureProvider()
+            var retiredNow: URLSession?
+            lock.lock()
+            if proxyNow != _lastProxySignature {
+                _lastProxySignature = proxyNow
+                retiredNow = rotateLocked(newPathSignature: _lastPathSignature)
+            }
+            let gen = _generation
+            let sess = _currentSession
+            _activeCheckouts[gen, default: 0] += 1
+            lock.unlock()
+
+            retiredNow?.finishTasksAndInvalidate()
+            return Lease(session: sess, generation: gen)
+        }
+
+        func releaseLease(_ lease: Lease) {
+            var deferredRetire: URLSession?
+            lock.lock()
+            let remaining = max(0, (_activeCheckouts[lease.generation] ?? 1) - 1)
+            if remaining == 0 {
+                _activeCheckouts.removeValue(forKey: lease.generation)
+                deferredRetire = _pendingRetirement.removeValue(forKey: lease.generation)
+            } else {
+                _activeCheckouts[lease.generation] = remaining
+            }
+            lock.unlock()
+
+            deferredRetire?.finishTasksAndInvalidate()
+        }
+
+        /// Checks system proxy state independently of interface callbacks and rotates if changed.
+        @discardableResult
+        func refreshProxyIfNeeded() -> Bool {
+            let proxyNow = proxySignatureProvider()
+            var sessionToRetire: URLSession?
+            lock.lock()
+            guard proxyNow != _lastProxySignature else {
+                lock.unlock()
+                return false
+            }
+            _lastProxySignature = proxyNow
+            sessionToRetire = rotateLocked(newPathSignature: _lastPathSignature)
+            lock.unlock()
+
+            sessionToRetire?.finishTasksAndInvalidate()
+            return true
+        }
+
+        /// Rotates to a new `URLSession` when the combined network/proxy signature changes.
+        @discardableResult
+        func rotateIfNeeded(for signature: String) -> Bool {
+            let proxyNow = proxySignatureProvider()
+            var sessionToRetire: URLSession?
+            lock.lock()
+            if _lastPathSignature == nil {
+                _lastPathSignature = signature
+                _lastProxySignature = proxyNow
+                lock.unlock()
+                return false
+            }
+            if _lastPathSignature == signature && _lastProxySignature == proxyNow {
+                lock.unlock()
+                return false
+            }
+            _lastPathSignature = signature
+            _lastProxySignature = proxyNow
+            sessionToRetire = rotateLocked(newPathSignature: signature)
+            lock.unlock()
+
+            sessionToRetire?.finishTasksAndInvalidate()
+            return true
+        }
+
+        /// Caller holds `lock`. Returns a session eligible for immediate `finishTasksAndInvalidate()`
+        /// or parks it in `_pendingRetirement` until active lease holders complete task setup.
+        private func rotateLocked(newPathSignature: String?) -> URLSession? {
+            let oldGen = _generation
+            let oldSession = _currentSession
+            _lastPathSignature = newPathSignature
+            _generation &+= 1
+            _retiredCount &+= 1
+            _currentSession = factory(_generation)
+            if (_activeCheckouts[oldGen] ?? 0) > 0 {
+                _pendingRetirement[oldGen] = oldSession
+                return nil
+            }
+            return oldSession
+        }
+
+        private func startMonitoringIfNeeded() {
+            #if canImport(Network)
+            lock.lock()
+            let alreadyStarted = monitor != nil
+            if !alreadyStarted {
+                let pathMonitor = NWPathMonitor()
+                monitor = pathMonitor
+                lock.unlock()
+                pathMonitor.pathUpdateHandler = { [weak self] path in
+                    guard let self else { return }
+                    let signature = Self.buildSignature(
+                        status: path.status,
+                        interfaces: path.availableInterfaces.map { "\($0.name):\($0.type)" },
+                        isExpensive: path.isExpensive,
+                        isConstrained: path.isConstrained
+                    )
+                    self.rotateIfNeeded(for: signature)
+                }
+                pathMonitor.start(queue: monitorQueue)
+                return
+            }
+            lock.unlock()
+            #endif
+        }
+
+        #if canImport(Network)
+        static func buildSignature(
+            status: NWPath.Status,
+            interfaces: [String],
+            isExpensive: Bool,
+            isConstrained: Bool
+        ) -> String {
+            let statusName: String
+            switch status {
+            case .satisfied: statusName = "satisfied"
+            case .unsatisfied: statusName = "unsatisfied"
+            case .requiresConnection: statusName = "requiresConnection"
+            @unknown default: statusName = "unknown"
+            }
+            let sortedInterfaces = interfaces.sorted().joined(separator: ",")
+            return "\(statusName)|\(sortedInterfaces)|exp=\(isExpensive)|con=\(isConstrained)"
+        }
+        #endif
+
+        static func currentProxySignature() -> String {
+            #if canImport(CFNetwork)
+            guard let raw = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
+                return "none"
+            }
+            let keys = [
+                "HTTPEnable", "HTTPProxy", "HTTPPort",
+                "HTTPSEnable", "HTTPSProxy", "HTTPSPort",
+                "SOCKSEnable", "SOCKSProxy", "SOCKSPort",
+                "ProxyAutoConfigEnable", "ProxyAutoConfigURLString"
+            ]
+            return keys.compactMap { key in
+                guard let value = raw[key] else { return nil }
+                return "\(key)=\(value)"
+            }.joined(separator: ";")
+            #else
+            return "none"
+            #endif
+        }
+    }
+
+    static var session: URLSession { SessionPool.shared.currentSession }
 
     /// Reads an error body and finds the message in it.
     static func failure(status: Int, bytes: URLSession.AsyncBytes) async -> ProviderError {
@@ -176,12 +408,68 @@ enum HTTP {
         }
     }
 
+    /// Rejects cross-origin and HTTPS-to-HTTP redirects on API calls so auth headers never leak.
+    final class RedirectGuardDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+        static let shared = RedirectGuardDelegate()
+
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            guard let source = task.currentRequest?.url ?? task.originalRequest?.url,
+                  let target = request.url,
+                  Self.shouldAllowRedirect(from: source, to: target) else {
+                completionHandler(nil)
+                return
+            }
+            completionHandler(request)
+        }
+
+        static func shouldAllowRedirect(from source: URL, to target: URL) -> Bool {
+            guard let sourceScheme = source.scheme?.lowercased(),
+                  let targetScheme = target.scheme?.lowercased(),
+                  let sourceHost = source.host?.lowercased(),
+                  let targetHost = target.host?.lowercased() else {
+                return false
+            }
+            if sourceScheme == "https" && targetScheme != "https" {
+                return false
+            }
+            guard sourceScheme == targetScheme, sourceHost == targetHost else {
+                return false
+            }
+            return effectivePort(for: source, scheme: sourceScheme) == effectivePort(for: target, scheme: targetScheme)
+        }
+
+        private static func effectivePort(for url: URL, scheme: String) -> Int? {
+            if let port = url.port { return port }
+            switch scheme {
+            case "https": return 443
+            case "http": return 80
+            default: return nil
+            }
+        }
+    }
+
     /// Runs a streaming request and passes each SSE data line to `decode`.
-    static func stream(_ request: URLRequest, acceptsJSON: Bool = false, session: URLSession = HTTP.session, decode: @escaping @Sendable (String) throws -> [StreamEvent]) -> AsyncThrowingStream<StreamEvent, Error> {
-        AsyncThrowingStream { continuation in
+    static func stream(_ request: URLRequest, acceptsJSON: Bool = false, session: URLSession? = nil, decode: @escaping @Sendable (String) throws -> [StreamEvent]) -> AsyncThrowingStream<StreamEvent, Error> {
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let (bytes, response) = try await session.bytes(for: request)
+                    let lease = session == nil ? SessionPool.shared.acquireLease() : nil
+                    let activeSession = session ?? lease?.session ?? HTTP.session
+                    let bytes: URLSession.AsyncBytes
+                    let response: URLResponse
+                    do {
+                        (bytes, response) = try await activeSession.bytes(for: request, delegate: RedirectGuardDelegate.shared)
+                    } catch {
+                        if let lease { SessionPool.shared.releaseLease(lease) }
+                        throw error
+                    }
+                    if let lease { SessionPool.shared.releaseLease(lease) }
                     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                     guard status == 200 else { throw await failure(status: status, bytes: bytes) }
                     if acceptsJSON, response.mimeType == "application/json" {
@@ -279,8 +567,11 @@ enum HTTP {
         }
     }
 
-    static func get(_ request: URLRequest) async throws -> JSONValue {
-        let (data, response) = try await session.data(for: request)
+    static func get(_ request: URLRequest, session: URLSession? = nil) async throws -> JSONValue {
+        let lease = session == nil ? SessionPool.shared.acquireLease() : nil
+        defer { if let lease { SessionPool.shared.releaseLease(lease) } }
+        let activeSession = session ?? lease?.session ?? HTTP.session
+        let (data, response) = try await activeSession.data(for: request, delegate: RedirectGuardDelegate.shared)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { throw failure(status: status, data: data) }
         guard let value = JSONValue.parse(String(decoding: data, as: UTF8.self)) else { throw ProviderError(status: status, "返回的不是 JSON") }

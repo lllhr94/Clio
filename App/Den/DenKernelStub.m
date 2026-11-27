@@ -7,6 +7,16 @@
 
 + (int)bootRoot:(NSString *)root desk:(nullable NSString *)desk { return -38; }
 
++ (int)bootRoot:(NSString *)root desk:(nullable NSString *)desk dnsDir:(nullable NSString *)dnsDir { return -38; }
+
++ (void)setForkRateLimit:(uint32_t)perSecond burst:(uint32_t)burst {}
+
++ (NSArray<NSString *> *)systemDNSServers { return @[]; }
+
++ (NSArray<NSString *> *)systemSearchDomains { return @[]; }
+
++ (nullable NSString *)lastDNSFallbackError { return nil; }
+
 + (BOOL)booted { return NO; }
 
 + (int)run:(NSString *)command

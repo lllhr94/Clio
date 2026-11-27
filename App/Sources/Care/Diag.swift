@@ -1,4 +1,5 @@
 import Craft
+import Darwin
 import QuartzCore
 import SwiftUI
 import UIKit
@@ -348,7 +349,128 @@ final class Hitches {
 extension View {
     /// Names this page for the 掉帧记录仪 while it is on screen.
     func hitchPage(_ name: String) -> some View {
-        onAppear { Hitches.shared.enter(name) }
-            .onDisappear { Hitches.shared.leave(name) }
+        onAppear {
+            CPUGuard.shared.start()
+            Hitches.shared.enter(name)
+        }
+        .onDisappear { Hitches.shared.leave(name) }
+    }
+}
+
+/// Observe-only background CPU monitor that logs sustained high CPU consumption to `Diag.note`.
+/// It never cancels, kills, or alters running user or kernel work.
+final class CPUGuard: @unchecked Sendable {
+    static let shared = CPUGuard()
+
+    struct Evaluator: Sendable {
+        let thresholdUtilization: Double
+        let sustainedDuration: TimeInterval
+        let cooldownDuration: TimeInterval
+
+        private var highSince: Date?
+        private var lastWarnedAt: Date?
+
+        init(
+            thresholdUtilization: Double = 1.5,
+            sustainedDuration: TimeInterval = 15,
+            cooldownDuration: TimeInterval = 300
+        ) {
+            self.thresholdUtilization = thresholdUtilization
+            self.sustainedDuration = sustainedDuration
+            self.cooldownDuration = cooldownDuration
+        }
+
+        mutating func evaluate(cpuSecondsDelta: Double, wallSecondsDelta: Double, at now: Date) -> String? {
+            guard wallSecondsDelta > 0.1, cpuSecondsDelta >= 0 else {
+                return nil
+            }
+            let utilization = cpuSecondsDelta / wallSecondsDelta
+            guard utilization >= thresholdUtilization else {
+                highSince = nil
+                return nil
+            }
+            if highSince == nil {
+                highSince = now
+                return nil
+            }
+            guard let started = highSince else { return nil }
+            let sustained = now.timeIntervalSince(started)
+            guard sustained >= sustainedDuration else {
+                return nil
+            }
+            if let lastWarnedAt, now.timeIntervalSince(lastWarnedAt) < cooldownDuration {
+                return nil
+            }
+            lastWarnedAt = now
+            let percent = Int((utilization * 100).rounded())
+            return "CPU 持续高占用（约 \(percent)%，已持续 \(Int(sustained.rounded())) 秒）"
+        }
+    }
+
+    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "clio.diag.cpuguard", qos: .utility)
+    private var timer: DispatchSourceTimer?
+    private var lastSample: (cpuSeconds: Double, wallTime: Date)?
+    private var evaluator = Evaluator()
+
+    private init() {}
+
+    func start(interval: TimeInterval = 5) {
+        lock.lock()
+        if timer != nil {
+            lock.unlock()
+            return
+        }
+        let source = DispatchSource.makeTimerSource(queue: queue)
+        source.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(1))
+        source.setEventHandler { [weak self] in
+            self?.sampleOnce()
+        }
+        timer = source
+        lastSample = (Self.currentProcessCPUSeconds(), Date())
+        lock.unlock()
+        source.resume()
+    }
+
+    func stop() {
+        lock.lock()
+        let active = timer
+        timer = nil
+        lastSample = nil
+        evaluator = Evaluator()
+        lock.unlock()
+        active?.cancel()
+    }
+
+    private func sampleOnce() {
+        let now = Date()
+        let cpuNow = Self.currentProcessCPUSeconds()
+
+        lock.lock()
+        let previous = lastSample
+        lastSample = (cpuNow, now)
+        var warning: String?
+        if let previous {
+            warning = evaluator.evaluate(
+                cpuSecondsDelta: max(0, cpuNow - previous.cpuSeconds),
+                wallSecondsDelta: now.timeIntervalSince(previous.wallTime),
+                at: now
+            )
+        }
+        lock.unlock()
+
+        if let warning {
+            Task { @MainActor in
+                Diag.note(warning)
+            }
+        }
+    }
+
+    static func currentProcessCPUSeconds() -> Double {
+        var usage = rusage()
+        guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
+        let user = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1_000_000
+        let sys = Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
+        return user + sys
     }
 }
