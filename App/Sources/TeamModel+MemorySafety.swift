@@ -123,6 +123,13 @@ extension TeamModel {
         }
     }
 
+    func notifyLivePromptEnvChange(_ event: MemorySafety.EnvChangeEvent) {
+        guard !livePromptRefreshers.isEmpty else { return }
+        for refresher in livePromptRefreshers.values {
+            refresher.appendEnvChange(event)
+        }
+    }
+
     func registerLivePromptRefresher(
         for bot: BotInfo,
         in key: String? = nil,
@@ -150,7 +157,7 @@ extension TeamModel {
             state: memoryPromptState,
             recalledHits: allowed ? recalledHints : [],
             isRecallAllowed: { Grant.memory.policy != .off && !Disk.frozen && (key.map { gate.isAllowed($0) } ?? true) },
-            isMemoryEnabled: { key.map { gate.isAllowed($0) } ?? true },
+            isMemoryEnabled: { Grant.memory.policy != .off && (key.map { gate.isAllowed($0) } ?? true) },
             activeSecrets: { Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count } }
         )
         let token = UUID()
@@ -247,7 +254,7 @@ extension TeamModel {
             vocabularyLine: Words.promptLine,
             skillsBlock: SkillShelf.promptBlock,
             memories: liveMemoryFacts(),
-            memoryEnabled: memory,
+            memoryEnabled: memory && Grant.memory.policy != .off,
             staticRules: MemorySafety.defaultStaticRules,
             timestampLine: timestampLine,
             diaryLine: diary,
@@ -323,7 +330,7 @@ extension TeamModel {
         ensureRetractedFlushHashesLoaded()
 
         let now = Date()
-        let today = Tide.day(of: now)
+        let today = LogicalDay.day(of: now)
         let cutoffDay = MemorySafety.flushCutoffDay(reviewFromDay: memoryBook.reviewFromDay, now: now)
         let minTimestampMs = now.timeIntervalSince1970 * 1000 - 8 * 86_400_000
         let processedIDs = memoryBook.processed.values.reduce(into: Set<String>()) { $0.formUnion($1) }
@@ -417,7 +424,7 @@ extension TeamModel {
         let entryByID = Dictionary(historyUpToCut.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let rolesByID = Dictionary(prepared.entryIDs.compactMap { id in entryByID[id].map { (id, $0.message.role) } }, uniquingKeysWith: { first, _ in first })
         let dayByID = Dictionary(prepared.entryIDs.compactMap { id in
-            entryByID[id].map { (id, Tide.day(of: Date(timeIntervalSince1970: $0.at / 1000))) }
+            entryByID[id].map { (id, LogicalDay.day(of: Date(timeIntervalSince1970: $0.at / 1000))) }
         }, uniquingKeysWith: { first, _ in first })
         let remainingIDs = MemorySafety.remainingUnprocessedEntryIDs(
             prepared.entryIDs,

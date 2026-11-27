@@ -283,7 +283,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     static func of(tool name: String) -> Grant? {
         switch name {
         case "web_search", "web_read", "weather": .web
-        case "remember", "forget", "recall", "search_history": .memory
+        case "remember", "forget", "recall", "search_history", "record_experience", "recall_experience": .memory
         case "message_later", "schedule_task", "scheduled_tasks", "cancel_task": .letters
         case "calendar_events", "calendar_add": .calendar
         case "reminders", "reminder_add": .reminders
@@ -311,7 +311,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// Pure in-conversation orchestration tools that do not touch external services or user data directly.
-    private static let internalTools: Set<String> = ["update_plan", "use_skill", "ask_companion"]
+    private static let internalTools: Set<String> = ["update_plan", "use_skill", "ask_companion", "current_status"]
 
     static let followAfterWebKey = "grant.followAfterWeb"
 

@@ -63,11 +63,9 @@ public enum Tide {
         "12-25": ("一颗小松球", "snowflake", "挂起来就是今天的装饰了。"),
     ]
 
-    /// The day the tide belongs to. It turns at five in the morning, so a late night still counts as the day before.
+    /// The day the tide belongs to. It turns at five in the morning using calendar components (DST-safe).
     public static func day(of date: Date, calendar: Calendar = .current) -> String {
-        let shifted = date.addingTimeInterval(-5 * 3600)
-        let parts = calendar.dateComponents([.year, .month, .day], from: shifted)
-        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
+        LogicalDay.day(of: date, boundaryHour: 5, calendar: calendar)
     }
 
     /// What the tide brings on `day`. The same day and seed always bring the same thing, however often you look.

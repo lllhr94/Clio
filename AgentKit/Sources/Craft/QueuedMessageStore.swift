@@ -12,19 +12,22 @@ public struct StoredQueuedMessage: Equatable, Sendable {
     public var photos: [Data]
     public var interject: Bool
     public var userInitiated: Bool
+    public var experienceSourceRaw: String?
 
     public init(
         id: UUID = UUID(),
         text: String,
         photos: [Data] = [],
         interject: Bool = false,
-        userInitiated: Bool = true
+        userInitiated: Bool = true,
+        experienceSourceRaw: String? = nil
     ) {
         self.id = id
         self.text = text
         self.photos = photos
         self.interject = interject
         self.userInitiated = userInitiated
+        self.experienceSourceRaw = experienceSourceRaw
     }
 }
 
@@ -205,6 +208,7 @@ public enum QueuedMessageStore {
             var photoCount: Int
             var interject: Bool
             var userInitiated: Bool
+            var experienceSourceRaw: String?
         }
         var chatKey: String
         var items: [Entry]
@@ -293,7 +297,8 @@ public enum QueuedMessageStore {
                     text: item.text,
                     photoCount: item.photos.count,
                     interject: item.interject,
-                    userInitiated: item.userInitiated
+                    userInitiated: item.userInitiated,
+                    experienceSourceRaw: item.experienceSourceRaw
                 ))
             }
             let manifest = Manifest(chatKey: chatKey, items: entries, anchor: anchor)
@@ -363,7 +368,8 @@ public enum QueuedMessageStore {
                         text: entry.text,
                         photos: photos,
                         interject: entry.interject,
-                        userInitiated: entry.userInitiated
+                        userInitiated: entry.userInitiated,
+                        experienceSourceRaw: entry.experienceSourceRaw
                     ))
                 }
             }

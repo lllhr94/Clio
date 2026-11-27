@@ -43,6 +43,12 @@ struct MemoryBook: Codable, Sendable {
     var budgetDay: String?
     var requests: Int = 0
     var diaryRequests: Int = 0
+    /// In-memory bridge epoch stamp (not persisted to JSON) preventing stale pre-restore books from overwriting restored state.
+    var storeEpoch: UInt64? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case memories, reviews, processed, reviewFromDay, budgetDay, requests, diaryRequests
+    }
 }
 
 struct MemoryReviewProposal: Decodable {

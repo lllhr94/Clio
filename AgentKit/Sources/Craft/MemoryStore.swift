@@ -97,11 +97,15 @@ public final class MemoryStore: @unchecked Sendable {
     }
 
     public func destroyFiles() {
+        try? destroyFilesThrowing()
+    }
+
+    public func destroyFilesThrowing() throws {
         lock.lock()
+        defer { lock.unlock() }
         closeLocked()
-        unlinkDatabaseFiles()
+        try unlinkDatabaseFilesThrowing()
         _needsBootstrapFromCanonical = true
-        lock.unlock()
     }
 
     public func resetAll(clearTombstones: Bool = true) throws {
@@ -706,7 +710,8 @@ public final class MemoryStore: @unchecked Sendable {
 
         return try performWriteTransactionLocked {
             try reconcileLocked(book: book, orderedSecrets: ordered, nowMs: nowMs, jsonDigest: jsonDigest)
-            let snapshot = try snapshotBookLocked()
+            var snapshot = try snapshotBookLocked()
+            snapshot.generation = max(snapshot.generation, book.generation)
             _needsBootstrapFromCanonical = false
             return snapshot
         }
@@ -1443,6 +1448,10 @@ public final class MemoryStore: @unchecked Sendable {
     }
 
     private func unlinkDatabaseFiles() {
+        try? unlinkDatabaseFilesThrowing()
+    }
+
+    private func unlinkDatabaseFilesThrowing() throws {
         let fm = FileManager.default
         let paths = [
             databaseURL.path,
@@ -1450,8 +1459,8 @@ public final class MemoryStore: @unchecked Sendable {
             databaseURL.path + "-shm",
             databaseURL.path + "-journal",
         ]
-        for path in paths {
-            try? fm.removeItem(atPath: path)
+        for path in paths where fm.fileExists(atPath: path) {
+            try fm.removeItem(atPath: path)
         }
     }
 

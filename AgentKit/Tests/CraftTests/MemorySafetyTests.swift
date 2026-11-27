@@ -417,7 +417,7 @@ final class MemorySafetyTests: XCTestCase {
 
         // When reviewFromDay is nil, cutoff defaults to today -> yesterday's pre-upgrade entries are skipped.
         let defaultCutoff = MemorySafety.flushCutoffDay(reviewFromDay: nil, now: now, calendar: calendar)
-        XCTAssertEqual(defaultCutoff, Tide.day(of: now, calendar: calendar))
+        XCTAssertEqual(defaultCutoff, LogicalDay.day(of: now, calendar: calendar))
         let preUpgradeOnly: [MemorySafety.CandidateEntry] = [
             .init(id: "old-u", at: yesterday.timeIntervalSince1970 * 1000, role: .user, text: "升级前说过的旧事"),
             .init(id: "old-a", at: yesterday.timeIntervalSince1970 * 1000 + 1000, role: .assistant, text: "好的"),
@@ -434,7 +434,7 @@ final class MemorySafetyTests: XCTestCase {
         // When reviewFromDay is 14 days ago, 7-day lookback clamps cutoff so 9-day-old entries stay excluded
         // while 3-day-old entries are included.
         let clampedCutoff = MemorySafety.flushCutoffDay(reviewFromDay: "2026-11-11", now: now, calendar: calendar)
-        XCTAssertEqual(clampedCutoff, Tide.day(of: now.addingTimeInterval(-7 * 86_400), calendar: calendar))
+        XCTAssertEqual(clampedCutoff, LogicalDay.daysBack(7, from: now, calendar: calendar))
         let spanning: [MemorySafety.CandidateEntry] = [
             .init(id: "u-9d", at: nineDaysAgo.timeIntervalSince1970 * 1000, role: .user, text: "九天前的话"),
             .init(id: "a-9d", at: nineDaysAgo.timeIntervalSince1970 * 1000 + 1000, role: .assistant, text: "九天前回复"),

@@ -289,9 +289,7 @@ extension TeamModel {
         phase = settings.endpoints.isEmpty ? .setup : .ready
         var restored: [String: [Queued]] = [:]
         for (chatKey, stored) in data.queued {
-            restored[chatKey] = stored.map {
-                Queued(id: $0.id, text: $0.text, photos: $0.photos, interject: $0.interject, userInitiated: $0.userInitiated)
-            }
+            restored[chatKey] = stored.map(Queued.fromStored)
         }
         queued = restored
         inFlightQueued = [:]
@@ -323,7 +321,8 @@ extension TeamModel {
     @discardableResult
     func commitMemoryBook(
         _ book: MemoryBook,
-        mutation: MemoryCommitMutation = .none
+        mutation: MemoryCommitMutation = .none,
+        snapshotReason: String? = nil
     ) throws -> MemoryBook {
         guard keeping, !Disk.frozen else {
             throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
@@ -337,6 +336,7 @@ extension TeamModel {
         let committed = try MemoryStoreBridge.shared.commitAppBook(
             book,
             mutation: mutation,
+            snapshotReason: snapshotReason,
             suppressedHashes: suppressed,
             promptState: memoryPromptState,
             bots: bots,

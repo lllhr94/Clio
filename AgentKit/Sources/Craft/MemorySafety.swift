@@ -227,6 +227,136 @@ public enum MemorySafety {
         public var transcript: String
     }
 
+    /// Four silent-memory rules injected whenever rendered memory is non-empty.
+    public static let silentMemoryRules = """
+    关于记忆的无声准则：
+    - 不要背诵或说「我记得你之前说过……」，让记忆只无声地影响判断与分寸。
+    - 仅在用户主动追问过往细节或确实需要核实时才点出旧事。
+    - 记忆与用户当前亲口说的话有冲突时，一律以当前对话为准。
+    - 不要主动谈论记忆的分层、来源或整理机制。
+    """
+
+    /// Structured incremental environment change event appended to the volatile prompt tail
+    /// so additive memory/mount changes preserve prompt-cache prefixes without resurfaced retractions.
+    public struct EnvChangeEvent: Equatable, Hashable, Sendable {
+        public enum Kind: Equatable, Hashable, Sendable {
+            case memoryAdded(id: String, text: String, textSHA256: String)
+            case workplaceMounted(summary: String)
+            case note(String)
+        }
+
+        public var kind: Kind
+        public var timestampMs: Double
+
+        public init(kind: Kind, timestampMs: Double = Date().timeIntervalSince1970 * 1000) {
+            self.kind = kind
+            self.timestampMs = timestampMs
+        }
+
+        public var dedupeKey: String {
+            switch kind {
+            case .memoryAdded(let id, _, let hash):
+                return "mem:\(id):\(hash.lowercased())"
+            case .workplaceMounted(let summary):
+                return "mount:\(summary)"
+            case .note(let text):
+                return "note:\(text)"
+            }
+        }
+    }
+
+    /// Volatile ledger of `<env-change>` events kept strictly out of the cached prefix
+    /// and purged immediately on any memory retraction, deletion, or secret update.
+    public struct EnvChangeLedger: Equatable, Sendable {
+        public private(set) var events: [EnvChangeEvent]
+
+        public init(events: [EnvChangeEvent] = []) {
+            self.events = events
+        }
+
+        public mutating func append(
+            _ event: EnvChangeEvent,
+            retractedIDs: Set<String> = [],
+            suppressedHashes: Set<String> = []
+        ) {
+            switch event.kind {
+            case .memoryAdded(let id, let text, let textSHA256):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, !retractedIDs.contains(id) else { return }
+                let hash = (textSHA256.isEmpty ? MemorySafety.retractionHash(trimmed) : textSHA256).lowercased()
+                guard !hash.isEmpty, !suppressedHashes.contains(hash) else { return }
+                let normalizedEvent = EnvChangeEvent(
+                    kind: .memoryAdded(id: id, text: trimmed, textSHA256: hash),
+                    timestampMs: event.timestampMs
+                )
+                guard !events.contains(where: { $0.dedupeKey == normalizedEvent.dedupeKey }) else { return }
+                events.append(normalizedEvent)
+            case .workplaceMounted(let summary):
+                let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                let normalizedEvent = EnvChangeEvent(
+                    kind: .workplaceMounted(summary: trimmed),
+                    timestampMs: event.timestampMs
+                )
+                events.removeAll { $0.dedupeKey == normalizedEvent.dedupeKey }
+                events.append(normalizedEvent)
+            case .note(let raw):
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                let normalizedEvent = EnvChangeEvent(
+                    kind: .note(trimmed),
+                    timestampMs: event.timestampMs
+                )
+                guard !events.contains(where: { $0.dedupeKey == normalizedEvent.dedupeKey }) else { return }
+                events.append(normalizedEvent)
+            }
+        }
+
+        public mutating func purge(retractedIDs: Set<String>, suppressedHashes: Set<String>) {
+            let normalizedSuppressed = Set(suppressedHashes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+            events.removeAll { event in
+                guard case .memoryAdded(let id, let text, let hash) = event.kind else { return false }
+                if retractedIDs.contains(id) { return true }
+                let computed = hash.isEmpty ? MemorySafety.retractionHash(text) : hash.lowercased()
+                return !computed.isEmpty && normalizedSuppressed.contains(computed)
+            }
+        }
+
+        public mutating func clearAll() {
+            events.removeAll()
+        }
+
+        public func renderBlock(secrets: [String] = []) -> String {
+            guard !events.isEmpty else { return "" }
+            let orderedSecrets = secrets.filter { !$0.isEmpty }.sorted { $0.count > $1.count }
+            var lines: [String] = []
+            for event in events {
+                switch event.kind {
+                case .memoryAdded(_, let text, _):
+                    let safe = MemorySafety.redactSecrets(text, secrets: orderedSecrets)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !safe.isEmpty && !safe.replacingOccurrences(of: "〔隐去〕", with: "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        lines.append("- 新增记忆：\(safe)")
+                    }
+                case .workplaceMounted(let summary):
+                    let safe = MemorySafety.redactSecrets(summary, secrets: orderedSecrets)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !safe.isEmpty {
+                        lines.append("- 工作环境变更：\(safe)")
+                    }
+                case .note(let note):
+                    let safe = MemorySafety.redactSecrets(note, secrets: orderedSecrets)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !safe.isEmpty {
+                        lines.append("- \(safe)")
+                    }
+                }
+            }
+            guard !lines.isEmpty else { return "" }
+            return "<env-change>\n" + lines.joined(separator: "\n") + "\n</env-change>"
+        }
+    }
+
     /// Thread-safe generation counter, retraction ledger, and short-lived rendered-memory cache.
     /// Any deletion, retraction, or memory edit bumps `generation` and immediately invalidates cached output.
     public final class PromptState: @unchecked Sendable {
@@ -241,6 +371,7 @@ public enum MemorySafety {
 
         private let lock = NSLock()
         private var generation: UInt64 = 0
+        private var retractionGeneration: UInt64 = 0
         private var retractedIDs: Set<String> = []
         private var retractedPromptHashes: Set<String> = []
         private var suppressedFlushHashes: Set<String> = []
@@ -257,6 +388,12 @@ public enum MemorySafety {
             return generation
         }
 
+        public var currentRetractionGeneration: UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            return retractionGeneration
+        }
+
         public func invalidate() {
             lock.lock()
             generation &+= 1
@@ -265,16 +402,17 @@ public enum MemorySafety {
             lock.unlock()
         }
 
+        public func invalidateForHardReset() {
+            lock.lock()
+            generation &+= 1
+            retractionGeneration &+= 1
+            cachedKey = nil
+            cachedBlock = nil
+            lock.unlock()
+        }
+
         private static func normalizedRetractionHashes(_ entries: [String]) -> [String] {
-            entries.compactMap { entry -> String? in
-                let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return nil }
-                if MemorySafety.isSHA256Hex(trimmed) {
-                    return trimmed.lowercased()
-                }
-                let hashed = MemorySafety.retractionHash(trimmed)
-                return hashed.isEmpty ? nil : hashed
-            }
+            MemorySafety.normalizedRetractionHashes(entries)
         }
 
         /// Seeds persisted SHA-256 retraction hashes once per lifecycle (hashing any legacy non-hex values immediately).
@@ -300,6 +438,7 @@ public enum MemorySafety {
             suppressedFlushHashes.formUnion(clean)
             if suppressedFlushHashes.count != beforeCount {
                 generation &+= 1
+                retractionGeneration &+= 1
                 cachedKey = nil
                 cachedBlock = nil
             }
@@ -313,6 +452,7 @@ public enum MemorySafety {
             let hash = textForInFlightGuard.map(MemorySafety.retractionHash) ?? ""
             lock.lock()
             generation &+= 1
+            retractionGeneration &+= 1
             if !id.isEmpty { retractedIDs.insert(id) }
             if !hash.isEmpty {
                 inFlightRetractedHashes[hash] = generation
@@ -328,6 +468,7 @@ public enum MemorySafety {
             let hash = MemorySafety.retractionHash(text)
             lock.lock()
             generation &+= 1
+            retractionGeneration &+= 1
             if !hash.isEmpty {
                 retractedPromptHashes.insert(hash)
                 suppressedFlushHashes.insert(hash)
@@ -348,6 +489,7 @@ public enum MemorySafety {
             let hash = MemorySafety.retractionHash(text)
             lock.lock()
             generation &+= 1
+            retractionGeneration &+= 1
             if let id, !id.isEmpty {
                 retractedIDs.remove(id)
             }
@@ -586,7 +728,8 @@ public enum MemorySafety {
         } else {
             deepHint = ""
         }
-        let fullBlock = [surfaceBlock, deepHint].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let bodyParts = [surfaceBlock, deepHint].filter { !$0.isEmpty }
+        let fullBlock = bodyParts.isEmpty ? "" : (bodyParts + [silentMemoryRules]).joined(separator: "\n\n")
         return MemoryBlock(
             surfaceFacts: surfaceFacts,
             deepCount: deepCount,
@@ -685,14 +828,14 @@ public enum MemorySafety {
         }
     }
 
-    /// Matches `reviewConversations`'s cutoff rule: `max(reviewFromDay ?? today, 7 days ago)`.
+    /// Matches `reviewConversations`'s cutoff rule: `max(reviewFromDay ?? today, 7 days ago)` on `04:00` logical day.
     public static func flushCutoffDay(
         reviewFromDay: String?,
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> String {
-        let today = Tide.day(of: now, calendar: calendar)
-        let sevenDaysAgo = Tide.day(of: now.addingTimeInterval(-7 * 86_400), calendar: calendar)
+        let today = LogicalDay.day(of: now, calendar: calendar)
+        let sevenDaysAgo = LogicalDay.daysBack(7, from: now, calendar: calendar)
         return max(reviewFromDay ?? today, sevenDaysAgo)
     }
 
@@ -867,7 +1010,7 @@ public enum MemorySafety {
             if let eligibleIDs, !eligibleIDs.contains(entry.id) { return false }
             if let minTimestampMs, entry.at < minTimestampMs { return false }
             if let cutoffDay {
-                let day = Tide.day(of: Date(timeIntervalSince1970: entry.at / 1000), calendar: calendar)
+                let day = LogicalDay.day(of: Date(timeIntervalSince1970: entry.at / 1000), calendar: calendar)
                 if day < cutoffDay { return false }
             }
             return true
@@ -888,17 +1031,18 @@ public enum MemorySafety {
         return preparedIDs.allSatisfy { currentEntryIDs.contains($0) }
     }
 
-    /// Drops any entry IDs already recorded in `processedByDay` (e.g. by background `reviewMemories` while flush was in flight).
-    /// Returns `[]` if no unprocessed `.user` entry remains.
+    /// Drops any entry IDs already recorded in `processedByDay` (across all retained day buckets so 05:00 -> 04:00
+    /// boundary shifts stay consistent with `processedEntryIDs`). Returns `[]` if no unprocessed `.user` entry remains.
     public static func remainingUnprocessedEntryIDs(
         _ preparedIDs: [String],
         rolesByID: [String: Message.Role],
         dayByID: [String: String],
         processedByDay: [String: Set<String>]
     ) -> [String] {
+        let allProcessedIDs = processedByDay.values.reduce(into: Set<String>()) { $0.formUnion($1) }
         let remaining = preparedIDs.filter { id in
-            guard let day = dayByID[id] else { return false }
-            return !(processedByDay[day]?.contains(id) ?? false)
+            guard dayByID[id] != nil else { return false }
+            return !allProcessedIDs.contains(id)
         }
         guard remaining.contains(where: { rolesByID[$0] == .user }) else { return [] }
         return remaining
@@ -911,9 +1055,10 @@ public enum MemorySafety {
         processedByDay: [String: Set<String>]
     ) -> Bool {
         guard !preparedIDs.isEmpty else { return false }
+        let allProcessedIDs = processedByDay.values.reduce(into: Set<String>()) { $0.formUnion($1) }
         return preparedIDs.allSatisfy { id in
-            guard let day = dayByID[id] else { return false }
-            return !(processedByDay[day]?.contains(id) ?? false)
+            guard dayByID[id] != nil else { return false }
+            return !allProcessedIDs.contains(id)
         }
     }
 
@@ -929,6 +1074,18 @@ public enum MemorySafety {
             (scalar.value >= 48 && scalar.value <= 57)
                 || (scalar.value >= 97 && scalar.value <= 102)
                 || (scalar.value >= 65 && scalar.value <= 70)
+        }
+    }
+
+    public static func normalizedRetractionHashes(_ entries: [String]) -> [String] {
+        entries.compactMap { entry -> String? in
+            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            if isSHA256Hex(trimmed) {
+                return trimmed.lowercased()
+            }
+            let hashed = retractionHash(trimmed)
+            return hashed.isEmpty ? nil : hashed
         }
     }
 

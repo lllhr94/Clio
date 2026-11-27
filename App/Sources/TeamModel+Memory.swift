@@ -8,7 +8,7 @@ extension TeamModel {
     // MARK: Memory
 
     /// How many things stay in every conversation; older ones sink into 旧事.
-    static let surfaceLimit = 40
+    nonisolated static let surfaceLimit = 40
 
     var surfaceMemories: [Memory] { memories.filter { $0.deep != true } }
     var deepMemories: [Memory] { memories.filter { $0.deep == true } }
@@ -90,10 +90,21 @@ extension TeamModel {
         syncLivePromptsFromMemories()
     }
 
+    func applyRestoredRevisionBook(_ restoredBook: MemoryBook) {
+        memoryBook = restoredBook
+        if memories != restoredBook.memories {
+            memories = restoredBook.memories
+        }
+        memoryReviews = restoredBook.reviews
+        memoryPromptState.invalidateForHardReset()
+        syncLivePromptsFromMemories()
+    }
+
     @discardableResult
     private func commitMemoryBookPrepared(
         _ book: MemoryBook,
         mutation: MemoryCommitMutation = .none,
+        snapshotReason: String? = nil,
         orderedSecrets: [String]
     ) throws -> MemoryBook {
         guard keeping, !Disk.frozen else {
@@ -107,6 +118,7 @@ extension TeamModel {
         let committed = try MemoryStoreBridge.shared.commitAppBook(
             book,
             mutation: mutation,
+            snapshotReason: snapshotReason,
             suppressedHashes: suppressed,
             promptState: memoryPromptState,
             bots: bots,
@@ -121,6 +133,7 @@ extension TeamModel {
     private func commitMemoryBookPreparedAsync(
         _ book: MemoryBook,
         mutation: MemoryCommitMutation = .none,
+        snapshotReason: String? = nil,
         orderedSecrets: [String]
     ) async throws -> MemoryBook {
         guard keeping, !Disk.frozen else {
@@ -134,6 +147,7 @@ extension TeamModel {
         let committed = try await MemoryStoreBridge.shared.commitAppBookAsync(
             book,
             mutation: mutation,
+            snapshotReason: snapshotReason,
             suppressedHashes: suppressed,
             promptState: memoryPromptState,
             bots: bots,
@@ -270,7 +284,7 @@ extension TeamModel {
         settleMemory(&memories, pinnedIDs: MemoryStoreBridge.shared.pinnedIDsSnapshot())
     }
 
-    static func settleMemory(_ memories: inout [Memory], pinnedIDs: Set<String>) {
+    nonisolated static func settleMemory(_ memories: inout [Memory], pinnedIDs: Set<String>) {
         let totalSurface = memories.filter { $0.deep != true }.count
         guard totalSurface > Self.surfaceLimit else { return }
         let candidates = memories
@@ -282,52 +296,86 @@ extension TeamModel {
         for index in memories.indices where sinking.contains(memories[index].id) { memories[index].deep = true }
     }
 
-    /// Looks through everything kept, deep or not, for what matches the words. What is found comes back to the surface.
-    func recall(_ words: String) -> [String] {
+    /// Looks through all active memories (`.pinned`, `.surface`, `.deep`) via hybrid search.
+    /// Matching `.deep` entries surface and refresh `used` when allowed.
+    func recall(_ words: String) async -> [String] {
         guard canMutateMemoryState else { return [] }
-        let query = words.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let query = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
-        var terms = query.split(whereSeparator: { $0.isWhitespace || "，,、。".contains($0) }).map(String.init)
-        // Chinese has no spaces: also try every two-character piece of a long term.
-        for term in terms where term.count > 2 {
-            let chars = Array(term)
-            for i in 0..<(chars.count - 1) { terms.append(String(chars[i...i + 1])) }
-        }
-        let scored = memories.map { memory -> (Memory, Int) in
-            let text = memory.text.lowercased()
-            return (memory, terms.reduce(0) { $0 + (text.contains($1) ? ($1.count > 2 ? 3 : 1) : 0) })
-        }
-        .filter { $0.1 > 0 }
-        .sorted { $0.1 > $1.1 }
-        .prefix(8)
-        let found = Set(scored.map(\.0.id))
-        guard !found.isEmpty else { return [] }
+
+        let pins = keeping ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+        let fallback = MemoryRecallBridge.makeFallbackRecords(from: memories, pinnedIDs: pins)
+        let hits = await MemoryRecallBridge.shared.recallAll(
+            query: query,
+            usesMemory: true,
+            grantAllowed: Grant.memory.policy != .off,
+            diskFrozen: Disk.frozen,
+            keeping: keeping,
+            fallbackRecords: fallback,
+            retractedIDs: memoryPromptState.retractedIDsSnapshot(),
+            suppressedHashes: memoryPromptState.suppressedFlushHashesSnapshot(),
+            recordUsage: false,
+            config: MemoryRecall.Config(limit: 8)
+        )
+
+        let hitIDs = Set(hits.map(\.id))
+        guard !hitIDs.isEmpty else { return [] }
 
         let now = Now.ms
+        let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
         var nextMemories = memories
-        for index in nextMemories.indices where found.contains(nextMemories[index].id) {
+        var touchedIDs = Set<String>()
+        for index in nextMemories.indices where hitIDs.contains(nextMemories[index].id) {
             nextMemories[index].deep = nil
             nextMemories[index].used = now
+            touchedIDs.insert(nextMemories[index].id)
         }
+        guard !touchedIDs.isEmpty else {
+            return hits.map(\.text)
+        }
+
         if !keeping {
             Self.settleMemory(&nextMemories, pinnedIDs: [])
             memories = nextMemories
             memoryBook.memories = nextMemories
             memoryPromptState.invalidate()
             syncLivePromptsFromMemories()
-            return scored.map(\.0.text)
+            return hits.map(\.text)
         }
 
-        Self.settleMemory(&nextMemories, pinnedIDs: MemoryStoreBridge.shared.pinnedIDsSnapshot())
+        Self.settleMemory(&nextMemories, pinnedIDs: pins)
         var nextBook = memoryBook
         nextBook.memories = nextMemories
-        guard (try? commitMemoryBook(
+        guard (try? await commitMemoryBookPreparedAsync(
             nextBook,
-            mutation: .recall(ids: found, nowMs: now)
+            mutation: .recall(ids: touchedIDs, nowMs: now),
+            orderedSecrets: orderedSecrets
         )) != nil else {
             return []
         }
-        return scored.map(\.0.text)
+        MemoryRecallBridge.shared.recordUsageAsync(ids: hits.map(\.id), nowMs: now)
+        return hits.map(\.text)
+    }
+
+    /// Zero-write full-scope recall across `.pinned`, `.surface`, and `.deep` (never modifies `deep`, `used`, or disk).
+    func recallReadOnly(_ words: String, limit: Int = 8) async -> [String] {
+        let query = words.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        let pins = keeping ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+        let fallback = MemoryRecallBridge.makeFallbackRecords(from: memories, pinnedIDs: pins)
+        let hits = await MemoryRecallBridge.shared.recallAll(
+            query: query,
+            usesMemory: true,
+            grantAllowed: Grant.memory.policy != .off,
+            diskFrozen: Disk.frozen,
+            keeping: keeping,
+            fallbackRecords: fallback,
+            retractedIDs: memoryPromptState.retractedIDsSnapshot(),
+            suppressedHashes: memoryPromptState.suppressedFlushHashesSnapshot(),
+            recordUsage: false,
+            config: MemoryRecall.Config(limit: max(1, limit))
+        )
+        return hits.map(\.text)
     }
 
     func setDeep(_ id: String, _ deep: Bool) {
@@ -1233,7 +1281,7 @@ extension TeamModel {
         guard phase == .ready, keeping, canMutateMemoryState, !Disk.frozen, !Task.isCancelled else { return }
         guard Grant.memory.policy == .allow else { return }
 
-        let day = Tide.day(of: now)
+        let day = LogicalDay.day(of: now)
         if !force, UserDefaults.standard.string(forKey: Self.nightlyPromotionDayKey) == day {
             return
         }
@@ -1322,12 +1370,13 @@ extension TeamModel {
                         editedByUser: false,
                         fallbackMemory: firstFallback,
                         nowMs: nowMs
-                    )
+                    ),
+                    snapshotReason: "promotion"
                 )
             } else if mutated {
                 var nextBook = memoryBook
                 nextBook.memories = nextMemories
-                _ = try commitMemoryBook(nextBook)
+                _ = try commitMemoryBook(nextBook, snapshotReason: "promotion")
             }
 
             for archiveID in safeArchiveIDs.dropFirst() {

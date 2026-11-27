@@ -116,10 +116,6 @@ enum MemoryNight {
     }
 
     static func diaryDay(at date: Date, catchUp: Bool = false) -> String? {
-        let calendar = Calendar.current
-        let hour = calendar.component(.hour, from: date)
-        if hour >= 21 || hour < 5 { return Tide.day(of: date) }
-        guard catchUp, let previous = calendar.date(byAdding: .day, value: -1, to: date) else { return nil }
-        return Tide.day(of: previous)
+        LogicalDay.nightlyReviewDay(at: date, catchUp: catchUp)
     }
 }

@@ -126,18 +126,39 @@ struct MemoryPageV2: View {
         }
     }
 
+    private enum MemorySectionTab: String, CaseIterable, Identifiable {
+        case profile, experience
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .profile: return L.t("memoryV2.tabProfile")
+            case .experience: return L.t("memoryV2.tabExperience")
+            }
+        }
+    }
+
+    @AppStorage("chat.backupStrippedMounts") private var backupStrippedMounts = false
+    @State private var sectionTab: MemorySectionTab = .profile
     @State private var query = ""
     @State private var filter: LayerFilter = .all
     @State private var editingRecord: MemoryRecord?
     @State private var deletingRecord: MemoryRecord?
     @State private var showingImport = false
     @State private var showingMirrors = false
+    @State private var showingRevisions = false
     @State private var refreshRevision = 0
 
     @State private var cachedSnapshotByID: [String: MemoryRecord] = [:]
     @State private var cachedArchived: [MemoryRecord] = []
     @State private var cachedPinnedIDs: Set<String> = []
     @State private var cachedAllRecords: [MemoryRecord] = []
+    @State private var cachedExperiences: [ExperienceRecord] = []
+    @State private var revisionHealth = MemoryRevisionHealth()
+    @State private var editingExperience: ExperienceRecord?
+    @State private var creatingExperience = false
+    @State private var deletingExperience: ExperienceRecord?
     @State private var snapshotToken = 0
     @State private var mutationError: String?
 
@@ -240,7 +261,7 @@ struct MemoryPageV2: View {
         .searchable(
             text: $query,
             placement: .navigationBarDrawer(displayMode: .always),
-            prompt: L.t("memoryV2.searchPrompt")
+            prompt: sectionTab == .profile ? L.t("memoryV2.searchPrompt") : L.t("memoryV2.experienceSearchPrompt")
         )
         .navigationTitle(L.t("nav.memory"))
         .navigationBarTitleDisplayMode(.inline)
@@ -252,13 +273,17 @@ struct MemoryPageV2: View {
         }
         .task {
             await reloadSnapshots()
+            await reloadExperiencesAndHealth()
         }
         .onChange(of: team.memories) { _, _ in
             cachedAllRecords = computeAllRecords()
             Task { await reloadSnapshots() }
         }
         .onChange(of: refreshRevision) { _, _ in
-            Task { await reloadSnapshots() }
+            Task {
+                await reloadSnapshots()
+                await reloadExperiencesAndHealth()
+            }
         }
         .sheet(item: $editingRecord) { record in
             MemoryDetailSheet(team: team, record: record) { targetLayer in
@@ -287,6 +312,43 @@ struct MemoryPageV2: View {
         }
         .sheet(isPresented: $showingMirrors) {
             MemoryMirrorViewerSheet(team: team)
+        }
+        .sheet(isPresented: $showingRevisions) {
+            MemoryRevisionDrawerSheet(team: team) {
+                refreshRevision &+= 1
+            }
+        }
+        .sheet(isPresented: $creatingExperience) {
+            ExperienceEditorSheet(existing: nil, canMutate: team.canMutateMemoryState) { saved in
+                upsertLocalExperience(saved)
+                ToastCenter.shared.show(L.t("memoryV2.experienceSavedToast"), symbol: "checkmark.circle.fill", tint: Ink.ok)
+            }
+        }
+        .sheet(item: $editingExperience) { record in
+            ExperienceEditorSheet(existing: record, canMutate: team.canMutateMemoryState) { saved in
+                upsertLocalExperience(saved)
+                ToastCenter.shared.show(L.t("memoryV2.experienceSavedToast"), symbol: "checkmark.circle.fill", tint: Ink.ok)
+            }
+        }
+        .confirmationDialog(
+            L.t("memoryV2.experienceDeleteConfirmTitle"),
+            isPresented: Binding(
+                get: { deletingExperience != nil },
+                set: { if !$0 { deletingExperience = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L.t("actions.delete"), role: .destructive) {
+                if let target = deletingExperience {
+                    deletingExperience = nil
+                    deleteExperience(target)
+                }
+            }
+            Button(L.t("actions.cancel"), role: .cancel) {
+                deletingExperience = nil
+            }
+        } message: {
+            Text(L.t("errors.cannotUndo"))
         }
         .confirmationDialog(
             L.t("memoryV2.deleteConfirmTitle"),
@@ -340,6 +402,29 @@ struct MemoryPageV2: View {
     ) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
+                SlidingCapsuleControl(
+                    selection: $sectionTab,
+                    options: MemorySectionTab.allCases
+                ) { $0.title }
+
+                if backupStrippedMounts {
+                    HStack(alignment: .top, spacing: Ink.Space.m) {
+                        Text(L.t("memoryV2.backupStrippedMountsNotice"))
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.warn)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button(L.t("memoryV2.dismissNotice")) {
+                            Haptics.light()
+                            backupStrippedMounts = false
+                        }
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                    }
+                    .padding(.horizontal, Ink.Space.l)
+                    .padding(.vertical, Ink.Space.m)
+                    .paperCard()
+                }
+
                 if team.phase == .demo {
                     noticeBanner(L.t("settings.demoData"), tint: Ink.inkSoft)
                 } else if !team.canMutateMemoryState {
@@ -350,21 +435,76 @@ struct MemoryPageV2: View {
                     noticeBanner(mutationError, tint: Ink.stop)
                 }
 
-                layerFilterSection(recordsSnapshot, effectiveFilter: effectiveFilter)
-                quickAddAndToolsSection
-                memoryListSection(
-                    allCount: recordsSnapshot.count,
-                    visible: visible,
-                    effectiveFilter: effectiveFilter,
-                    otherLayerMatchCount: otherLayerMatchCount,
-                    trimmedQuery: trimmedQuery
-                )
-                MemoryReviewHistory(records: team.memoryReviews)
+                if sectionTab == .profile {
+                    layerFilterSection(recordsSnapshot, effectiveFilter: effectiveFilter)
+                    quickAddAndToolsSection
+                    memoryListSection(
+                        allCount: recordsSnapshot.count,
+                        visible: visible,
+                        effectiveFilter: effectiveFilter,
+                        otherLayerMatchCount: otherLayerMatchCount,
+                        trimmedQuery: trimmedQuery
+                    )
+                    MemoryReviewHistory(records: team.memoryReviews)
+                } else {
+                    ExperienceSectionView(
+                        experiences: filteredExperiences(trimmedQuery: trimmedQuery),
+                        canMutate: team.canMutateMemoryState,
+                        onAdd: { creatingExperience = true },
+                        onEdit: { editingExperience = $0 },
+                        onDelete: { deletingExperience = $0 }
+                    )
+                }
             }
             .padding(.horizontal, Ink.Space.page)
             .padding(.vertical, Ink.Space.l)
         }
         .scrollEdgeEffectStyle(.soft, for: .vertical)
+    }
+
+    private func reloadExperiencesAndHealth() async {
+        guard team.keeping else {
+            cachedExperiences = []
+            revisionHealth = MemoryRevisionHealth()
+            return
+        }
+        let exps = await ExperienceStoreBridge.shared.loadAllOffMain()
+        let health = await Task.detached(priority: .utility) {
+            MemoryStoreBridge.shared.revisionHealthSnapshot()
+        }.value
+        cachedExperiences = exps
+        revisionHealth = health
+    }
+
+    private func filteredExperiences(trimmedQuery: String) -> [ExperienceRecord] {
+        guard !trimmedQuery.isEmpty else { return cachedExperiences }
+        return cachedExperiences.filter { rec in
+            rec.title.localizedCaseInsensitiveContains(trimmedQuery)
+                || rec.content.localizedCaseInsensitiveContains(trimmedQuery)
+                || rec.tags.contains(where: { $0.localizedCaseInsensitiveContains(trimmedQuery) })
+        }
+    }
+
+    private func upsertLocalExperience(_ saved: ExperienceRecord) {
+        withAnimation(Ink.Motion.settle) {
+            cachedExperiences.removeAll { $0.id == saved.id }
+            cachedExperiences.insert(saved, at: 0)
+            refreshRevision &+= 1
+        }
+    }
+
+    private func deleteExperience(_ target: ExperienceRecord) {
+        Task {
+            do {
+                try await ExperienceStoreBridge.shared.deleteOffMain(id: target.id)
+                withAnimation(Ink.Motion.settle) {
+                    cachedExperiences.removeAll { $0.id == target.id }
+                }
+                ToastCenter.shared.show(L.t("memoryV2.experienceDeletedToast"), symbol: "trash", tint: Ink.inkSoft)
+            } catch {
+                mutationError = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Snapshot Sync
@@ -405,6 +545,17 @@ struct MemoryPageV2: View {
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            if team.keeping {
+                Button {
+                    Haptics.light()
+                    showingRevisions = true
+                } label: {
+                    Image(systemName: revisionHealth.consecutiveFailures > 0 ? "clock.badge.exclamationmark" : "clock.arrow.circlepath")
+                        .foregroundStyle(revisionHealth.consecutiveFailures > 0 ? Ink.warn : Ink.ink)
+                }
+                .accessibilityLabel(L.t("memoryV2.revisionsButton"))
+            }
+
             Button {
                 Haptics.light()
                 showingMirrors = true
@@ -1447,5 +1598,432 @@ private struct MemoryMirrorViewerSheet: View {
         content = loaded.text
         fileURL = loaded.url
         loading = false
+    }
+}
+
+// MARK: - Experience Section & Editor Sheet
+
+private struct ExperienceSectionView: View {
+    let experiences: [ExperienceRecord]
+    let canMutate: Bool
+    let onAdd: () -> Void
+    let onEdit: (ExperienceRecord) -> Void
+    let onDelete: (ExperienceRecord) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.l) {
+            Button {
+                Haptics.light()
+                onAdd()
+            } label: {
+                HStack(spacing: Ink.Space.s) {
+                    Image(systemName: "plus.circle.fill")
+                        .foregroundStyle(Ink.accent)
+                    Text(L.t("memoryV2.experienceAddButton"))
+                        .font(.system(size: Ink.Size.sub, weight: .medium))
+                        .foregroundStyle(Ink.ink)
+                    Spacer()
+                }
+                .padding(.horizontal, Ink.Space.l)
+                .padding(.vertical, Ink.Space.m)
+                .background(Ink.paperRaised)
+                .paperCard()
+            }
+            .buttonStyle(TapStyle())
+            .disabled(!canMutate)
+
+            if experiences.isEmpty {
+                Text(L.t("memoryV2.experienceEmpty"))
+                    .font(.system(size: Ink.Size.small))
+                    .foregroundStyle(Ink.inkSoft)
+                    .padding(Ink.Space.l)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .paperCard()
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(experiences.enumerated()), id: \.element.id) { index, record in
+                        if index > 0 {
+                            Kit.rule(inset: Ink.Space.l)
+                        }
+                        Button {
+                            Haptics.light()
+                            onEdit(record)
+                        } label: {
+                            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                                Text(record.title.isEmpty ? record.content : record.title)
+                                    .font(.system(size: Ink.Size.sub, weight: .semibold))
+                                    .foregroundStyle(Ink.ink)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                if !record.title.isEmpty {
+                                    Text(record.content)
+                                        .font(.system(size: Ink.Size.small))
+                                        .foregroundStyle(Ink.inkSoft)
+                                        .lineLimit(3)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+
+                                WrapLayout(spacing: Ink.Space.xs) {
+                                    MemoryBadgePill(
+                                        text: L.format("memoryV2.experienceUseCount", record.useCount),
+                                        foreground: Ink.accent,
+                                        background: Ink.accent.opacity(0.12)
+                                    )
+                                    ForEach(record.tags, id: \.self) { tag in
+                                        MemoryBadgePill(
+                                            text: tag,
+                                            foreground: Ink.inkSoft,
+                                            background: Ink.rule.opacity(0.45)
+                                        )
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, Ink.Space.l)
+                            .padding(.vertical, Ink.Space.m)
+                            .background(Ink.paperRaised)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(PressStyle(haptic: false, elevated: true))
+                        .contextMenu {
+                            Button(L.t("actions.edit"), systemImage: "pencil") {
+                                onEdit(record)
+                            }
+                            if canMutate {
+                                Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) {
+                                    onDelete(record)
+                                }
+                            }
+                        }
+                    }
+                }
+                .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
+                .paperCard()
+            }
+        }
+    }
+}
+
+private struct ExperienceEditorSheet: View {
+    let existing: ExperienceRecord?
+    let canMutate: Bool
+    let onSaved: (ExperienceRecord) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var content: String
+    @State private var tagsText: String
+    @State private var saving = false
+    @State private var errorMessage: String?
+
+    init(existing: ExperienceRecord?, canMutate: Bool, onSaved: @escaping (ExperienceRecord) -> Void) {
+        self.existing = existing
+        self.canMutate = canMutate
+        self.onSaved = onSaved
+        _title = State(initialValue: existing?.title ?? "")
+        _content = State(initialValue: existing?.content ?? "")
+        _tagsText = State(initialValue: existing?.tags.joined(separator: " ") ?? "")
+    }
+
+    private var trimmedContent: String {
+        content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Ink.Space.l) {
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.stop)
+                            .padding(Ink.Space.l)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .paperCard()
+                    }
+
+                    VStack(alignment: .leading, spacing: Ink.Space.s) {
+                        SectionTitle(L.t("memoryV2.experienceTitleLabel"))
+                        TextField(L.t("memoryV2.experienceTitlePlaceholder"), text: $title)
+                            .font(.system(size: Ink.Size.sub))
+                            .foregroundStyle(Ink.ink)
+                            .padding(Ink.Space.l)
+                            .paperCard()
+                    }
+
+                    VStack(alignment: .leading, spacing: Ink.Space.s) {
+                        SectionTitle(L.t("memoryV2.experienceContentLabel"))
+                        TextField(L.t("memoryV2.experienceContentPlaceholder"), text: $content, axis: .vertical)
+                            .font(.system(size: Ink.Size.sub))
+                            .foregroundStyle(Ink.ink)
+                            .lineLimit(4...12)
+                            .padding(Ink.Space.l)
+                            .paperCard()
+                    }
+
+                    VStack(alignment: .leading, spacing: Ink.Space.s) {
+                        SectionTitle(L.t("memoryV2.experienceTagsLabel"))
+                        TextField(L.t("memoryV2.experienceTagsPlaceholder"), text: $tagsText)
+                            .font(.system(size: Ink.Size.sub))
+                            .foregroundStyle(Ink.ink)
+                            .padding(Ink.Space.l)
+                            .paperCard()
+                    }
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(existing == nil ? L.t("memoryV2.experienceAddTitle") : L.t("memoryV2.experienceEditTitle"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L.t("actions.cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L.t("actions.save")) { saveExperience() }
+                        .disabled(saving || trimmedContent.isEmpty || !canMutate)
+                }
+            }
+        }
+    }
+
+    private func saveExperience() {
+        saving = true
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanContent = trimmedContent
+        let tags = tagsText
+            .split(whereSeparator: { $0.isWhitespace || ",，、".contains($0) })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        Task {
+            do {
+                let saved = try await ExperienceStoreBridge.shared.recordOffMain(
+                    id: existing?.id,
+                    title: cleanTitle.isEmpty ? String(cleanContent.prefix(24)) : cleanTitle,
+                    content: cleanContent,
+                    tags: tags,
+                    source: .user
+                )
+                onSaved(saved)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+                saving = false
+            }
+        }
+    }
+}
+
+// MARK: - Revision Snapshots Drawer Sheet
+
+private struct MemoryRevisionDrawerSheet: View {
+    @ObservedObject var team: TeamModel
+    let onRestored: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var snapshots: [MemoryRevisionSnapshot] = []
+    @State private var health = MemoryRevisionHealth()
+    @State private var loading = true
+    @State private var restoringTarget: MemoryRevisionSnapshot?
+    @State private var busy = false
+    @State private var errorMessage: String?
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Ink.Space.l) {
+                    if health.consecutiveFailures > 0 {
+                        Text(L.format(
+                            "memoryV2.revisionsHealthWarning",
+                            health.consecutiveFailures,
+                            health.lastFailureMessage ?? ""
+                        ))
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.warn)
+                        .padding(Ink.Space.l)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .paperCard()
+                    }
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.stop)
+                            .padding(Ink.Space.l)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .paperCard()
+                    }
+
+                    Text(L.t("memoryV2.revisionsSubtitle"))
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                        .padding(.horizontal, Ink.Space.xs)
+
+                    if loading {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, Ink.Space.xl)
+                    } else if snapshots.isEmpty {
+                        Text(L.t("memoryV2.revisionsEmpty"))
+                            .font(.system(size: Ink.Size.small))
+                            .foregroundStyle(Ink.inkSoft)
+                            .padding(Ink.Space.l)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .paperCard()
+                    } else {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(snapshots.enumerated()), id: \.element.id) { index, snapshot in
+                                if index > 0 {
+                                    Kit.rule(inset: Ink.Space.l)
+                                }
+                                snapshotRow(snapshot)
+                            }
+                        }
+                        .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
+                        .paperCard()
+                    }
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(L.t("memoryV2.revisionsTitle"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L.t("actions.done")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L.t("memoryV2.revisionsManualSaveButton")) {
+                        saveManualSnapshot()
+                    }
+                    .disabled(busy || !team.canMutateMemoryState)
+                }
+            }
+            .task {
+                await reload()
+            }
+            .confirmationDialog(
+                L.t("memoryV2.revisionsRestoreConfirmTitle"),
+                isPresented: Binding(
+                    get: { restoringTarget != nil },
+                    set: { if !$0 { restoringTarget = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button(L.t("memoryV2.revisionsRestoreAction"), role: .destructive) {
+                    if let target = restoringTarget {
+                        restoringTarget = nil
+                        restore(snapshot: target)
+                    }
+                }
+                Button(L.t("actions.cancel"), role: .cancel) {
+                    restoringTarget = nil
+                }
+            } message: {
+                Text(L.t("memoryV2.revisionsRestoreConfirmMessage"))
+            }
+        }
+    }
+
+    private func snapshotRow(_ snapshot: MemoryRevisionSnapshot) -> some View {
+        let stamp = Self.dateFormatter.string(from: Date(timeIntervalSince1970: snapshot.createdAtMs / 1000))
+        return HStack(spacing: Ink.Space.m) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                HStack(spacing: Ink.Space.s) {
+                    Text(stamp)
+                        .font(.system(size: Ink.Size.sub, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(Ink.ink)
+                    MemoryBadgePill(
+                        text: reasonTitle(snapshot.reason),
+                        foreground: Ink.accent,
+                        background: Ink.accent.opacity(0.12)
+                    )
+                }
+                Text(L.format(
+                    "memoryV2.revisionsItemCounts",
+                    snapshot.itemCount,
+                    snapshot.pinnedCount,
+                    snapshot.surfaceCount,
+                    snapshot.deepCount
+                ))
+                .font(.system(size: Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+            }
+            Spacer()
+            Button(L.t("memoryV2.revisionsRestoreAction")) {
+                Haptics.light()
+                restoringTarget = snapshot
+            }
+            .font(.system(size: Ink.Size.small, weight: .semibold))
+            .foregroundStyle(Ink.accent)
+            .disabled(busy || !team.canMutateMemoryState)
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Ink.Space.m)
+        .background(Ink.paperRaised)
+    }
+
+    private func reasonTitle(_ reason: String) -> String {
+        switch reason {
+        case "nightly": return L.t("memoryV2.revisionsReasonNightly")
+        case "promotion": return L.t("memoryV2.revisionsReasonPromotion")
+        case "pre_restore": return L.t("memoryV2.revisionsReasonPreRestore")
+        case "import": return L.t("memoryV2.revisionsReasonImport")
+        case "manual": return L.t("memoryV2.revisionsReasonManual")
+        case "baseline": return L.t("memoryV2.revisionsReasonBaseline")
+        default: return L.t("memoryV2.revisionsReasonOther")
+        }
+    }
+
+    private func reload() async {
+        loading = true
+        snapshots = await MemoryStoreBridge.shared.listRevisionSnapshotsOffMain()
+        health = await Task.detached(priority: .utility) {
+            MemoryStoreBridge.shared.revisionHealthSnapshot()
+        }.value
+        loading = false
+    }
+
+    private func saveManualSnapshot() {
+        busy = true
+        errorMessage = nil
+        Task {
+            do {
+                _ = try await MemoryStoreBridge.shared.saveManualRevisionSnapshotOffMain()
+                await reload()
+                ToastCenter.shared.show(L.t("memoryV2.revisionsManualSavedToast"), symbol: "checkmark.circle.fill", tint: Ink.ok)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            busy = false
+        }
+    }
+
+    private func restore(snapshot: MemoryRevisionSnapshot) {
+        busy = true
+        errorMessage = nil
+        Task {
+            do {
+                let result = try await MemoryStoreBridge.shared.restoreRevisionSnapshotOffMain(
+                    id: snapshot.id,
+                    bots: team.bots,
+                    mainBotId: team.mainBotId
+                )
+                team.applyRestoredRevisionBook(result.book)
+                onRestored()
+                await reload()
+                ToastCenter.shared.show(L.t("memoryV2.revisionsRestoredToast"), symbol: "arrow.uturn.backward.circle.fill", tint: Ink.ok)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            busy = false
+        }
     }
 }

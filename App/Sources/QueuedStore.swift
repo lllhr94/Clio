@@ -30,7 +30,8 @@ enum QueuedStore {
                 text: $0.text,
                 photos: $0.photos,
                 interject: $0.interject,
-                userInitiated: $0.userInitiated
+                userInitiated: $0.userInitiated,
+                experienceSourceRaw: $0.experienceSource.rawValue
             )
         }
     }
@@ -69,7 +70,14 @@ enum QueuedStore {
     /// Saves synchronously and throws on error, used when moving queued messages to a new storage slot
     /// so the source slot is only cleared once the destination is surely on disk.
     nonisolated static func saveAndWait(_ items: [TeamModel.Queued], for chatKey: String, anchor: ConversationAnchor? = nil) throws {
-        let snapshots = snapshot(items)
+        try saveRawAndWait(snapshot(items), for: chatKey, anchor: anchor)
+    }
+
+    private nonisolated static func saveRawAndWait(
+        _ snapshots: [StoredQueuedMessage],
+        for chatKey: String,
+        anchor: ConversationAnchor? = nil
+    ) throws {
         let base = root
         var failure: Error?
         writer.sync {
@@ -85,6 +93,16 @@ enum QueuedStore {
         }
         if let failure { throw failure }
     }
+
+    #if DEBUG
+    nonisolated static func saveRawForTesting(
+        _ items: [StoredQueuedMessage],
+        for chatKey: String,
+        anchor: ConversationAnchor? = nil
+    ) throws {
+        try saveRawAndWait(items, for: chatKey, anchor: anchor)
+    }
+    #endif
 
     /// Background helper for startup deduplication cleanup.
     nonisolated static func saveDetached(_ items: [StoredQueuedMessage], for chatKey: String, anchor: ConversationAnchor? = nil) {
