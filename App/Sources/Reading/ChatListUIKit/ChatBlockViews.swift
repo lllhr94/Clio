@@ -2003,7 +2003,7 @@ final class ChatProsePictureView: UIView {
     }
 
     private func loadRemote(_ remote: URL, source: String, generation expectedGen: UInt64) async {
-        guard !LocalAddress.isLocal(remote), !(await LocalAddress.resolvesToLocal(remote)) else {
+        guard await LocalAddress.allowsRemoteImage(remote) else {
             guard !Task.isCancelled, generation == expectedGen else { return }
             isFailed = true
             ChatMediaLayoutCache.clearPicture(source: source)

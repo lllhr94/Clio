@@ -357,6 +357,7 @@ final class ClioAppPR1ATests: XCTestCase {
         XCTAssertThrowsError(try relaunch.commitAppBook(
             relaunched.book, suppressedHashes: [], bots: [], mainBotId: nil, secrets: []
         ))
+        relaunch.flushSync()
     }
 
     @MainActor
@@ -368,6 +369,7 @@ final class ClioAppPR1ATests: XCTestCase {
         let recallDB = recallDir.appendingPathComponent("ClioMemory/recall.db")
         try FileManager.default.createDirectory(at: recallTeam, withIntermediateDirectories: true)
         let recallBridge = MemoryStoreBridge(databaseURL: recallDB, teamRoot: recallTeam, mirrorRoot: recallMirror)
+        defer { recallBridge.flushSync() }
         _ = try recallBridge.revisionStore.commitWithJournal(
             CanonicalMemoryBook(memories: [
                 CanonicalMemoryItem(id: "m-deep-hit", text: "北海道冬天滑雪攻略", at: 1_000, deep: true),
@@ -524,7 +526,7 @@ final class ClioAppPR1ATests: XCTestCase {
     private func temporaryRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("clio-pr1a-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        addTeardownBlock { try FileManager.default.removeItem(at: root) }
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         return root
     }
 
@@ -693,9 +695,6 @@ final class ClioAppPR1ATests: XCTestCase {
         let flushKey = TeamModel.key(bot: flushBotID)
         let backupBotID = "b-backup-\(UUID().uuidString.lowercased())"
         let backupKey = TeamModel.key(bot: backupBotID)
-        let recallDBURL = MemoryRecallIndex.defaultDatabaseURL
-        let recallExistedBefore = FileManager.default.fileExists(atPath: recallDBURL.path)
-        let recallMTimeBefore = (try? FileManager.default.attributesOfItem(atPath: recallDBURL.path)[.modificationDate] as? Date)
         let prevBots = team.bots
         let prevSettings = team.settings
         let prevOverride = team.turnProviderOverrideForTesting
@@ -784,6 +783,11 @@ final class ClioAppPR1ATests: XCTestCase {
         team.settings.backupModel = nil
         providerTurns.set([])
 
+        // Sample recall DB right before `recallReadOnly` so the preceding `team.start(backupKey)` turn
+        // (which legitimately invokes `recallForTurn`) does not race with the zero-write assertion.
+        let recallDBURL = MemoryRecallIndex.defaultDatabaseURL
+        let recallExistedBefore = FileManager.default.fileExists(atPath: recallDBURL.path)
+        let recallMTimeBefore = (try? FileManager.default.attributesOfItem(atPath: recallDBURL.path)[.modificationDate] as? Date)
         _ = await team.recallReadOnly("冬天")
         XCTAssertEqual(FileManager.default.fileExists(atPath: recallDBURL.path), recallExistedBefore)
         if recallExistedBefore {

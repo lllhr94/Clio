@@ -689,11 +689,12 @@ final class Hills: ObservableObject {
     /// Runs a request with the service's credential: the token from its sign-in (renewed and tried once more
     /// after a 401), or the key or token pasted for it.
     nonisolated static func withCredential<T: Sendable>(_ id: String, _ work: @Sendable (String?) async throws -> T) async throws -> T {
-        if let bearer = try await MCPAuth.bearer(id) {
+        if let first = try await MCPAuth.bearerLease(id) {
             do {
-                return try await work(bearer)
+                return try await work(first.token)
             } catch MCPClient.MCPError.http(let code, _) where code == 401 {
-                return try await work(try await MCPAuth.bearer(id, stale: true))
+                let refreshed = try await MCPAuth.bearerLease(id, retrying: first)
+                return try await work(refreshed?.token)
             }
         }
         let saved = Vault.load(String.self, key: "mcp.\(id)")
