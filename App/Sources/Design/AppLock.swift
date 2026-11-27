@@ -13,12 +13,38 @@ struct AppLock: ViewModifier {
     @State private var wasAway = false
 
     @MainActor private static var unlockedInActiveSession = !UserDefaults.standard.bool(forKey: "lock.faceid")
+    @MainActor static var testUnlockedOverride: Bool?
+    @MainActor private static var deferredIncomingURLs: [URL] = []
 
     @MainActor static var isCurrentlyUnlocked: Bool {
+        if let testUnlockedOverride { return testUnlockedOverride }
         if !UserDefaults.standard.bool(forKey: "lock.faceid") { return true }
         return unlockedInActiveSession
             && !LockCurtain.shared.isShowing
             && UIApplication.shared.applicationState == .active
+    }
+
+    /// Buffers incoming `clio://` or file URLs while the app is locked so neither file copies nor deep links
+    /// can execute before Face ID / passcode succeeds. Returns `true` if deferred.
+    @MainActor static func deferIncomingURLIfLocked(_ url: URL) -> Bool {
+        guard !isCurrentlyUnlocked else { return false }
+        if deferredIncomingURLs.last != url {
+            deferredIncomingURLs.append(url)
+            if deferredIncomingURLs.count > 16 {
+                deferredIncomingURLs.removeFirst(deferredIncomingURLs.count - 16)
+            }
+        }
+        return true
+    }
+
+    @MainActor static func drainDeferredIncomingURLs() -> [URL] {
+        guard isCurrentlyUnlocked else { return [] }
+        defer { deferredIncomingURLs.removeAll(keepingCapacity: true) }
+        return deferredIncomingURLs
+    }
+
+    @MainActor static func clearDeferredIncomingURLsForTesting() {
+        deferredIncomingURLs.removeAll(keepingCapacity: false)
     }
 
     @MainActor static func verifyDeviceOwner(reason: String) async -> Bool {
@@ -48,6 +74,9 @@ struct AppLock: ViewModifier {
                 if !wasUnlocked && nowUnlocked {
                     NotificationCenter.default.post(name: .clioAppDidUnlock, object: nil)
                 }
+            }
+            .onChange(of: on) { _, _ in
+                NotificationCenter.default.post(name: .clioAppLockPreferenceChanged, object: nil)
             }
             .onChange(of: phase) { _, now in
                 if now == .background, on {
@@ -110,6 +139,7 @@ extension View {
 
 extension Notification.Name {
     static let clioAppDidUnlock = Notification.Name("clio.appDidUnlock")
+    static let clioAppLockPreferenceChanged = Notification.Name("clio.appLockPreferenceChanged")
 }
 
 /// The window the lock cover is drawn in, above alerts and sheets.

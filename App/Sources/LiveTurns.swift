@@ -12,6 +12,39 @@ enum LiveTurns {
 
     static var on: Bool { UserDefaults.standard.object(forKey: "live.on") == nil ? true : UserDefaults.standard.bool(forKey: "live.on") }
 
+    nonisolated static var isPrivacyRedacted: Bool {
+        UserDefaults.standard.bool(forKey: "lock.faceid")
+    }
+
+    static func redactedDoing(
+        _ doing: String,
+        needsApproval: Bool,
+        privacyRedacted: Bool = isPrivacyRedacted
+    ) -> String {
+        if needsApproval { return L.t("pet.needsApproval") }
+        if privacyRedacted { return L.plain ? "正在处理中" : "正在办理" }
+        return Words.t(doing)
+    }
+
+    static func redactedSubtaskSummary(
+        _ summary: String,
+        privacyRedacted: Bool = isPrivacyRedacted
+    ) -> String {
+        if privacyRedacted { return L.plain ? "正在处理后台任务" : "正在办理后台分务" }
+        return Words.t(summary)
+    }
+
+    static func redactedEndLine(
+        _ line: String?,
+        ok: Bool,
+        privacyRedacted: Bool = isPrivacyRedacted
+    ) -> String {
+        let fallback = ok ? "\(L.t("pet.done"))，点开看看" : "\(L.t("pet.failed"))，点开看看"
+        if privacyRedacted { return fallback }
+        let words = (line ?? "").replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        return words.isEmpty ? fallback : String(Words.t(words).prefix(80))
+    }
+
     /// A turn began. Live Activities can only be started while Clio is on screen; a turn begun in the background has none.
     static func begin(chat: String, name: String, face: @autoclosure () -> Data? = nil) {
         guard on, ActivityAuthorizationInfo().areActivitiesEnabled else { return }
@@ -70,7 +103,7 @@ enum LiveTurns {
         guard let activity = running[chat], var state = states[chat], let doing, state.ended == nil else { return }
         let needsApproval = doing == "等你批准" || doing == L.t("pet.needsApproval")
         let phase: TurnAttributes.ContentState.Phase = needsApproval ? .waiting : .working
-        let shown = needsApproval ? L.t("pet.needsApproval") : Words.t(doing)
+        let shown = redactedDoing(doing, needsApproval: needsApproval)
         guard shown != state.doing || phase != state.phase else { return }
         let urgent = phase != state.phase
         state.doing = shown
@@ -113,7 +146,7 @@ enum LiveTurns {
             state.doing = L.t("pet.needsApproval")
         } else if activeCount > 0, let summary, !summary.isEmpty {
             state.phase = .working
-            state.doing = Words.t(summary)
+            state.doing = redactedSubtaskSummary(summary)
         } else {
             return
         }
@@ -129,9 +162,7 @@ enum LiveTurns {
         ending.removeValue(forKey: chat)?.task.cancel()
         state.phase = ok ? .done : .failed
         state.ended = Date()
-        let words = (line ?? "").replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
-        let fallback = ok ? "\(L.t("pet.done"))，点开看看" : "\(L.t("pet.failed"))，点开看看"
-        state.doing = words.isEmpty ? fallback : String(Words.t(words).prefix(80))
+        state.doing = redactedEndLine(line, ok: ok)
         // The island shows ✓ (or !) for a few seconds before the card leaves it; the lock screen keeps it a while.
         let grace = UIApplication.shared.beginBackgroundTask(withName: "clio-live-end")
         let final = ActivityContent(state: state, staleDate: nil)

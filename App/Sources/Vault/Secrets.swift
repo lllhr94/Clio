@@ -42,20 +42,65 @@ final class Secrets: ObservableObject {
 
     @Published private(set) var items: [Item] = []
 
+    private static let snapshotLock = NSLock()
+    nonisolated(unsafe) private static var itemSnapshot: [Item] = []
+
     init() {
         items = Disk.load([Item].self, "secrets.json") ?? []
+        Self.updateSnapshot(items)
+    }
+
+    private static func updateSnapshot(_ latest: [Item]) {
+        snapshotLock.lock()
+        itemSnapshot = latest
+        snapshotLock.unlock()
+    }
+
+    nonisolated static func cachedItem(_ id: String) -> Item? {
+        let wanted = id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !wanted.isEmpty else { return nil }
+        snapshotLock.lock()
+        let copy = itemSnapshot
+        snapshotLock.unlock()
+        return copy.first { $0.id.lowercased() == wanted } ?? copy.first { $0.title.lowercased() == wanted }
+    }
+
+    nonisolated static func formattedFillApproval(
+        arguments: JSONValue,
+        chat: String,
+        itemOverride: Item? = nil,
+        currentOriginOverride: String? = nil
+    ) -> ApprovalAsk {
+        let rawID = (arguments["id"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let fieldLabel = arguments["field"]?.string == "user" ? "用户名" : "密码"
+        let item = itemOverride ?? cachedItem(rawID)
+        let origin = currentOriginOverride ?? BrowserSession.currentOriginDescription(for: chat)
+        let itemTitle = item.map { "「\($0.title)」" } ?? (rawID.isEmpty ? "（未指定编号）" : "编号 \(rawID)")
+        let siteSummary: String
+        if let item {
+            let trimmedSite = item.site.trimmingCharacters(in: .whitespacesAndNewlines)
+            siteSummary = trimmedSite.isEmpty ? "未填写适用网站" : trimmedSite
+        } else {
+            siteSummary = "未找到对应条目"
+        }
+        let targetPage = origin ?? "当前页面"
+        let reason = Words.t("将信匣\(itemTitle)的\(fieldLabel)填入 \(targetPage)")
+        let detail = Words.t("适用网站：\(siteSummary)\n当前页面：\(targetPage)\n信匣编号：\(rawID.isEmpty ? "—" : rawID)")
+        return ApprovalAsk(title: Words.t("从信匣取出来填进网页"), reason: reason, detail: detail, forced: true)
     }
 
     func save(_ item: Item, secret: String?) {
         var item = item
         item.at = Date().timeIntervalSince1970 * 1000
         if let index = items.firstIndex(where: { $0.id == item.id }) { items[index] = item } else { items.insert(item, at: 0) }
+        Self.updateSnapshot(items)
         if let secret, !secret.isEmpty { Vault.save(secret, as: "secret.\(item.id)") }
         Disk.save(items, "secrets.json")
     }
 
     func remove(_ item: Item) {
         items.removeAll { $0.id == item.id }
+        Self.updateSnapshot(items)
         Vault.remove("secret.\(item.id)")
         Disk.save(items, "secrets.json")
     }
@@ -428,7 +473,7 @@ enum SecretTools {
                 ],
                 "required": ["ref", "id"],
             ], label: { Words.t("远游：从信匣填入 [\(Whole.int($0["ref"]) ?? 0)]") }, approval: { arguments in
-                ApprovalAsk(title: Words.t("从信匣取出来填进网页"), reason: Words.t("信匣编号 ") + "\(arguments["id"]?.string ?? "")，填\(arguments["field"]?.string == "user" ? "用户名" : "密码")", forced: true)
+                Secrets.formattedFillApproval(arguments: arguments, chat: chat)
             }) { arguments in
                 let id = arguments["id"]?.string ?? ""
                 guard let item = await Secrets.shared.item(id) else { return ToolOutput("信匣里没有编号 \(id)。", isError: true) }

@@ -195,9 +195,9 @@ enum Vault {
         }
         defer { forget() }
         if status == errSecSuccess {
-            _ = removeProtected(key)
+            _ = removeProtectedLocked(key)
         } else {
-            try writeProtected(data, as: key)
+            try writeProtectedLocked(data, as: key)
         }
     }
 
@@ -209,7 +209,7 @@ enum Vault {
         ]
     }
 
-    fileprivate static func keychainData(_ key: String) -> Data? {
+    private static func keychainDataLocked(_ key: String) -> Data? {
         var query = itemQuery(key)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -218,17 +218,26 @@ enum Vault {
         return found as? Data
     }
 
-    fileprivate static func protectedData(_ key: String) -> Data? {
+    private static func protectedDataLocked(_ key: String) -> Data? {
         try? Data(contentsOf: file(key))
     }
 
-    fileprivate static func writeProtected(_ data: Data, as key: String) throws {
-        try data.write(to: file(key), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    private static func markExcludedFromBackup(_ url: URL) {
+        var target = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? target.setResourceValues(values)
+    }
+
+    private static func writeProtectedLocked(_ data: Data, as key: String) throws {
+        let target = file(key)
+        try data.write(to: target, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        markExcludedFromBackup(target)
         forget()
     }
 
     @discardableResult
-    fileprivate static func removeProtected(_ key: String) -> Bool {
+    private static func removeProtectedLocked(_ key: String) -> Bool {
         do {
             try FileManager.default.removeItem(at: file(key))
             forget()
@@ -240,11 +249,48 @@ enum Vault {
         }
     }
 
+    static func keychainData(_ key: String) -> Data? {
+        writes.lock()
+        defer { writes.unlock() }
+        return keychainDataLocked(key)
+    }
+
+    static func protectedData(_ key: String) -> Data? {
+        writes.lock()
+        defer { writes.unlock() }
+        return protectedDataLocked(key)
+    }
+
+    static func writeProtected(_ data: Data, as key: String) throws {
+        writes.lock()
+        defer { writes.unlock() }
+        try writeProtectedLocked(data, as: key)
+    }
+
+    @discardableResult
+    static func removeProtected(_ key: String) -> Bool {
+        writes.lock()
+        defer { writes.unlock() }
+        return removeProtectedLocked(key)
+    }
+
+    static func excludeExistingFallbackFilesFromBackup(in folder: URL? = nil) {
+        let targetFolder = folder ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: targetFolder.path) else { return }
+        for name in names where name.hasPrefix("link-") && name.hasSuffix(".json") {
+            markExcludedFromBackup(targetFolder.appendingPathComponent(name))
+        }
+    }
+
+    private static let excludeLegacyFallbackFilesOnce: Void = {
+        excludeExistingFallbackFilesFromBackup()
+    }()
+
     static func load<Value: Decodable>(_ type: Value.Type, key: String) -> Value? {
         writes.lock()
         defer { writes.unlock() }
         // The fallback can be newer after a failed Keychain update.
-        for data in [protectedData(key), keychainData(key)].compactMap({ $0 }) {
+        for data in [protectedDataLocked(key), keychainDataLocked(key)].compactMap({ $0 }) {
             if let value = try? JSONDecoder().decode(type, from: data) { return value }
         }
         return nil
@@ -269,7 +315,7 @@ enum Vault {
         writes.lock()
         defer { writes.unlock() }
         let status = SecItemDelete(itemQuery(key) as CFDictionary)
-        let removed = removeProtected(key)
+        let removed = removeProtectedLocked(key)
         forget()
         return removed && (status == errSecSuccess || status == errSecItemNotFound)
     }
@@ -365,7 +411,12 @@ enum Vault {
         return encoded
     }
 
+    static func fallbackFileURL(for key: String) -> URL {
+        file(key)
+    }
+
     private static func file(_ key: String) -> URL {
+        _ = excludeLegacyFallbackFilesOnce
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder.appendingPathComponent("link-\(safeFileComponent(key)).json")
