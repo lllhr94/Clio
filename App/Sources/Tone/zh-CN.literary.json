@@ -1489,6 +1489,33 @@
     "enterMenu": "进入规划模式（只看不动）",
     "exitMenu": "退出规划模式"
   },
+  "persona": {
+    "wizard": "聊几句生成",
+    "relationship": "身份与相处方式",
+    "expressionStyle": "说话风格与节奏",
+    "antiSlop": "精简回复里的套话",
+    "firstPersonThoughts": "用第一人称显示思考",
+    "expertiseBoundary": "擅长的事与边界",
+    "privateNotes": "专属相处备注",
+    "publicAgentsCard": "公开协作说明",
+    "includePrivateNotes": "附带专属相处备注",
+    "exportFailed": "无法导出，请检查文字长度后重试。",
+    "avatarHint": "为这位旅伴选名印、相册照片或宠物图像。",
+    "defaultSeal": "默认名印",
+    "answer": "写下你的想法",
+    "next": "下一步",
+    "previous": "上一步",
+    "reviewDraft": "查看并编辑草稿",
+    "ask": {
+      "name": "你想怎么称呼这位旅伴？",
+      "role": "用一句话介绍它，你会怎么写？",
+      "relationship": "你希望它以什么身份和你相处？",
+      "expressionStyle": "你喜欢它用什么语气和节奏说话？",
+      "expertiseBoundary": "它最擅长什么？哪些事情需要先问你或交给别人？",
+      "privateNotes": "有什么只用于你们相处的备注？可以留空。",
+      "publicAgentsCard": "其他旅伴需要知道怎样和它协作？可以留空。"
+    }
+  },
   "subtask": {
     "sheetTitle": "后台分务",
     "empty": "这段絮语下暂无后台分务记录。",

@@ -50,7 +50,7 @@ struct GlanceCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Ink.Space.m) {
             HStack(spacing: Ink.Space.m) {
-                PetStill(size: 48, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                CompanionAvatar(size: 48, wash: Ink.wash(for: bot), bot: bot)
                     .breathing(team.workDetail(for: key).words != nil, tint: Ink.accent)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: Ink.Space.xs) {

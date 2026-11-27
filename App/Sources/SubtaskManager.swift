@@ -391,6 +391,8 @@ final class SubtaskManager: ObservableObject {
 
         let collector = OutputCollector()
         let promptMessage = "【\(asker.name)派发的后台子任务，这不是用户本人的话】\(thread.taskPrompt)"
+        let remoteHostID: String? = workplace.hostID.hasPrefix("hill:") ? String(workplace.hostID.dropFirst(5)) : nil
+        let taskStore = store
         var failedMessage: String?
 
         do {
@@ -403,12 +405,11 @@ final class SubtaskManager: ObservableObject {
                         collector.setAssistantText(msg.text)
                     } else if msg.role == .tool, msg.toolName == "ssh_job_start" {
                         // Record started Hills background jobs so explicit remote stop can terminate them cleanly.
-                        if let parsed = Self.extractRemoteJobID(from: msg.text),
-                           let hostID = workplace.hostID.hasPrefix("hill:") ? String(workplace.hostID.dropFirst(5)) : nil {
-                            _ = try? self.store.recordRemoteJob(
+                        if let parsed = Self.extractRemoteJobID(from: msg.text), let remoteHostID {
+                            _ = try? taskStore.recordRemoteJob(
                                 threadID: threadID,
                                 attemptID: executionKey,
-                                hostID: hostID,
+                                hostID: remoteHostID,
                                 jobID: parsed
                             )
                         }
