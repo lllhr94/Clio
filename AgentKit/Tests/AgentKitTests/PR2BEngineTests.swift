@@ -302,7 +302,26 @@ final class PR2BEngineTests: XCTestCase {
         let session = makeMockSession()
         MockURLProtocol.requests = []
         MockURLProtocol.handler = { req in
-            let bodyData = req.httpBody ?? Data()
+            let bodyData: Data
+            if let direct = req.httpBody {
+                bodyData = direct
+            } else if let stream = req.httpBodyStream {
+                stream.open()
+                defer { stream.close() }
+                var collected = Data()
+                var buffer = [UInt8](repeating: 0, count: 4096)
+                while stream.hasBytesAvailable {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    if count > 0 {
+                        collected.append(buffer, count: count)
+                    } else {
+                        break
+                    }
+                }
+                bodyData = collected
+            } else {
+                bodyData = Data()
+            }
             let bodyText = String(decoding: bodyData, as: UTF8.self)
             if bodyText.contains(#""ttl":"1h""#) {
                 let err = HTTPURLResponse(url: req.url!, statusCode: 400, httpVersion: "HTTP/1.1", headerFields: nil)!
