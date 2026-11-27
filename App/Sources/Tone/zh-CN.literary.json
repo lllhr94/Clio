@@ -1603,16 +1603,5 @@
     "stickersEmpty": "尚未导入表情小图。点击下方自相册选入，仅于闲谈间使用。",
     "importSticker": "自相册导入小图",
     "defaultStickerPack": "私藏小图"
-  },
-  "draftTransfer": {
-    "moveAction": "移稿至…",
-    "pickerTitle": "移稿至",
-    "noOtherChats": "暂没有其他可移稿的对话。",
-    "collisionTitle": "彼处已有草稿",
-    "collisionMessage": "「%@」案头已有未发草稿，要如何处置？",
-    "collisionAppend": "接续其后",
-    "collisionReplace": "替换原稿",
-    "movedToast": "已将草稿移至 %@",
-    "undoConflicted": "草稿在移稿后已有新改动，已跳过撤回。"
   }
 }
