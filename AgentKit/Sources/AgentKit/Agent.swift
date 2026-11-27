@@ -125,6 +125,18 @@ public struct Agent: Sendable {
     public var thinking: Thinking = .auto
     /// Optional pre-resolved v2 thinking wire fields (from `ThinkingRuleResolver`).
     public var thinkingBodyFields: [String: ThinkingWireValue]? = nil
+    /// Immutable target contract identity stamped onto protocol continuation payloads.
+    public var contractKey: EndpointContractKey? = nil
+    /// Speaker or thread isolation scope for multi-companion gatherings.
+    public var speakerOrThreadID: String? = nil
+    /// Non-secret custom headers forwarded to the provider.
+    public var customHeaders: [String: String] = [:]
+    /// Split streaming timeout configuration (TTFB / heartbeat-immune idle / total).
+    public var streamTimeouts: StreamTimeouts = .default
+    /// True when the user explicitly chose thinking OFF (enforces zero-fallback terminal semantics).
+    public var isExplicitOff: Bool = false
+    /// When true, `ProtocolAtomicUnit` keeps non-tool reasoning turns indivisible as well.
+    public var preserveNonToolReasoningTurns: Bool = false
     /// Seconds to wait before each new try of a request that failed on the way; one entry per try.
     public var retryDelays: [Double] = [1, 3]
     /// What the person said while the turn was at work (插话): read between steps, before the model is asked again.
@@ -151,7 +163,12 @@ public struct Agent: Sendable {
             temperature: temperature,
             outputLimit: outputLimit,
             thinking: thinking,
-            thinkingBodyFields: thinkingBodyFields
+            thinkingBodyFields: thinkingBodyFields,
+            contractKey: contractKey,
+            speakerOrThreadID: speakerOrThreadID,
+            customHeaders: customHeaders,
+            streamTimeouts: streamTimeouts,
+            isExplicitOff: isExplicitOff || thinking == .off
         )
         let retryArbiter = WholeTurnRetryArbiter()
         var text = ""
@@ -168,8 +185,15 @@ public struct Agent: Sendable {
                 }
                 break
             } catch {
-                switch retryArbiter.decide(after: error, requestHasOutput: hasOutput, thinking: request.thinking,
-                                           canTrimContext: false, hasTransientRetry: attempt < retryDelays.count) {
+                switch retryArbiter.decide(
+                    after: error,
+                    requestHasOutput: hasOutput,
+                    thinking: request.thinking,
+                    canTrimContext: false,
+                    hasTransientRetry: attempt < retryDelays.count,
+                    hasImages: Self.containsImages(request.messages),
+                    isExplicitOff: isExplicitOff || request.thinking == .off
+                ) {
                 case .retryWithoutThinking:
                     request.thinking = .auto
                     request.thinkingBodyFields = nil
@@ -177,7 +201,9 @@ public struct Agent: Sendable {
                     let wait = retryDelays[attempt]
                     attempt += 1
                     if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
-                case .retryShorterContext, .stop:
+                case .retryWithoutImages:
+                    request.messages = Self.strippingImagesWithPlaceholders(request.messages)
+                case .retryShorterContext, .retryRegenerateToolCall, .stop:
                     if WholeTurnRetryArbiter.cancelled(error) { throw CancellationError() }
                     throw error
                 }
@@ -197,11 +223,105 @@ public struct Agent: Sendable {
         switch event {
         case .text(let piece), .reasoning(let piece), .reasoningSignature(let piece):
             return !piece.isEmpty
-        case .image, .toolCallStart, .toolCallArguments:
+        case .continuationPayload, .image, .toolCallStart, .toolCallArguments:
             return true
         case .usage, .finish:
             return false
         }
+    }
+
+    static func containsImages(_ messages: [Message]) -> Bool {
+        messages.contains { !$0.images.isEmpty }
+    }
+
+    /// Strips inline image bytes after a 413 payload-too-large failure while preserving explicit missing-image semantics.
+    static func strippingImagesWithPlaceholders(_ messages: [Message]) -> [Message] {
+        messages.map { message in
+            guard !message.images.isEmpty else { return message }
+            var copy = message
+            let count = copy.images.count
+            copy.images = []
+            let note = count == 1
+                ? "（原消息附带 1 张图片，因请求体超过服务端限制本轮已省略，请按文字上下文作答或提示用户缩小图片。）"
+                : "（原消息附带 \(count) 张图片，因请求体超过服务端限制本轮已省略，请按文字上下文作答或提示用户减少图片。）"
+            copy.text = copy.text.isEmpty ? note : copy.text + "\n" + note
+            return copy
+        }
+    }
+
+    private static func buildContinuationPayloads(
+        collected: [ProtocolContinuationPayload],
+        contractKey: EndpointContractKey?,
+        speakerOrThreadID: String?,
+        reasoning: String,
+        signature: String,
+        toolCalls: [ToolCall]
+    ) -> [ProtocolContinuationPayload]? {
+        if !collected.isEmpty { return collected }
+        guard let contract = contractKey else { return nil }
+        let refs = toolCalls.map(\.id)
+        if contract.protocolKind == "anthropic", !signature.isEmpty {
+            let unpacked = AnthropicProvider.unpackSignature(signature)
+            var result: [ProtocolContinuationPayload] = []
+            var order = 0
+            if !unpacked.signature.isEmpty {
+                let encoded: String
+                if let data = try? JSONSerialization.data(
+                    withJSONObject: ["thinking": reasoning, "signature": unpacked.signature],
+                    options: [.sortedKeys, .withoutEscapingSlashes]
+                ) {
+                    encoded = String(decoding: data, as: UTF8.self)
+                } else {
+                    encoded = unpacked.signature
+                }
+                result.append(ProtocolContinuationPayload(
+                    origin: contract.origin,
+                    protocolKind: contract.protocolKind,
+                    route: contract.route,
+                    modelID: contract.modelID,
+                    speakerOrThreadID: speakerOrThreadID,
+                    wireKind: "anthropic_thinking",
+                    blockOrder: order,
+                    opaqueData: encoded,
+                    toolCallRefs: refs,
+                    validScope: "turn"
+                ))
+                order += 1
+            }
+            for redacted in unpacked.redacted {
+                result.append(ProtocolContinuationPayload(
+                    origin: contract.origin,
+                    protocolKind: contract.protocolKind,
+                    route: contract.route,
+                    modelID: contract.modelID,
+                    speakerOrThreadID: speakerOrThreadID,
+                    wireKind: "anthropic_redacted_thinking",
+                    blockOrder: order,
+                    opaqueData: redacted,
+                    toolCallRefs: refs,
+                    validScope: "turn"
+                ))
+                order += 1
+            }
+            return result.isEmpty ? nil : result
+        }
+        if contract.protocolKind == "openai", !reasoning.isEmpty {
+            return [
+                ProtocolContinuationPayload(
+                    origin: contract.origin,
+                    protocolKind: contract.protocolKind,
+                    route: contract.route,
+                    modelID: contract.modelID,
+                    speakerOrThreadID: speakerOrThreadID,
+                    wireKind: "openai_reasoning_content",
+                    blockOrder: 0,
+                    opaqueData: reasoning,
+                    toolCallRefs: refs,
+                    validScope: "turn"
+                ),
+            ]
+        }
+        return nil
     }
 
     static let maxToolConcurrency = 4
@@ -219,13 +339,15 @@ public struct Agent: Sendable {
         history: [Message], retryArbiter: WholeTurnRetryArbiter = WholeTurnRetryArbiter(),
         emit: @escaping @Sendable (AgentEvent) async -> Void
     ) async throws {
-        var messages = ProtocolAtomicUnit.paired(history)
+        var messages = ProtocolAtomicUnit.paired(history, preserveNonToolReasoningTurns: preserveNonToolReasoningTurns)
         let activeTurnStart = messages.lastIndex(where: { $0.role == .user }) ?? 0
         var retainedStart = 0
         let specs = tools.map { Self.titled($0.spec) }
         let mutatingTools = Set(tools.filter(\.hasSideEffects).map { $0.spec.name })
         var thinking = self.thinking
         var thinkingBodyFields = self.thinkingBodyFields
+        let explicitOffRequested = self.isExplicitOff || self.thinking == .off
+        var stripImagesForRequest = false
         var uncertain: Set<ToolLoopDetector.CallKey> = []
         var loopDetector = ToolLoopDetector()
         var nudge: String?
@@ -246,6 +368,9 @@ public struct Agent: Sendable {
             }
             func requestMessages(startingAt start: Int) -> [Message] {
                 var outgoing = Array(messages[start...])
+                if stripImagesForRequest {
+                    outgoing = Self.strippingImagesWithPlaceholders(outgoing)
+                }
                 if let nudge, let index = outgoing.lastIndex(where: { $0.role == .tool }) {
                     outgoing[index].text += "\n" + nudge
                 }
@@ -254,13 +379,16 @@ public struct Agent: Sendable {
             var request = ModelRequest(
                 model: model, system: system, messages: requestMessages(startingAt: retainedStart),
                 tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking,
-                thinkingBodyFields: thinkingBodyFields
+                thinkingBodyFields: thinkingBodyFields, contractKey: contractKey,
+                speakerOrThreadID: speakerOrThreadID, customHeaders: customHeaders,
+                streamTimeouts: streamTimeouts, isExplicitOff: explicitOffRequested
             )
             var text = ""
             var images: [ReplyImage] = []
             var seenImages: Set<ReplyImage> = []
             var reasoning = ""
             var signature = ""
+            var collectedPayloads: [ProtocolContinuationPayload] = []
             var calls: [Int: ToolCall] = [:]
             var order: [Int] = []
             let clock = ContinuousClock()
@@ -286,6 +414,8 @@ public struct Agent: Sendable {
                             await emit(.reasoning(piece))
                         case .reasoningSignature(let piece):
                             signature += piece
+                        case .continuationPayload(let payload):
+                            collectedPayloads.append(payload)
                         case .toolCallStart(let index, let id, let name):
                             if calls[index] == nil { order.append(index) }
                             calls[index] = ToolCall(id: id, name: name, arguments: calls[index]?.arguments ?? "")
@@ -310,10 +440,44 @@ public struct Agent: Sendable {
                             if finished == nil { finished = reason }
                         }
                     }
+
+                    // If the model wrote a suspected raw tool call inside its thinking block with zero text or structured tool calls,
+                    // allow one arbiter-approved regeneration asking it to invoke the structured tool schema directly.
+                    let preliminaryCalls = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
+                    if !specs.isEmpty,
+                       WholeTurnRetryArbiter.looksLikeSuspectedReasoningToolCall(
+                           reasoning: reasoning, text: text, toolCallCount: preliminaryCalls.count
+                       ),
+                       retryArbiter.allowsReasoningToolRegeneration(
+                           hasDeliveredTextOrTools: !text.isEmpty || !preliminaryCalls.isEmpty || !images.isEmpty,
+                           isExplicitOff: explicitOffRequested
+                       ) {
+                        text = ""
+                        images = []
+                        seenImages = []
+                        reasoning = ""
+                        signature = ""
+                        collectedPayloads = []
+                        calls = [:]
+                        order = []
+                        finished = nil
+                        hasOutput = false
+                        var retryMessages = requestMessages(startingAt: retainedStart)
+                        retryMessages.append(.user("（系统提示：请直接通过结构化工具调用发出所需工具，不要把工具调用 JSON 写在思考内容里。）"))
+                        request.messages = retryMessages
+                        continue
+                    }
                     break
                 } catch {
-                    switch retryArbiter.decide(after: error, requestHasOutput: hasOutput, thinking: thinking,
-                                               canTrimContext: retainedStart < activeTurnStart, hasTransientRetry: attempt < retryDelays.count) {
+                    switch retryArbiter.decide(
+                        after: error,
+                        requestHasOutput: hasOutput,
+                        thinking: thinking,
+                        canTrimContext: retainedStart < activeTurnStart,
+                        hasTransientRetry: attempt < retryDelays.count,
+                        hasImages: Self.containsImages(request.messages),
+                        isExplicitOff: explicitOffRequested
+                    ) {
                     case .retryTransient:
                         let wait = retryDelays[attempt]
                         attempt += 1
@@ -329,17 +493,29 @@ public struct Agent: Sendable {
                     case .retryShorterContext:
                         retainedStart = activeTurnStart
                         request.messages = requestMessages(startingAt: retainedStart)
-                    case .stop:
+                    case .retryWithoutImages:
+                        stripImagesForRequest = true
+                        request.messages = requestMessages(startingAt: retainedStart)
+                    case .retryRegenerateToolCall, .stop:
                         // What was written so far stays.
                         if !text.isEmpty {
                             var partial = Message.assistant(text, reasoning: reasoning.isEmpty ? nil : reasoning)
                             if !signature.isEmpty { partial.reasoningSignature = signature }
+                            partial.continuationPayloads = Self.buildContinuationPayloads(
+                                collected: collectedPayloads,
+                                contractKey: contractKey,
+                                speakerOrThreadID: speakerOrThreadID,
+                                reasoning: reasoning,
+                                signature: signature,
+                                toolCalls: []
+                            )
                             await emit(.message(partial))
                         }
                         if WholeTurnRetryArbiter.cancelled(error) { throw CancellationError() }
                         throw error
                     }
                     signature = ""
+                    collectedPayloads = []
                     finished = nil
                 }
             }
@@ -368,6 +544,14 @@ public struct Agent: Sendable {
             if dropped || lengthCut { made = [] }
             var reply = Message.assistant(text, toolCalls: made, reasoning: reasoning.isEmpty ? nil : reasoning)
             if !signature.isEmpty { reply.reasoningSignature = signature }
+            reply.continuationPayloads = Self.buildContinuationPayloads(
+                collected: collectedPayloads,
+                contractKey: contractKey,
+                speakerOrThreadID: speakerOrThreadID,
+                reasoning: reasoning,
+                signature: signature,
+                toolCalls: made
+            )
             if !text.isEmpty || !made.isEmpty {
                 messages.append(reply)
                 await emit(.message(reply))

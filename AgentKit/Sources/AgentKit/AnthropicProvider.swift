@@ -1,11 +1,117 @@
 import Foundation
 
+/// Prompt caching tier for Anthropic Messages API.
+public enum PromptCacheTier: String, Codable, Equatable, Hashable, Sendable, CaseIterable {
+    case off
+    case fiveMinutes = "5m"
+    case oneHour = "1h"
+
+    public var isEnabled: Bool { self != .off }
+
+    public var cacheControl: [String: String]? {
+        switch self {
+        case .off: return nil
+        case .fiveMinutes: return ["type": "ephemeral"]
+        case .oneHour: return ["type": "ephemeral", "ttl": "1h"]
+        }
+    }
+}
+
+/// Per-model capability description for Claude Messages API, replacing blind regex + `budget + 8192` math.
+public struct AnthropicModelCapabilities: Equatable, Sendable {
+    public enum ThinkingMode: Equatable, Sendable {
+        case adaptive
+        case budgeted
+        case unsupported
+    }
+
+    public let thinkingMode: ThinkingMode
+    public let canDisableThinking: Bool
+    public let defaultMaxOutputTokens: Int
+    public let maxOutputTokensCap: Int
+    public let minBudgetTokens: Int
+    public let maxBudgetTokens: Int
+    public let supportedEfforts: [String]
+    public let allowsTemperatureWithThinking: Bool
+    public let supportsParallelTools: Bool
+
+    public init(
+        thinkingMode: ThinkingMode,
+        canDisableThinking: Bool = true,
+        defaultMaxOutputTokens: Int = 8192,
+        maxOutputTokensCap: Int = 64_000,
+        minBudgetTokens: Int = 1024,
+        maxBudgetTokens: Int = 32_000,
+        supportedEfforts: [String] = [],
+        allowsTemperatureWithThinking: Bool = false,
+        supportsParallelTools: Bool = true
+    ) {
+        self.thinkingMode = thinkingMode
+        self.canDisableThinking = canDisableThinking
+        self.defaultMaxOutputTokens = defaultMaxOutputTokens
+        self.maxOutputTokensCap = maxOutputTokensCap
+        self.minBudgetTokens = minBudgetTokens
+        self.maxBudgetTokens = maxBudgetTokens
+        self.supportedEfforts = supportedEfforts
+        self.allowsTemperatureWithThinking = allowsTemperatureWithThinking
+        self.supportsParallelTools = supportsParallelTools
+    }
+
+    public static func resolve(for model: String) -> AnthropicModelCapabilities {
+        let name = model.lowercased()
+        if AnthropicProvider.adaptive(name) {
+            return AnthropicModelCapabilities(
+                thinkingMode: .adaptive,
+                canDisableThinking: true,
+                defaultMaxOutputTokens: 16_384,
+                maxOutputTokensCap: 64_000,
+                minBudgetTokens: 1024,
+                maxBudgetTokens: 32_000,
+                supportedEfforts: ["low", "medium", "high", "max"],
+                allowsTemperatureWithThinking: false,
+                supportsParallelTools: true
+            )
+        }
+        // Claude 3.5 / 3.0 legacy models without extended thinking.
+        if name.contains("claude-3-5") || name.contains("claude-3.5")
+            || name.contains("claude-3-haiku") || name.contains("claude-3-opus") || name.contains("claude-3-sonnet") {
+            return AnthropicModelCapabilities(
+                thinkingMode: .unsupported,
+                canDisableThinking: true,
+                defaultMaxOutputTokens: 8192,
+                maxOutputTokensCap: 8192,
+                minBudgetTokens: 0,
+                maxBudgetTokens: 0,
+                supportedEfforts: [],
+                allowsTemperatureWithThinking: true,
+                supportsParallelTools: true
+            )
+        }
+        // Claude 4 / 4.5 / 3.7 budgeted extended thinking models.
+        let isOpus4Legacy = name.contains("opus-4") && !name.contains("4-5") && !name.contains("4.5")
+        let maxCap = isOpus4Legacy ? 32_000 : 64_000
+        return AnthropicModelCapabilities(
+            thinkingMode: .budgeted,
+            canDisableThinking: true,
+            defaultMaxOutputTokens: 8192,
+            maxOutputTokensCap: maxCap,
+            minBudgetTokens: 1024,
+            maxBudgetTokens: min(32_000, maxCap - 4096),
+            supportedEfforts: [],
+            allowsTemperatureWithThinking: false,
+            supportsParallelTools: true
+        )
+    }
+}
+
 /// Claude's Messages API.
 public struct AnthropicProvider: ModelProvider {
     public var baseURL: String
     public var apiKey: String
     public var promptCache: Bool?
+    public var cacheTier: PromptCacheTier?
     public let stableSystemPrefix: String?
+    public var customHeaders: [String: String]
     private let fixedRoute: Bool
 
     public init(
@@ -13,62 +119,183 @@ public struct AnthropicProvider: ModelProvider {
         apiKey: String,
         promptCache: Bool? = nil,
         stableSystemPrefix: String? = nil,
-        fixedRoute: Bool = false
+        fixedRoute: Bool = false,
+        cacheTier: PromptCacheTier? = nil,
+        customHeaders: [String: String] = [:]
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.promptCache = promptCache
+        self.cacheTier = cacheTier
         self.stableSystemPrefix = stableSystemPrefix
         self.fixedRoute = fixedRoute
+        self.customHeaders = customHeaders
     }
 
-    private func signed(_ url: URL) -> URLRequest {
+    public var effectiveCacheTier: PromptCacheTier {
+        if let cacheTier { return cacheTier }
+        if let promptCache { return promptCache ? .fiveMinutes : .off }
+        return Self.caches(baseURL) ? .fiveMinutes : .off
+    }
+
+    private func signed(_ url: URL, requestHeaders: [String: String] = [:]) -> URLRequest {
         var http = URLRequest(url: url)
         http.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         http.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         http.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var merged = customHeaders
+        for (k, v) in requestHeaders { merged[k] = v }
+        HTTP.applyNonSecretHeaders(merged, to: &http)
         return http
     }
 
-    func urlRequest(_ request: ModelRequest) throws -> URLRequest {
-        var http = signed(try HTTP.endpoint(baseURL, "/v1/messages"))
+    func urlRequest(_ request: ModelRequest, overrideCacheTier: PromptCacheTier? = nil) throws -> URLRequest {
+        var http = signed(try HTTP.endpoint(baseURL, "/v1/messages"), requestHeaders: request.customHeaders)
         http.httpMethod = "POST"
-        let cache = promptCache ?? Self.caches(baseURL)
-        http.httpBody = try HTTP.json(Self.body(request, cache: cache, stableSystemPrefix: stableSystemPrefix))
+        let tier = overrideCacheTier ?? effectiveCacheTier
+        http.httpBody = try HTTP.json(Self.body(request, cacheTier: tier, stableSystemPrefix: stableSystemPrefix))
         return http
     }
 
     public func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
-        do {
-            let session = fixedRoute ? FixedModelRoute.session : HTTP.session
-            return HTTP.stream(try urlRequest(request), session: session, decode: Self.decode)
-        } catch {
-            return AsyncThrowingStream { $0.finish(throwing: error) }
+        stream(request, session: nil)
+    }
+
+    func stream(_ request: ModelRequest, session: URLSession?) -> AsyncThrowingStream<StreamEvent, Error> {
+        let initialTier = effectiveCacheTier
+        let activeSession = session ?? (fixedRoute ? FixedModelRoute.session : nil)
+        guard initialTier == .oneHour else {
+            do {
+                let http = try urlRequest(request, overrideCacheTier: initialTier)
+                return HTTP.stream(
+                    http,
+                    session: activeSession,
+                    rejectAllRedirects: fixedRoute,
+                    timeouts: request.streamTimeouts,
+                    decode: Self.decode
+                )
+            } catch {
+                return AsyncThrowingStream { $0.finish(throwing: error) }
+            }
+        }
+
+        // Graceful 1h -> 5m fallback when a relay rejects extended `ttl: "1h"` before delivering any output.
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                var emittedAny = false
+                do {
+                    let firstReq = try urlRequest(request, overrideCacheTier: .oneHour)
+                    for try await event in HTTP.stream(
+                        firstReq,
+                        session: activeSession,
+                        rejectAllRedirects: fixedRoute,
+                        timeouts: request.streamTimeouts,
+                        decode: Self.decode
+                    ) {
+                        emittedAny = true
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch {
+                    if !emittedAny, Self.isOneHourCacheTTLRejection(error) {
+                        do {
+                            let fallbackReq = try urlRequest(request, overrideCacheTier: .fiveMinutes)
+                            for try await event in HTTP.stream(
+                                fallbackReq,
+                                session: activeSession,
+                                rejectAllRedirects: fixedRoute,
+                                timeouts: request.streamTimeouts,
+                                decode: Self.decode
+                            ) {
+                                continuation.yield(event)
+                            }
+                            continuation.finish()
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
+                    } else {
+                        continuation.finish(throwing: error)
+                    }
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
+    static func isOneHourCacheTTLRejection(_ error: Error) -> Bool {
+        guard let failure = error as? ProviderError, failure.status == 400 || failure.status == 422 else { return false }
+        let lower = failure.message.lowercased()
+        return lower.contains("ttl") || lower.contains("1h") || lower.contains("cache_control")
+    }
+
     public func models() async throws -> [String] {
-        let list = try await HTTP.get(signed(try HTTP.endpoint(baseURL, "/v1/models?limit=100")))
+        let session = fixedRoute ? FixedModelRoute.session : nil
+        let list = try await HTTP.get(
+            signed(try HTTP.endpoint(baseURL, "/v1/models?limit=100")),
+            session: session,
+            rejectAllRedirects: fixedRoute
+        )
         return (list["data"]?.array ?? []).compactMap { $0["id"]?.string }
     }
 
+    /// Verifies whether mandatory signed-thinking continuation is intact for the target Anthropic contract.
+    public static func verifyContinuation(
+        _ messages: [Message],
+        contractKey: EndpointContractKey,
+        speakerOrThreadID: String? = nil,
+        thinkingEnabled: Bool
+    ) -> ContinuationProjectionStatus {
+        guard thinkingEnabled else { return .notRequired }
+        let turnStart = messages.lastIndex(where: { $0.role == .user }) ?? 0
+        for (index, message) in messages.enumerated() where index > turnStart && message.role == .assistant {
+            guard !message.toolCalls.isEmpty else { continue }
+            if let payloads = message.continuationPayloads, !payloads.isEmpty {
+                let compatible = payloads.contains {
+                    ($0.wireKind == "anthropic_thinking" || $0.wireKind == "anthropic_redacted_thinking")
+                        && $0.isCompatible(with: contractKey, speakerOrThreadID: speakerOrThreadID)
+                }
+                if !compatible {
+                    return .missingOrIncompatible(
+                        reason: "历史签名思考块与当前 Anthropic 源站/协议/发言者不匹配，无法安全续接工具轮。"
+                    )
+                }
+            } else if (message.reasoning?.isEmpty == false) && (message.reasoningSignature?.isEmpty ?? true) {
+                return .missingOrIncompatible(
+                    reason: "历史思考消息缺少 Anthropic 协议签名，严禁伪造或用公开摘要替代。"
+                )
+            }
+        }
+        return .compatible
+    }
+
     /// Anthropic's own service keeps a prompt it has seen for a few minutes and charges a tenth for reading it back.
-    /// Kept for checking official Anthropic domains; explicit `promptCache` overrides this per endpoint.
+    /// Kept for checking official Anthropic domains; explicit `promptCache`/`cacheTier` overrides this per endpoint.
     public static func caches(_ baseURL: String) -> Bool {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return false }
         return host == "anthropic.com" || host.hasSuffix(".anthropic.com")
     }
 
-    /// `cache`: marks the instructions, the tools and the conversation so far as reusable. A turn calls the model
-    /// several times (each tool step is another call); with the marks, everything before the newest step is read
-    /// from Anthropic's cache instead of paid for again in full.
-    /// `stableSystemPrefix`: when caching is enabled and `request.system` begins with this prefix, splits `system`
-    /// into a cached stable prefix block followed by an uncached volatile tail block.
     static func body(
         _ request: ModelRequest,
         cache: Bool = false,
         stableSystemPrefix: String? = nil
     ) -> [String: Any] {
+        body(request, cacheTier: cache ? .fiveMinutes : .off, stableSystemPrefix: stableSystemPrefix)
+    }
+
+    /// `cacheTier`: 3-tier ordered cache breakpoints (`tools` -> `system` -> `messages`) supporting `.off`, `.fiveMinutes`, `.oneHour`.
+    /// `stableSystemPrefix`: when caching is enabled and `request.system` begins with this prefix, splits `system`
+    /// into a cached stable prefix block followed by an uncached volatile tail block.
+    static func body(
+        _ request: ModelRequest,
+        cacheTier: PromptCacheTier,
+        stableSystemPrefix: String? = nil
+    ) -> [String: Any] {
+        let capabilities = AnthropicModelCapabilities.resolve(for: request.model)
+        let cacheControl = cacheTier.cacheControl
+        let explicitOff = request.isExplicitOff || request.thinking == .off
+        let explicitThinkingOn = !explicitOff && request.thinking != .auto && capabilities.thinkingMode != .unsupported
+
         // Claude wants turns to alternate, and tool results inside a user turn.
         var turns: [(role: String, blocks: [[String: Any]])] = []
         func add(_ role: String, _ blocks: [[String: Any]]) {
@@ -79,8 +306,7 @@ public struct AnthropicProvider: ModelProvider {
                 turns.append((role, blocks))
             }
         }
-        // With thinking on, Claude wants its signed thoughts back in front of what it said; without, they are left out.
-        let thinking = request.thinking != .auto && request.thinking != .off
+
         for message in request.messages {
             switch message.role {
             case .user:
@@ -89,15 +315,50 @@ public struct AnthropicProvider: ModelProvider {
                 }
                 if !message.text.isEmpty { blocks.append(["type": "text", "text": message.text]) }
                 add("user", blocks)
+
             case .assistant:
                 var blocks: [[String: Any]] = []
-                if thinking, let rawSignature = message.reasoningSignature, !rawSignature.isEmpty {
-                    let unpacked = Self.unpackSignature(rawSignature)
-                    if let thought = message.reasoning, !unpacked.signature.isEmpty {
-                        blocks.append(["type": "thinking", "thinking": thought, "signature": unpacked.signature])
-                    }
-                    for data in unpacked.redacted {
-                        blocks.append(["type": "redacted_thinking", "data": data])
+                if !explicitOff {
+                    if let payloads = message.continuationPayloads, !payloads.isEmpty {
+                        // Contract-bound continuation payloads: preserve even under `.auto`, strictly validating contract & speaker.
+                        let matching = payloads
+                            .filter { payload in
+                                guard payload.wireKind == "anthropic_thinking" || payload.wireKind == "anthropic_redacted_thinking" else {
+                                    return false
+                                }
+                                guard let target = request.contractKey else {
+                                    if let own = payload.speakerOrThreadID, let targetSpeaker = request.speakerOrThreadID {
+                                        return own == targetSpeaker
+                                    }
+                                    return true
+                                }
+                                return payload.isCompatible(with: target, speakerOrThreadID: request.speakerOrThreadID)
+                            }
+                            .sorted { $0.blockOrder < $1.blockOrder }
+                        for payload in matching {
+                            if payload.wireKind == "anthropic_thinking" {
+                                if let data = payload.opaqueData.data(using: .utf8),
+                                   let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                   let thought = parsed["thinking"] as? String,
+                                   let sig = parsed["signature"] as? String, !sig.isEmpty {
+                                    blocks.append(["type": "thinking", "thinking": thought, "signature": sig])
+                                } else if let thought = message.reasoning, !payload.opaqueData.isEmpty {
+                                    blocks.append(["type": "thinking", "thinking": thought, "signature": payload.opaqueData])
+                                }
+                            } else if payload.wireKind == "anthropic_redacted_thinking", !payload.opaqueData.isEmpty {
+                                blocks.append(["type": "redacted_thinking", "data": payload.opaqueData])
+                            }
+                        }
+                    } else if let rawSignature = message.reasoningSignature, !rawSignature.isEmpty,
+                              (explicitThinkingOn || (request.thinking == .auto && !message.toolCalls.isEmpty)) {
+                        // Legacy signed thoughts: preserve under explicit thinking OR active `.auto` tool-use continuations.
+                        let unpacked = Self.unpackSignature(rawSignature)
+                        if let thought = message.reasoning, !unpacked.signature.isEmpty {
+                            blocks.append(["type": "thinking", "thinking": thought, "signature": unpacked.signature])
+                        }
+                        for data in unpacked.redacted {
+                            blocks.append(["type": "redacted_thinking", "data": data])
+                        }
                     }
                 }
                 let hasNonWhitespaceText = !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -110,6 +371,7 @@ public struct AnthropicProvider: ModelProvider {
                     blocks.append(["type": "tool_use", "id": call.id, "name": call.name, "input": input])
                 }
                 add("assistant", blocks)
+
             case .tool:
                 var block: [String: Any] = ["type": "tool_result", "tool_use_id": message.toolCallId ?? "", "content": message.text.isEmpty ? "（空）" : message.text]
                 if !message.images.isEmpty {
@@ -123,47 +385,89 @@ public struct AnthropicProvider: ModelProvider {
                 add("user", [block])
             }
         }
+
+        let requestedMax = min(capabilities.maxOutputTokensCap, max(1, request.outputLimit ?? request.maxTokens))
         var body: [String: Any] = [
             "model": request.model,
-            "max_tokens": request.outputLimit ?? request.maxTokens,
+            "max_tokens": requestedMax,
             "stream": true,
             "messages": turns.map { ["role": $0.role, "content": $0.blocks] },
         ]
+
+        // Ordered cache tier 1: tools (Anthropic evaluates tools -> system -> messages prefix order).
+        if !request.tools.isEmpty {
+            var tools: [[String: Any]] = request.tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.parameters.any] }
+            if let cacheControl { tools[tools.count - 1]["cache_control"] = cacheControl }
+            body["tools"] = tools
+        }
+
+        // Ordered cache tier 2: system.
         if !request.system.isEmpty {
-            let canCacheSystem = cache && !request.system.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            if canCacheSystem {
+            let canCacheSystem = cacheControl != nil && !request.system.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if let cacheControl, canCacheSystem {
                 let effectivePrefix = request.systemCachePrefix ?? stableSystemPrefix
-                body["system"] = Self.cachedSystemBlocks(request.system, stablePrefix: effectivePrefix)
+                body["system"] = Self.cachedSystemBlocks(request.system, stablePrefix: effectivePrefix, cacheControl: cacheControl)
             } else {
                 body["system"] = request.system
             }
         }
-        if let temperature = request.temperature, !thinking { body["temperature"] = min(1, temperature) }
-        switch request.thinking {
-        case .auto:
-            break
-        case .off:
-            body["thinking"] = ["type": "disabled"]
-        case .low, .medium, .high, .max:
-            if adaptive(request.model) {
-                body["thinking"] = ["type": "adaptive"]
-                let effort: [Thinking: String] = [.low: "low", .medium: "medium", .high: "high", .max: "max"]
-                body["output_config"] = ["effort": effort[request.thinking] ?? "high"]
-            } else {
-                // Older models think within a budget, and the budget has to fit under max_tokens.
-                let budgets: [Thinking: Int] = [.low: 2048, .medium: 6000, .high: 12000, .max: 20000]
-                let budget = budgets[request.thinking] ?? 6000
-                body["thinking"] = ["type": "enabled", "budget_tokens": budget] as [String: Any]
-                body["max_tokens"] = Swift.max(request.outputLimit ?? request.maxTokens, budget + 8192)
+
+        // Thinking + capability-clamped budget / output_config.
+        var thinkingSentAsActive = false
+        if let resolvedFields = request.thinkingBodyFields, !resolvedFields.isEmpty {
+            for (field, value) in resolvedFields {
+                body[field] = value.foundationValue
+            }
+            if let thinkingDict = body["thinking"] as? [String: Any],
+               let type = thinkingDict["type"] as? String {
+                thinkingSentAsActive = (type == "enabled" || type == "adaptive")
+                if type == "enabled", let rawBudget = thinkingDict["budget_tokens"] as? Int, capabilities.thinkingMode == .budgeted {
+                    let clampedBudget = max(capabilities.minBudgetTokens, min(capabilities.maxBudgetTokens, rawBudget))
+                    var updated = thinkingDict
+                    updated["budget_tokens"] = clampedBudget
+                    body["thinking"] = updated
+                    let headroom = min(4096, max(1024, requestedMax / 2))
+                    body["max_tokens"] = min(capabilities.maxOutputTokensCap, max(requestedMax, clampedBudget + headroom))
+                }
+            }
+        } else {
+            switch request.thinking {
+            case .auto:
+                break
+            case .off:
+                if capabilities.canDisableThinking {
+                    body["thinking"] = ["type": "disabled"]
+                }
+            case .low, .medium, .high, .max:
+                switch capabilities.thinkingMode {
+                case .adaptive:
+                    body["thinking"] = ["type": "adaptive"]
+                    let effort: [Thinking: String] = [.low: "low", .medium: "medium", .high: "high", .max: "max"]
+                    let chosen = effort[request.thinking] ?? "high"
+                    let effectiveEffort = capabilities.supportedEfforts.contains(chosen) ? chosen : (capabilities.supportedEfforts.last ?? "high")
+                    body["output_config"] = ["effort": effectiveEffort]
+                    thinkingSentAsActive = true
+                case .budgeted:
+                    let budgets: [Thinking: Int] = [.low: 2048, .medium: 6000, .high: 12_000, .max: 20_000]
+                    let rawBudget = budgets[request.thinking] ?? 6000
+                    let clampedBudget = max(capabilities.minBudgetTokens, min(capabilities.maxBudgetTokens, rawBudget))
+                    body["thinking"] = ["type": "enabled", "budget_tokens": clampedBudget] as [String: Any]
+                    let headroom = min(4096, max(1024, requestedMax / 2))
+                    body["max_tokens"] = min(capabilities.maxOutputTokensCap, max(requestedMax, clampedBudget + headroom))
+                    thinkingSentAsActive = true
+                case .unsupported:
+                    break
+                }
             }
         }
-        if !request.tools.isEmpty {
-            var tools: [[String: Any]] = request.tools.map { ["name": $0.name, "description": $0.description, "input_schema": $0.parameters.any] }
-            if cache { tools[tools.count - 1]["cache_control"] = ["type": "ephemeral"] }
-            body["tools"] = tools
+
+        if let temperature = request.temperature,
+           (!thinkingSentAsActive || capabilities.allowsTemperatureWithThinking) {
+            body["temperature"] = min(1, temperature)
         }
-        // The newest block of the conversation: the next call starts from here, so all of it up to here is reused.
-        if cache, var last = turns.last, let index = last.blocks.lastIndex(where: { block in
+
+        // Ordered cache tier 3: newest cacheable block of the conversation.
+        if let cacheControl, var last = turns.last, let index = last.blocks.lastIndex(where: { block in
             let type = block["type"] as? String ?? ""
             if type == "text" {
                 let text = block["text"] as? String ?? ""
@@ -171,29 +475,33 @@ public struct AnthropicProvider: ModelProvider {
             }
             return ["image", "tool_result", "tool_use"].contains(type)
         }) {
-            last.blocks[index]["cache_control"] = ["type": "ephemeral"]
+            last.blocks[index]["cache_control"] = cacheControl
             turns[turns.count - 1] = last
             body["messages"] = turns.map { ["role": $0.role, "content": $0.blocks] }
         }
         return body
     }
 
-    private static func cachedSystemBlocks(_ system: String, stablePrefix: String?) -> [[String: Any]] {
+    private static func cachedSystemBlocks(
+        _ system: String,
+        stablePrefix: String?,
+        cacheControl: [String: String]
+    ) -> [[String: Any]] {
         if let prefix = stablePrefix,
            !prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            system.hasPrefix(prefix) {
             let volatileTail = String(system.dropFirst(prefix.count))
             if volatileTail.isEmpty {
-                let prefixBlock: [String: Any] = ["type": "text", "text": prefix, "cache_control": ["type": "ephemeral"]]
+                let prefixBlock: [String: Any] = ["type": "text", "text": prefix, "cache_control": cacheControl]
                 return [prefixBlock]
             }
             if !volatileTail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let prefixBlock: [String: Any] = ["type": "text", "text": prefix, "cache_control": ["type": "ephemeral"]]
+                let prefixBlock: [String: Any] = ["type": "text", "text": prefix, "cache_control": cacheControl]
                 let tailBlock: [String: Any] = ["type": "text", "text": volatileTail]
                 return [prefixBlock, tailBlock]
             }
         }
-        let wholeBlock: [String: Any] = ["type": "text", "text": system, "cache_control": ["type": "ephemeral"]]
+        let wholeBlock: [String: Any] = ["type": "text", "text": system, "cache_control": cacheControl]
         return [wholeBlock]
     }
 

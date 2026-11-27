@@ -20,6 +20,25 @@ public struct ToolSpec: Equatable, Sendable {
     }
 }
 
+/// Split timeout budget for streaming model responses.
+/// Heartbeats / SSE comment lines that emit zero decoded events MUST NOT reset `idle`.
+public struct StreamTimeouts: Equatable, Sendable {
+    /// Maximum wait before the first meaningful stream event arrives.
+    public var ttfb: TimeInterval
+    /// Maximum silent interval between consecutive meaningful stream events (heartbeat-immune).
+    public var idle: TimeInterval
+    /// Maximum total wall-clock duration for a single streaming request.
+    public var total: TimeInterval
+
+    public init(ttfb: TimeInterval = 45, idle: TimeInterval = 60, total: TimeInterval = 600) {
+        self.ttfb = max(0.05, ttfb)
+        self.idle = max(0.05, idle)
+        self.total = max(0.05, total)
+    }
+
+    public static let `default` = StreamTimeouts()
+}
+
 public struct ModelRequest: Sendable {
     public var model: String
     public var system: String
@@ -37,6 +56,16 @@ public struct ModelRequest: Sendable {
     public var thinkingBodyFields: [String: ThinkingWireValue]?
     /// Optional cache-stable prefix of `system` captured from the same snapshot as `system`.
     public var systemCachePrefix: String?
+    /// Immutable target contract identity used to validate protocol continuation payloads before wire projection.
+    public var contractKey: EndpointContractKey?
+    /// Speaker or thread isolation scope (prevents cross-speaker continuation replay in multi-bot gatherings).
+    public var speakerOrThreadID: String?
+    /// Non-secret custom headers requested for this endpoint (secret/auth/hop-by-hop headers are strictly filtered out).
+    public var customHeaders: [String: String]
+    /// Split streaming timeouts (TTFB / heartbeat-immune idle / total wall-clock).
+    public var streamTimeouts: StreamTimeouts
+    /// True when the user explicitly requested thinking OFF (enforces zero-fallback terminal semantics).
+    public var isExplicitOff: Bool
 
     public init(
         model: String,
@@ -48,7 +77,12 @@ public struct ModelRequest: Sendable {
         outputLimit: Int? = nil,
         thinking: Thinking = .auto,
         thinkingBodyFields: [String: ThinkingWireValue]? = nil,
-        systemCachePrefix: String? = nil
+        systemCachePrefix: String? = nil,
+        contractKey: EndpointContractKey? = nil,
+        speakerOrThreadID: String? = nil,
+        customHeaders: [String: String] = [:],
+        streamTimeouts: StreamTimeouts = .default,
+        isExplicitOff: Bool = false
     ) {
         self.model = model
         self.system = system
@@ -60,6 +94,11 @@ public struct ModelRequest: Sendable {
         self.thinking = thinking
         self.thinkingBodyFields = thinkingBodyFields
         self.systemCachePrefix = systemCachePrefix
+        self.contractKey = contractKey
+        self.speakerOrThreadID = speakerOrThreadID
+        self.customHeaders = customHeaders
+        self.streamTimeouts = streamTimeouts
+        self.isExplicitOff = isExplicitOff
     }
 }
 
@@ -70,6 +109,8 @@ public enum StreamEvent: Equatable, Sendable {
     case reasoning(String)
     /// Claude signs its thoughts; the signature goes back with them, or Claude will not take them.
     case reasoningSignature(String)
+    /// Contract-bound opaque continuation item (e.g. Responses encrypted reasoning item or verified signed block).
+    case continuationPayload(ProtocolContinuationPayload)
     /// A tool call begins; `index` keeps its pieces together.
     case toolCallStart(index: Int, id: String, name: String)
     case toolCallArguments(index: Int, delta: String)
@@ -459,19 +500,110 @@ enum HTTP {
         }
     }
 
+    private static let blockedCustomHeaderNames: Set<String> = [
+        "authorization", "proxy-authorization", "x-api-key", "api-key", "x-goog-api-key",
+        "x-auth-token", "cookie", "set-cookie", "host", "content-length", "transfer-encoding",
+        "connection", "upgrade", "te", "trailer", "keep-alive", "accept-encoding",
+    ]
+
+    private static let blockedCustomHeaderSubstrings = [
+        "secret", "password", "authorization", "cookie", "api-key", "apikey", "token", "credential",
+    ]
+
+    /// Applies user-supplied non-secret custom headers while strictly blocking credentials, transport headers,
+    /// CRLF injection, and overwriting provider-owned headers.
+    public static func applyNonSecretHeaders(_ headers: [String: String], to request: inout URLRequest) {
+        guard !headers.isEmpty else { return }
+        let existingLower = Set((request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() })
+        for (rawName, rawValue) in headers {
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, !value.isEmpty else { continue }
+            guard !name.contains("\r"), !name.contains("\n"), !value.contains("\r"), !value.contains("\n") else { continue }
+            let lower = name.lowercased()
+            if blockedCustomHeaderNames.contains(lower) { continue }
+            if blockedCustomHeaderSubstrings.contains(where: { lower.contains($0) }) { continue }
+            if existingLower.contains(lower) { continue }
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+    }
+
+    private final class StreamTimeoutState: @unchecked Sendable {
+        private let lock = NSLock()
+        private let startedAt: ContinuousClock.Instant
+        private var firstMeaningfulAt: ContinuousClock.Instant?
+        private var lastMeaningfulAt: ContinuousClock.Instant
+        private var timeoutError: ProviderError?
+
+        init(now: ContinuousClock.Instant) {
+            self.startedAt = now
+            self.lastMeaningfulAt = now
+        }
+
+        func markMeaningful(at now: ContinuousClock.Instant) {
+            lock.lock()
+            if firstMeaningfulAt == nil { firstMeaningfulAt = now }
+            lastMeaningfulAt = now
+            lock.unlock()
+        }
+
+        func evaluate(at now: ContinuousClock.Instant, timeouts: StreamTimeouts) -> ProviderError? {
+            lock.lock()
+            defer { lock.unlock() }
+            if let existing = timeoutError { return existing }
+            if now - startedAt >= .seconds(timeouts.total) {
+                let err = ProviderError(status: 408, "模型流式响应超过总时限（\(Int(timeouts.total)) 秒）。")
+                timeoutError = err
+                return err
+            }
+            if firstMeaningfulAt == nil {
+                if now - startedAt >= .seconds(timeouts.ttfb) {
+                    let err = ProviderError(status: 408, "等待模型首包响应超时（TTFB）。")
+                    timeoutError = err
+                    return err
+                }
+            } else if now - lastMeaningfulAt >= .seconds(timeouts.idle) {
+                let err = ProviderError(status: 408, "模型流式输出静默超时（未收到有效内容）。")
+                timeoutError = err
+                return err
+            }
+            return nil
+        }
+
+        var recordedTimeoutError: ProviderError? {
+            lock.lock()
+            defer { lock.unlock() }
+            return timeoutError
+        }
+    }
+
     /// Runs a streaming request and passes each SSE data line to `decode`.
-    static func stream(_ request: URLRequest, acceptsJSON: Bool = false, session: URLSession? = nil, decode: @escaping @Sendable (String) throws -> [StreamEvent]) -> AsyncThrowingStream<StreamEvent, Error> {
+    static func stream(
+        _ request: URLRequest,
+        acceptsJSON: Bool = false,
+        session: URLSession? = nil,
+        rejectAllRedirects: Bool = false,
+        timeouts: StreamTimeouts = .default,
+        decode: @escaping @Sendable (String) throws -> [StreamEvent]
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
         return AsyncThrowingStream { continuation in
-            let task = Task {
+            let clock = ContinuousClock()
+            let state = StreamTimeoutState(now: clock.now)
+            let taskDelegate: URLSessionTaskDelegate = rejectAllRedirects
+                ? FixedModelRoute.rejectDelegate
+                : RedirectGuardDelegate.shared
+
+            let streamTask = Task {
                 do {
                     let lease = session == nil ? SessionPool.shared.acquireLease() : nil
                     let activeSession = session ?? lease?.session ?? HTTP.session
                     let bytes: URLSession.AsyncBytes
                     let response: URLResponse
                     do {
-                        (bytes, response) = try await activeSession.bytes(for: request, delegate: RedirectGuardDelegate.shared)
+                        (bytes, response) = try await activeSession.bytes(for: request, delegate: taskDelegate)
                     } catch {
                         if let lease { SessionPool.shared.releaseLease(lease) }
+                        if let timeoutErr = state.recordedTimeoutError { throw timeoutErr }
                         throw error
                     }
                     if let lease { SessionPool.shared.releaseLease(lease) }
@@ -491,6 +623,7 @@ enum HTTP {
                         }
                         try Task.checkCancellation()
                         let events = try decode(String(decoding: body, as: UTF8.self))
+                        if !events.isEmpty { state.markMeaningful(at: clock.now) }
                         for event in events { continuation.yield(event) }
                         if !events.isEmpty && !hasFinish(events) {
                             continuation.yield(.finish(reason: "done"))
@@ -510,10 +643,16 @@ enum HTTP {
                             sawSSE = true
                             // 「[DONE]」 is the service saying the answer is complete, for those that send no finish reason.
                             if payload == "[DONE]" {
+                                state.markMeaningful(at: clock.now)
                                 continuation.yield(.finish(reason: "done"))
                                 return
                             }
-                            for event in try decode(payload) { continuation.yield(event) }
+                            let events = try decode(payload)
+                            // Heartbeats / keepalive payloads decode to `[]` and MUST NOT reset the idle watchdog.
+                            if !events.isEmpty {
+                                state.markMeaningful(at: clock.now)
+                                for event in events { continuation.yield(event) }
+                            }
                         } else if !sawSSE, plain.utf8.count < 16_000 {
                             if !plain.isEmpty { plain.append("\n") }
                             plain.append(line)
@@ -554,6 +693,7 @@ enum HTTP {
                         if trimmed.hasPrefix("{"), let json = JSONValue.parse(trimmed) {
                             let events = try decode(trimmed)
                             if !events.isEmpty {
+                                state.markMeaningful(at: clock.now)
                                 for event in events { continuation.yield(event) }
                                 if !hasFinish(events) {
                                     continuation.yield(.finish(reason: "done"))
@@ -565,18 +705,43 @@ enum HTTP {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: state.recordedTimeoutError ?? error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+
+            let minInterval = min(timeouts.ttfb, min(timeouts.idle, timeouts.total))
+            let pollSeconds = min(0.5, max(0.015, minInterval / 4.0))
+            let watchdogTask = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: UInt64(pollSeconds * 1_000_000_000))
+                    if Task.isCancelled { break }
+                    if let timeoutError = state.evaluate(at: clock.now, timeouts: timeouts) {
+                        streamTask.cancel()
+                        continuation.finish(throwing: timeoutError)
+                        break
+                    }
+                }
+            }
+
+            continuation.onTermination = { _ in
+                watchdogTask.cancel()
+                streamTask.cancel()
+            }
         }
     }
 
-    static func get(_ request: URLRequest, session: URLSession? = nil) async throws -> JSONValue {
+    static func get(
+        _ request: URLRequest,
+        session: URLSession? = nil,
+        rejectAllRedirects: Bool = false
+    ) async throws -> JSONValue {
         let lease = session == nil ? SessionPool.shared.acquireLease() : nil
         defer { if let lease { SessionPool.shared.releaseLease(lease) } }
         let activeSession = session ?? lease?.session ?? HTTP.session
-        let (data, response) = try await activeSession.data(for: request, delegate: RedirectGuardDelegate.shared)
+        let taskDelegate: URLSessionTaskDelegate = rejectAllRedirects
+            ? FixedModelRoute.rejectDelegate
+            : RedirectGuardDelegate.shared
+        let (data, response) = try await activeSession.data(for: request, delegate: taskDelegate)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { throw failure(status: status, data: data) }
         guard let value = JSONValue.parse(String(decoding: data, as: UTF8.self)) else { throw ProviderError(status: status, "返回的不是 JSON") }
