@@ -24,6 +24,9 @@ final class PetPerch {
     /// The composer's edge is on its way somewhere (a panel opening, the keyboard): the pet rides along and does not
     /// step aside meanwhile — doing both at once made it flick right on the way up.
     @ObservationIgnored var travelling = false { didSet { if travelling != oldValue { updateReplyClearance() } } }
+    /// When the composer lives in the same UIKit host anchored to `UIKeyboardLayoutGuide`, follow the marker's
+    /// presentation layer directly with zero secondary catch-up lag.
+    @ObservationIgnored var directHostTracking = false
     private(set) var replyActionsRight: CGFloat?
 
     private func updateReplyClearance() {
@@ -379,7 +382,10 @@ struct PetPerchAnchor: UIViewRepresentable {
                     travelStart = perch.foot
                     perch.travelling = true
                 }
-                if delta > 36, catchUp != nil || now - lastMove > 0.08 {
+                if perch.directHostTracking {
+                    // Same-host UIKit marker already carries native presentation-layer animation.
+                    catchUp = nil
+                } else if delta > 36, catchUp != nil || now - lastMove > 0.08 {
                     // Some SwiftUI changes supply a final layout in one step. Keep the pet
                     // continuous even there. Native, interactive movement is sampled directly.
                     catchUp = (perch.foot, top, now)
@@ -475,16 +481,23 @@ struct PetDockSlip<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var calm
     @State private var measured: CGFloat = Ink.Bar.height * 2
     let availableHeight: CGFloat
+    var explicitMaxHeight: CGFloat? = nil
     @ViewBuilder let content: Content
 
     var body: some View {
+        let cap: CGFloat = {
+            if let explicitMaxHeight, explicitMaxHeight > 0 {
+                return min(measured, explicitMaxHeight)
+            }
+            return min(measured, availableHeight > 0 ? availableHeight * 0.32 : measured)
+        }()
         ScrollView {
             content
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                     withAnimation(calm ? .easeInOut(duration: 0.22) : Ink.Motion.unfold) { measured = height }
                 }
         }
-        .frame(height: min(measured, availableHeight > 0 ? availableHeight * 0.32 : measured))
+        .frame(height: cap)
         .scrollBounceBehavior(.basedOnSize)
     }
 }

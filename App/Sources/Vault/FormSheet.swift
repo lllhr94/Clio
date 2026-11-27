@@ -4,7 +4,9 @@ import SwiftUI
 /// 笺: what a companion asked the user to fill in. Secrets go into 信匣 and only their number goes back.
 struct FormSheet: View {
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.dismiss) private var dismiss
     let form: Asker.Form
+    var expandedFromInline: Bool = false
     @ObservedObject private var secrets = Secrets.shared
     @State private var values: [String: String] = [:]
     /// For a secret field: the 信匣 item picked instead of typing.
@@ -67,9 +69,16 @@ struct FormSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(L.t("actions.cancel")) {
+                    Button(L.t(expandedFromInline ? "actions.done" : "actions.cancel")) {
                         Haptics.light()
-                        Asker.shared.cancel(form.id)
+                        if expandedFromInline {
+                            persistNonSecretDraft()
+                            Asker.shared.clearDetailSheetRequest(form.id)
+                            dismiss()
+                        } else {
+                            InlineAskDraftStore.shared.clear(for: form.id)
+                            Asker.shared.cancel(form.id)
+                        }
                     }
                     .disabled(isSubmitting)
                 }
@@ -82,6 +91,11 @@ struct FormSheet: View {
         }
         .interactiveDismissDisabled()
         .onAppear { seedInitialValues() }
+        .onDisappear {
+            if expandedFromInline && Asker.shared.current?.id == form.id {
+                persistNonSecretDraft()
+            }
+        }
     }
 
     private var formContent: some View {
@@ -134,6 +148,49 @@ struct FormSheet: View {
             customOpenKeys: &customOpenKeys,
             values: &values,
             usesSegmentedPicker: usesSegmentedPicker
+        )
+        if !form.requiresVault, let saved = InlineAskDraftStore.shared.draft(for: form.id) {
+            for field in form.fields where !field.secret {
+                if let sel = saved.selectedByKey[field.key] {
+                    selectedByKey[field.key] = sel
+                    if usesSegmentedPicker(field), let first = sel.first {
+                        values[field.key] = first
+                    }
+                }
+                if let custom = saved.customByKey[field.key] {
+                    customByKey[field.key] = custom
+                    if field.effectiveKind == .text {
+                        values[field.key] = custom
+                    }
+                }
+                if let txt = saved.textValues[field.key], field.effectiveKind == .text {
+                    values[field.key] = txt
+                    customByKey[field.key] = txt
+                }
+            }
+            customOpenKeys.formUnion(saved.customOpenKeys)
+        }
+    }
+
+    private func persistNonSecretDraft() {
+        guard !form.requiresVault else { return }
+        var textValues: [String: String] = [:]
+        var nextSelected = selectedByKey
+        for field in form.fields where !field.secret {
+            if field.effectiveKind == .text {
+                textValues[field.key] = values[field.key] ?? ""
+            } else if usesSegmentedPicker(field), let val = values[field.key], !val.isEmpty {
+                nextSelected[field.key] = [val]
+            }
+        }
+        InlineAskDraftStore.shared.save(
+            InlineAskDraftStore.Draft(
+                selectedByKey: nextSelected,
+                customByKey: customByKey,
+                customOpenKeys: customOpenKeys,
+                textValues: textValues
+            ),
+            for: form.id
         )
     }
 
@@ -381,6 +438,7 @@ struct FormSheet: View {
         let formID = form.id
         guard !pendingSecrets.isEmpty else {
             Haptics.thud()
+            InlineAskDraftStore.shared.clear(for: formID)
             Asker.shared.answer(finalOut, to: formID)
             return
         }
@@ -396,6 +454,7 @@ struct FormSheet: View {
                 secrets.save(entry.item, secret: nil)
             }
             Haptics.thud()
+            InlineAskDraftStore.shared.clear(for: formID)
             Asker.shared.answer(finalOut, to: formID)
         }
     }

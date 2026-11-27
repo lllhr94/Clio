@@ -178,11 +178,25 @@ final class Asker: ObservableObject {
 
     /// The slip on show; others wait their turn behind it.
     @Published private(set) var current: Form?
+    /// When a space-constrained `InlineAsk` requests the full detail sheet, tracks its `form.id`
+    /// so dismissing the sheet returns to the inline form without losing `form.id` or drafts.
+    @Published private(set) var expandedDetailFormID: UUID?
     /// Forms currently rendered inline inside a conversation page, tracked by `form.id`.
     var inlineSeen: Set<UUID> = []
     /// Every slip still waiting for the user, in the order asked. Two companions asking at once each get their own
     /// answer: a new slip no longer pushes out the one before (the review, #21).
     private var line: [(form: Form, continuation: CheckedContinuation<Answer, Never>)] = []
+
+    func requestDetailSheet(_ id: UUID) {
+        guard current?.id == id else { return }
+        expandedDetailFormID = id
+    }
+
+    func clearDetailSheetRequest(_ id: UUID) {
+        if expandedDetailFormID == id {
+            expandedDetailFormID = nil
+        }
+    }
 
     func ask(_ form: Form) async -> Answer {
         await withCheckedContinuation { continuation in
@@ -199,6 +213,7 @@ final class Asker: ObservableObject {
     /// Answers one slip by its id; an answer from a slip that is no longer waiting goes nowhere.
     func answer(_ values: Answer, to id: UUID) {
         inlineSeen.remove(id)
+        if expandedDetailFormID == id { expandedDetailFormID = nil }
         guard let index = line.firstIndex(where: { $0.form.id == id }) else { return }
         let item = line.remove(at: index)
         if current?.id == id { showNext() }

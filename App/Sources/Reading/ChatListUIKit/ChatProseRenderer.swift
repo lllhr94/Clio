@@ -121,6 +121,15 @@ enum ChatCodeHighlighter {
         style: ChatListStyle
     ) -> NSAttributedString {
         let model = CodeTokenizer.prepare(text, language: language, isOutput: isOutput)
+        return highlight(segments: model.segments, hasWide: model.hasWide, isOutput: isOutput, style: style)
+    }
+
+    static func highlight(
+        segments: [CodeTokenSegment],
+        hasWide: Bool,
+        isOutput: Bool,
+        style: ChatListStyle
+    ) -> NSAttributedString {
         let immutableParagraphStyle = style.metrics.codeBox.makeParagraphStyle()
 
         let colors = style.colors
@@ -145,8 +154,8 @@ enum ChatCodeHighlighter {
         let fonts = style.fonts
         let out = NSMutableAttributedString()
         out.beginEditing()
-        if model.hasWide {
-            for seg in model.segments {
+        if hasWide {
+            for seg in segments {
                 let font: UIFont
                 if seg.kind == .comment {
                     font = seg.isWide ? fonts.codeAlignedItalicWide : fonts.codeAlignedItalicNarrow
@@ -160,7 +169,7 @@ enum ChatCodeHighlighter {
                 ]))
             }
         } else {
-            for seg in model.segments {
+            for seg in segments {
                 let font = seg.kind == .comment ? fonts.codePlainItalic : fonts.codePlainRegular
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
@@ -228,6 +237,7 @@ final class ChatProseBuilder: @unchecked Sendable {
         var sealedStyleKey: String
         var sealedCodeSlices: [Int: ChatCodeSlice] = [:]
         var sealedTableSlices: [Int: ChatTableSlice] = [:]
+        var liveCodeTokenizers: [Int: IncrementalCodeTokenizer] = [:]
     }
 
     private struct RichTextSliceKey: Hashable, Sendable {
@@ -476,10 +486,18 @@ final class ChatProseBuilder: @unchecked Sendable {
                     if let cachedSealed {
                         slice = cachedSealed
                     } else {
-                        let built = buildCodeSlice(language: lang, rawText: codeText, isLive: liveCode, style: style)
+                        let built = buildCodeSlice(
+                            language: lang,
+                            rawText: codeText,
+                            isLive: liveCode,
+                            style: style,
+                            streamKey: streamKey,
+                            sliceIndex: sliceIdx
+                        )
                         if !liveCode, let streamKey, let sealedIndex {
                             scannerLock.lock()
                             streamScanners[streamKey]?.sealedCodeSlices[sealedIndex] = built
+                            streamScanners[streamKey]?.liveCodeTokenizers.removeValue(forKey: sliceIdx)
                             scannerLock.unlock()
                         }
                         slice = built
@@ -653,7 +671,9 @@ final class ChatProseBuilder: @unchecked Sendable {
         language: String,
         rawText: String,
         isLive: Bool,
-        style: ChatListStyle
+        style: ChatListStyle,
+        streamKey: String? = nil,
+        sliceIndex: Int = 0
     ) -> ChatCodeSlice {
         let cacheKey: CodeSliceKey?
         if !isLive {
@@ -688,7 +708,27 @@ final class ChatProseBuilder: @unchecked Sendable {
             fullSize = nil
             fullToken = nil
         } else {
-            let highlighted = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(body, language: language, isOutput: isOutput, style: style))
+            let highlighted: NSAttributedString
+            if isLive, let streamKey {
+                let canonical = IncrementalCodeTokenizer.canonicalLanguage(language)
+                scannerLock.lock()
+                var tokenizer = streamScanners[streamKey]?.liveCodeTokenizers[sliceIndex]
+                if tokenizer == nil || tokenizer?.language != canonical || tokenizer?.isOutput != isOutput {
+                    tokenizer = IncrementalCodeTokenizer(language: canonical, isOutput: isOutput)
+                }
+                let segments = tokenizer!.update(source: body)
+                let hasWide = tokenizer!.hasWide
+                streamScanners[streamKey]?.liveCodeTokenizers[sliceIndex] = tokenizer
+                scannerLock.unlock()
+                highlighted = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(
+                    segments: segments,
+                    hasWide: hasWide,
+                    isOutput: isOutput,
+                    style: style
+                ))
+            } else {
+                highlighted = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(body, language: language, isOutput: isOutput, style: style))
+            }
             let measuredSize = measureCodeUnwrappedSize(highlighted, knownLineCount: count)
             let token = allocateRenderToken()
             foldedAttr = highlighted

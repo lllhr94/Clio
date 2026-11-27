@@ -45,13 +45,67 @@ final class ToastCenter {
     static let shared = ToastCenter()
 
     private(set) var items: [ToastItem] = []
-    /// Bottom clearance set by active floating docks (e.g. chat composer + pet perch).
+    /// Bottom clearance set by active floating docks (non-scene legacy fallback).
     var bottomClearance: CGFloat = 0
+    /// Scene-scoped chat host clearances keyed by scene identifier so chat hosts never compete
+    /// with global keyboard notifications or get zeroed by another disappearing chat page.
+    private(set) var sceneChatClearance: [String: CGFloat] = [:]
 
+    @ObservationIgnored private var chatGeometryOwners: [UUID: (sceneID: String, clearance: CGFloat)] = [:]
     @ObservationIgnored private var dismissTasks: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored fileprivate var hitFrames: [UUID: CGRect] = [:]
 
     private init() {}
+
+    /// Registers or updates the effective bottom clearance owned by a live chat page in `sceneID`.
+    func updateChatGeometry(ownerID: UUID, sceneID: String, clearance: CGFloat) {
+        let clamped = max(0, clearance)
+        let prev = chatGeometryOwners[ownerID]
+        if let prev, prev.sceneID == sceneID, abs(prev.clearance - clamped) <= 0.5 {
+            return
+        }
+        let oldScene = prev?.sceneID
+        chatGeometryOwners[ownerID] = (sceneID: sceneID, clearance: clamped)
+        recomputeSceneClearance(for: sceneID)
+        if let oldScene, oldScene != sceneID {
+            recomputeSceneClearance(for: oldScene)
+        }
+    }
+
+    /// Removes only `ownerID`'s geometry lease without disturbing any other active chat page.
+    func unregisterChatGeometry(ownerID: UUID) {
+        guard let removed = chatGeometryOwners.removeValue(forKey: ownerID) else { return }
+        recomputeSceneClearance(for: removed.sceneID)
+    }
+
+    func hasChatGeometryOwner(forSceneID sceneID: String?) -> Bool {
+        guard let sceneID, !sceneID.isEmpty else { return false }
+        return sceneChatClearance[sceneID] != nil
+    }
+
+    func resolvedBottomClearance(forSceneID sceneID: String?, fallbackKeyboardClearance: CGFloat) -> CGFloat {
+        if let sceneID, !sceneID.isEmpty, let owned = sceneChatClearance[sceneID] {
+            return max(Ink.Space.l, owned)
+        }
+        return max(Ink.Space.l, max(bottomClearance, fallbackKeyboardClearance))
+    }
+
+    private func recomputeSceneClearance(for sceneID: String) {
+        let ownersInScene = chatGeometryOwners.values.filter { $0.sceneID == sceneID }
+        if ownersInScene.isEmpty {
+            if sceneChatClearance.removeValue(forKey: sceneID) != nil {
+                // Keep legacy mirror consistent when no chat owner remains.
+                if chatGeometryOwners.isEmpty {
+                    bottomClearance = 0
+                }
+            }
+        } else {
+            let maxClearance = ownersInScene.map(\.clearance).max() ?? 0
+            if abs((sceneChatClearance[sceneID] ?? -1) - maxClearance) > 0.5 {
+                sceneChatClearance[sceneID] = maxClearance
+            }
+        }
+    }
 
     func show(
         _ message: String,
@@ -192,6 +246,7 @@ private struct FloatingToastAnchorObserver: View {
 @MainActor @Observable
 private final class ToastWindowState {
     var keyboardClearance: CGFloat = 0
+    var activeSceneID: String?
 }
 
 private struct FloatingToastAnchor: UIViewRepresentable {
@@ -290,6 +345,7 @@ private final class FloatingToastWindowController: NSObject {
         tokens.insert(token)
         sourceWindow = source
         guard let scene = source.windowScene else { return }
+        state.activeSceneID = scene.session.persistentIdentifier
         if window?.windowScene !== scene {
             tearDownWindow()
             let toastWindow = FloatingToastWindow(windowScene: scene)
@@ -331,8 +387,18 @@ private final class FloatingToastWindowController: NSObject {
 
     @objc private func keyboardWillChange(_ note: Notification) {
         guard let source = sourceWindow,
+              let scene = source.windowScene,
               let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-        let localEnd = source.convert(endFrame, from: nil)
+        let sceneID = scene.session.persistentIdentifier
+        // Only serve non-chat paths when no chat host owns geometry for this scene.
+        if ToastCenter.shared.hasChatGeometryOwner(forSceneID: sceneID) {
+            if state.keyboardClearance != 0 {
+                state.keyboardClearance = 0
+            }
+            return
+        }
+        let converted = ChatKeyboardGeometrySolver.convertKeyboardScreenRect(endFrame, in: source)
+        guard converted.belongsToScreen, let localEnd = converted.frameInHost else { return }
         let overlap = max(0, source.bounds.maxY - source.safeAreaInsets.bottom - localEnd.minY)
         let resolved: CGFloat = overlap > 10 ? overlap + Ink.Space.m : 0
         guard abs(state.keyboardClearance - resolved) > 0.5 else { return }
@@ -451,7 +517,10 @@ private struct FloatingToastStage: View {
 
     var body: some View {
         let calm = Ink.Motion.prefersReduced(reduceMotion)
-        let clearance = max(Ink.Space.l, max(center.bottomClearance, state.keyboardClearance))
+        let clearance = center.resolvedBottomClearance(
+            forSceneID: state.activeSceneID,
+            fallbackKeyboardClearance: state.keyboardClearance
+        )
         let total = center.items.count
         GeometryReader { proxy in
             let maxPadding = max(Ink.Space.l, proxy.size.height - Ink.Space.huge * 2)

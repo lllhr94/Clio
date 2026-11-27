@@ -6,6 +6,7 @@ import PhotosUI
 import Prose
 import Observation
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import VisionKit
 
@@ -35,7 +36,10 @@ struct ChatPage: View {
     @State var headerHeight: CGFloat = 0
     @State var headerBottomY: CGFloat?
     @State var dockTopY: CGFloat?
+    @State var effectiveBottomOcclusion: CGFloat = 0
     @State var nonKeyboardSafeMaxY: CGFloat?
+    @State var toastOwnerID = UUID()
+    @State var composerFocusBridge = ChatComposerFocusBridge()
     @State var photos: [Data] = []
     @State var draftAttachmentQueuedIds: [UUID] = []
     @State var draftAttachmentsLoaded = false
@@ -120,6 +124,15 @@ struct ChatPage: View {
     @FocusState var typing: Bool
     @State var voice = AVSpeechSynthesizer()
 
+    var isComposerFocused: Bool {
+        useUIKitChatList ? composerFocusBridge.isFocused : typing
+    }
+
+    func setComposerFocused(_ focused: Bool) {
+        typing = focused
+        composerFocusBridge.requestFocus(focused)
+    }
+
     init(team: TeamModel, bot: BotInfo, side: SideControl) {
         self.team = team
         self.side = side
@@ -158,7 +171,7 @@ struct ChatPage: View {
             hasStreaming: chat.hasStreaming,
             doing: doing,
             working: working,
-            typing: typing,
+            typing: isComposerFocused,
             listening: dictationSlot.instance?.listening == true,
             cheering: idleMood.cheering,
             dozing: idleMood.dozing
@@ -349,10 +362,10 @@ struct ChatPage: View {
                         idleMood: idleMood,
                         starters: starters,
                         reach: reach,
-                        typing: $typing,
+                        isTyping: isComposerFocused,
                         onPickStarter: { text in
                             draft = text
-                            typing = true
+                            setComposerFocused(true)
                         }
                     )
                 }
@@ -510,7 +523,7 @@ struct ChatPage: View {
             .environment(\.chatQuoteSelection) { picked in
                 Haptics.tick(0.5)
                 withAnimation(Ink.Motion.settle) { quote = picked }
-                typing = true
+                setComposerFocused(true)
             }
             .environment(\.chatSpeakSelection) { picked in
                 Haptics.light()
@@ -706,7 +719,8 @@ struct ChatPage: View {
             photos: $photos,
             files: $files,
             draftAttachmentQueuedIds: $draftAttachmentQueuedIds,
-            typing: $typing
+            typing: $typing,
+            focusBridge: composerFocusBridge
         )
     }
 
@@ -718,7 +732,8 @@ struct ChatPage: View {
         photos: Binding<[Data]>,
         files: Binding<[String]>,
         draftAttachmentQueuedIds: Binding<[UUID]>,
-        typing: FocusState<Bool>.Binding
+        typing: FocusState<Bool>.Binding,
+        focusBridge: ChatComposerFocusBridge? = nil
     ) {
         guard let back = team.unqueue(chat.key, item.id, deferRemoval: true) else { return }
         let chatKey = chat.key
@@ -800,6 +815,7 @@ struct ChatPage: View {
             team.confirmQueuedRemoved([back.id], for: chatKey)
         }
         typing.wrappedValue = true
+        focusBridge?.requestFocus(true)
     }
 
     /// Starts dictation; what is heard is added after what was already written.
@@ -811,7 +827,7 @@ struct ChatPage: View {
             speakingText = nil
         }
         Haptics.grab()
-        typing = false
+        setComposerFocused(false)
         dictationMerger.start(initialDraft: draft)
         active.onText = { heard in
             draft = dictationMerger.merge(currentDraft: draft, heard: heard)
@@ -828,11 +844,11 @@ struct ChatPage: View {
             if !trimmed.isEmpty {
                 draft = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? trimmed : draft + "\n\n" + trimmed
             }
-            typing = true
+            setComposerFocused(true)
         case .dictate:
             listen()
         case .fresh:
-            typing = true
+            setComposerFocused(true)
         case .importedFiles(let paths, let failed):
             if !paths.isEmpty {
                 withAnimation(Ink.Motion.settle) {
@@ -845,7 +861,7 @@ struct ChatPage: View {
             if let firstError = failed.first {
                 say(firstError)
             }
-            typing = true
+            setComposerFocused(true)
         }
     }
 
@@ -854,6 +870,20 @@ struct ChatPage: View {
     }
 
     var bottomStack: some View {
+        hostedBottomStack(
+            typing: $typing,
+            effectiveBottomOcclusion: effectiveBottomOcclusion,
+            hostViewportHeight: chatViewport.height,
+            topBarHeight: headerHeight
+        )
+    }
+
+    func hostedBottomStack(
+        typing focusBinding: FocusState<Bool>.Binding,
+        effectiveBottomOcclusion: CGFloat,
+        hostViewportHeight: CGFloat,
+        topBarHeight: CGFloat
+    ) -> some View {
         ChatBottomStackView(
             chat: chat,
             team: team,
@@ -876,9 +906,12 @@ struct ChatPage: View {
             confirmStop: confirmStop,
             calmPetMotion: calmPetMotion,
             viewportMetrics: viewportMetrics,
+            effectiveBottomOcclusion: effectiveBottomOcclusion,
+            hostViewportHeight: hostViewportHeight,
+            topBarHeight: topBarHeight,
             coveredByPage: side.choosingFresh || petSettingsOpen || roaming || approving != nil || tuningOpen || scanning || takingPhoto,
             baseSheetOpen: attaching || usageOpen || abilities || outlining || quoting != nil || savingNote != nil,
-            typing: $typing,
+            typing: focusBinding,
             usageOpen: $usageOpen,
             pickerShown: $pickerShown,
             importingFile: $importingFile,
@@ -894,6 +927,10 @@ struct ChatPage: View {
             photos: $photos,
             files: $files,
             onPresentApproval: { approval in presentApproval(approval) },
+            onResignFocusForSheet: {
+                setComposerFocused(false)
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            },
             onToEnd: { toEnd() },
             onReturnToLatest: returnToLatest,
             onClearComposer: clearComposer,
@@ -923,7 +960,7 @@ struct ChatPage: View {
             followState: followState,
             workTimer: workTimer,
             usageOpen: usageOpen,
-            typing: $typing,
+            isTyping: isComposerFocused,
             onStir: stir,
             onClearedLines: {
                 historyPage = nil
@@ -964,20 +1001,23 @@ struct ChatPage: View {
         let queuedIdsBinding = $draftAttachmentQueuedIds
 
         let bridgeRef = bridge
+        let focusRef = composerFocusBridge
         bridge.onViewPhoto = { [weak bridgeRef] ref in
             bridgeRef?.activeViewingPhotoID = ref
             viewingBinding.wrappedValue = ref
         }
         bridge.onQuote = { id, text in quotingBinding.wrappedValue = Noting(id: id, text: text) }
-        bridge.onEdit = { [weak draftRef] id, text in
+        bridge.onEdit = { [weak draftRef, weak focusRef] id, text in
             withAnimation(Ink.Motion.settle) {
                 editingBinding.wrappedValue = id
                 draftRef?.text = text
             }
             typingBinding.wrappedValue = true
+            focusRef?.requestFocus(true)
         }
-        bridge.onOpenURL = { [weak teamRef] url in
+        bridge.onOpenURL = { [weak teamRef, weak focusRef] url in
             typingBinding.wrappedValue = false
+            focusRef?.requestFocus(false)
             if let teamRef { Task { await teamRef.browser.open(url) } }
             roamingBinding.wrappedValue = true
         }
@@ -1026,7 +1066,7 @@ struct ChatPage: View {
             followingBinding.wrappedValue = true
             chatRef.retry()
         }
-        bridge.onWithdrawQueued = { [weak chatRef, weak teamRef, weak draftRef] item in
+        bridge.onWithdrawQueued = { [weak chatRef, weak teamRef, weak draftRef, weak focusRef] item in
             guard let chatRef, let teamRef, let draftRef else { return }
             Self.performWithdrawQueued(
                 item,
@@ -1036,7 +1076,8 @@ struct ChatPage: View {
                 photos: photosBinding,
                 files: filesBinding,
                 draftAttachmentQueuedIds: queuedIdsBinding,
-                typing: typingBinding
+                typing: typingBinding,
+                focusBridge: focusRef
             )
         }
         bridge.onSendQueuedNow = { [weak chatRef, weak teamRef] in
@@ -1079,16 +1120,18 @@ struct ChatPage: View {
                     chromeCoordinator: chromeCoordinator,
                     headerHeight: headerHeight
                 ) {
-                    typing = false
+                    setComposerFocused(false)
                     roaming = true
                 }
             }
         }
         .overlay(alignment: .bottom) {
-            bottomStack
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY.rounded(.down) } action: {
-                    dockTopY = $0
-                }
+            if !useUIKitChatList {
+                bottomStack
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY.rounded(.down) } action: {
+                        dockTopY = $0
+                    }
+            }
         }
         .background {
             observers
@@ -1102,6 +1145,7 @@ struct ChatPage: View {
 
     private var toastClearanceObserver: some View {
         ChatToastClearanceObserver(
+            ownerID: toastOwnerID,
             dockTopY: dockTopY,
             nonKeyboardSafeMaxY: nonKeyboardSafeMaxY,
             petPerch: petPerch,
@@ -1117,7 +1161,7 @@ struct ChatPage: View {
             team: team,
             asker: asker,
             dictationSlot: dictationSlot,
-            composerFocused: typing,
+            composerFocused: isComposerFocused,
             activeSelection: !selecting.isEmpty,
             quoteOrEdit: quote != nil || editing != nil,
             finding: finding
@@ -1170,7 +1214,7 @@ struct ChatPage: View {
                     quoting = nil
                     guard let picked else { return }
                     withAnimation(Ink.Motion.settle) { quote = picked }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { typing = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { setComposerFocused(true) }
                 }
                 .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
             }
@@ -1270,7 +1314,7 @@ struct ChatPage: View {
                     let link = linkDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !link.isEmpty { draft += (draft.isEmpty ? "" : "\n") + "请读一下这个网页：\(link)" }
                     linkDraft = ""
-                    typing = true
+                    setComposerFocused(true)
                 }
                 Button("算了", role: .cancel) { linkDraft = "" }
             } message: {
@@ -1413,7 +1457,7 @@ struct ChatPage: View {
         dictationSlot.cancelIfActive()
         _ = voice.stopSpeaking(at: .immediate)
         speakingText = nil
-        ToastCenter.shared.bottomClearance = 0
+        ToastCenter.shared.unregisterChatGeometry(ownerID: toastOwnerID)
         bridge.unbind()
     }
 
@@ -1510,7 +1554,7 @@ struct ChatPage: View {
     @State var reading: ReadingFile?
 
     func leave() {
-        typing = false
+        setComposerFocused(false)
         dictationSlot.cancelIfActive()
         _ = voice.stopSpeaking(at: .immediate)
         speakingText = nil
@@ -1782,7 +1826,7 @@ struct ChatEmptyContentView: View {
     let idleMood: ChatIdleMood
     let starters: [(String, String, String)]
     let reach: String
-    let typing: FocusState<Bool>.Binding
+    let isTyping: Bool
     let onPickStarter: (String) -> Void
 
     private var isRoom: Bool { chat.roomId != nil }
@@ -1798,7 +1842,7 @@ struct ChatEmptyContentView: View {
                 hasStreaming: chat.hasStreaming,
                 doing: doing,
                 working: working,
-                typing: typing.wrappedValue,
+                typing: isTyping,
                 cheering: idleMood.cheering,
                 dozing: idleMood.dozing,
                 isRoom: isRoom,
@@ -1926,7 +1970,7 @@ struct ChatConversationObservers: View {
     let workTimer: ChatWorkTimer
 
     let usageOpen: Bool
-    let typing: FocusState<Bool>.Binding
+    let isTyping: Bool
 
     let onStir: () -> Void
     let onClearedLines: () -> Void
@@ -1981,7 +2025,7 @@ struct ChatConversationObservers: View {
                     contextMetrics: contextMetrics,
                     working: working,
                     usageOpen: usageOpen,
-                    typing: typing,
+                    isTyping: isTyping,
                     onStir: onStir,
                     onClearedLines: onClearedLines,
                     onFollowToEnd: onFollowToEnd,
@@ -2002,7 +2046,7 @@ private struct ChatSecondaryObservers: View {
     let contextMetrics: ChatContextMetrics
     let working: Bool
     let usageOpen: Bool
-    let typing: FocusState<Bool>.Binding
+    let isTyping: Bool
 
     let onStir: () -> Void
     let onClearedLines: () -> Void
@@ -2032,7 +2076,7 @@ private struct ChatSecondaryObservers: View {
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
-            .onChange(of: typing.wrappedValue) { _, now in
+            .onChange(of: isTyping) { _, now in
                 DiagTrail.record(now ? "开键盘" : "收键盘")
                 Hitches.shared.doing(now ? "打字" : nil, as: "typing")
                 onStir()
@@ -2131,6 +2175,7 @@ private struct ChatSecondaryObservers: View {
 }
 
 private struct ChatToastClearanceObserver: View {
+    let ownerID: UUID
     let dockTopY: CGFloat?
     let nonKeyboardSafeMaxY: CGFloat?
     let petPerch: PetPerch
@@ -2168,20 +2213,30 @@ private struct ChatToastClearanceObserver: View {
                 syncClearance()
             }
             .onDisappear {
-                ToastCenter.shared.bottomClearance = 0
+                ToastCenter.shared.unregisterChatGeometry(ownerID: ownerID)
             }
+    }
+
+    private func activeSceneID() -> String {
+        for scene in UIApplication.shared.connectedScenes {
+            if let windowScene = scene as? UIWindowScene, windowScene.activationState == .foregroundActive {
+                return windowScene.session.persistentIdentifier
+            }
+        }
+        if let firstScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            return firstScene.session.persistentIdentifier
+        }
+        return "default-chat-scene"
     }
 
     private func syncClearance() {
         guard let dockTopY, let nonKeyboardSafeMaxY, nonKeyboardSafeMaxY > 0 else {
-            ToastCenter.shared.bottomClearance = 0
+            ToastCenter.shared.unregisterChatGeometry(ownerID: ownerID)
             return
         }
         let dockAboveSafe = max(0, nonKeyboardSafeMaxY - dockTopY)
         let target = dockAboveSafe + petClearance + Ink.Space.m
-        if abs(ToastCenter.shared.bottomClearance - target) > 0.5 {
-            ToastCenter.shared.bottomClearance = target
-        }
+        ToastCenter.shared.updateChatGeometry(ownerID: ownerID, sceneID: activeSceneID(), clearance: target)
     }
 }
 

@@ -5,6 +5,7 @@ import SwiftUI
 struct PlanCard: View {
     let steps: [TeamModel.PlanStep]
     var maxHeight: CGFloat? = nil
+    var forceCollapsed: Bool = false
     var close: () -> Void
     @State private var open = false
     @State private var detailsHeight: CGFloat = 0
@@ -12,10 +13,12 @@ struct PlanCard: View {
 
     private var done: Int { steps.filter { $0.state == "done" }.count }
     private var current: TeamModel.PlanStep? { steps.first { $0.state == "doing" } ?? steps.first { $0.state != "done" } }
+    private var isEffectivelyOpen: Bool { open && !forceCollapsed }
 
     var body: some View {
-        PlanReveal(progress: open ? 1 : 0, maxHeight: maxHeight, naturalDetailsHeight: detailsHeight) {
+        PlanReveal(progress: isEffectivelyOpen ? 1 : 0, maxHeight: maxHeight, naturalDetailsHeight: detailsHeight) {
             Button {
+                guard !forceCollapsed else { return }
                 Haptics.tick(0.4)
                 withAnimation(reduceMotion ? nil : Ink.Motion.unfold) { open.toggle() }
             } label: {
@@ -30,10 +33,12 @@ struct PlanCard: View {
                         .overlay(alignment: .leading) {
                             Capsule().fill(Ink.accent).frame(width: 44 * CGFloat(done) / CGFloat(max(1, steps.count)), height: 4)
                         }
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: Ink.Size.micro, weight: .bold))
-                        .foregroundStyle(Ink.inkFaint)
-                        .rotationEffect(.degrees(open ? 180 : 0))
+                    if !forceCollapsed {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: Ink.Size.micro, weight: .bold))
+                            .foregroundStyle(Ink.inkFaint)
+                            .rotationEffect(.degrees(isEffectivelyOpen ? 180 : 0))
+                    }
                 }
                 .padding(.horizontal, Ink.Space.l)
                 .padding(.vertical, Ink.Space.s)
@@ -41,7 +46,7 @@ struct PlanCard: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("清单，做完 \(done) 步，共 \(steps.count) 步")
-            .accessibilityValue(L.t(open ? "chat.planExpanded" : "chat.planCollapsed"))
+            .accessibilityValue(L.t(isEffectivelyOpen ? "chat.planExpanded" : "chat.planCollapsed"))
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Ink.Space.m) {
@@ -68,11 +73,16 @@ struct PlanCard: View {
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { detailsHeight = $0 }
             }
             .scrollBounceBehavior(.basedOnSize)
-            .allowsHitTesting(open)
-            .accessibilityHidden(!open)
+            .allowsHitTesting(isEffectivelyOpen)
+            .accessibilityHidden(!isEffectivelyOpen)
         }
         .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
         .paperCard()
+        .onChange(of: forceCollapsed) { _, collapsed in
+            if collapsed && open {
+                open = false
+            }
+        }
         .animation(reduceMotion ? nil : Ink.Motion.settle, value: steps)
     }
 
@@ -88,7 +98,7 @@ struct PlanCard: View {
             Image(systemName: "checkmark.circle.fill").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.ok)
         case "doing":
             Image(systemName: "circle.circle").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.accent)
-                .symbolEffect(.pulse, isActive: open && !reduceMotion)
+                .symbolEffect(.pulse, isActive: isEffectivelyOpen && !reduceMotion)
         default:
             Image(systemName: "circle").font(.system(size: Ink.Size.body)).foregroundStyle(Ink.inkFaint)
         }

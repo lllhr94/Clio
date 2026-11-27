@@ -205,8 +205,19 @@ private final class FlowFixture {
     var historyPage: [String]?
     var approving: Approval?
     var typing = false
+    var useUIKitChatList = false
+    let listProxy = ListProxyStub()
     var approvalInsetTask: Task<Void, Never>?
     let viewport = Viewport()
+
+    final class ListProxyStub {
+        var currentInteractionEpoch: UInt64 = 1
+        func requestApprovalCardSettle(capturedEpoch: UInt64) {}
+    }
+
+    func setComposerFocused(_ focused: Bool) {
+        typing = focused
+    }
 
     final class Chrome {
         var scrolling = false
@@ -378,29 +389,52 @@ private enum ChatFlowTests {
 
     static func revealPacing() throws {
         let total = 600
-        let live = TextRevealController(initialRevealedCount: 2, initialLength: 60, durationMultiplier: 2)
+        let live = TextRevealController(initialRevealedCount: 2, initialLength: 60, durationMultiplier: 1.0)
         live.observeUpdate(latestLength: 60, at: 0)
+        _ = live.tick(now: 0)
         live.observeUpdate(latestLength: total, at: 0.2)
-        _ = live.tick(now: 0.2)
-        let first = RevealPacing.pacedPoints(current: 2, target: live.revealedCount, total: total, elapsed: 1.0 / 60)
-        try check(first > 2 && first < 10, true, "A burst advances a few points without jumping to the end")
+        _ = live.tick(now: 0.2 + 1.0 / 60)
+        let first = ChatRevealPacer.stepCursor(
+            current: 2, controllerTarget: live.revealedCount, totalPoints: total,
+            elapsed: 1.0 / 60, pace: .balanced, hasRateSample: true, isFinalizing: false
+        )
+        try check(first > 2 && first < 40, true, "A burst advances smoothly without jumping to the end")
 
-        let resumed = RevealPacing.pacedPoints(current: 2, target: Double(total), total: total, elapsed: 30)
-        try check(resumed < 20, true, "Clock gaps do not dump the rest of the reply in a single frame")
+        let gentle = ChatRevealPacer.stepCursor(
+            current: 2, controllerTarget: Double(total), totalPoints: total,
+            elapsed: 1.0 / 60, pace: .gentle, hasRateSample: true, isFinalizing: false
+        )
+        let balanced = ChatRevealPacer.stepCursor(
+            current: 2, controllerTarget: Double(total), totalPoints: total,
+            elapsed: 1.0 / 60, pace: .balanced, hasRateSample: true, isFinalizing: false
+        )
+        let fast = ChatRevealPacer.stepCursor(
+            current: 2, controllerTarget: Double(total), totalPoints: total,
+            elapsed: 1.0 / 60, pace: .fast, hasRateSample: true, isFinalizing: false
+        )
+        try check(gentle > 2 && gentle < balanced && balanced < fast, true, "Three pace stops strictly order reveal speed")
 
-        let quick = TextRevealController(initialRevealedCount: 0, initialLength: total, durationMultiplier: 2)
+        let resumed = ChatRevealPacer.stepCursor(
+            current: 2, controllerTarget: Double(total), totalPoints: total,
+            elapsed: 30, pace: .balanced, hasRateSample: true, isFinalizing: false
+        )
+        try check(resumed < 100, true, "Clock gaps do not dump the rest of the reply in a single frame")
+
+        let quick = TextRevealController(initialRevealedCount: 0, initialLength: total, durationMultiplier: 1.0)
         quick.finalize(finalLength: total)
         var displayed = 0.0
-        var halfSecond = 0.0
+        var early = 0.0
         for frame in 0...360 {
             _ = quick.tick(now: Double(frame) / 60)
-            let target = Double(total) - quick.revealedCount < 1 ? Double(total) : quick.revealedCount
-            let next = RevealPacing.pacedPoints(current: displayed, target: target, total: total, elapsed: 1.0 / 60)
-            try check(next >= displayed && next - displayed < 10, true, "Committed reply progresses monotonically")
+            let next = ChatRevealPacer.stepCursor(
+                current: displayed, controllerTarget: quick.revealedCount, totalPoints: total,
+                elapsed: 1.0 / 60, pace: .balanced, hasRateSample: true, isFinalizing: true
+            )
+            try check(next >= displayed && next - displayed < 40, true, "Committed reply progresses monotonically")
             displayed = next
-            if frame == 30 { halfSecond = next }
+            if frame == 6 { early = next }
         }
-        try check(halfSecond > 0 && halfSecond < Double(total), true, "A single immediately committed chunk fades in")
+        try check(early > 0 && early < Double(total), true, "A single immediately committed chunk fades in")
         try check(displayed, Double(total), "The final point is shown and pacing ends")
     }
 

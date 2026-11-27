@@ -218,6 +218,14 @@ enum Pref {
     static let defaultReadingWidth = 640.0
     static var readingWidth: Double { Theme.shared.readingWidth }
 
+    /// Streaming reveal pace: gentle (舒缓), balanced (均衡, default), or fast (极速).
+    enum RevealPace: String, CaseIterable, Identifiable, Sendable {
+        case gentle, balanced, fast
+        var id: String { rawValue }
+    }
+    static let revealPaceKey = "look.revealPace"
+    static var revealPace: RevealPace { Theme.shared.revealPace }
+
     static var clreqSqueeze: Bool { Theme.shared.clreqSqueeze }
     static var reduceVisualEffects: Bool { Theme.shared.reduceVisualEffects }
     static var fade: Bool { bool("look.fade", true) }

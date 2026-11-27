@@ -1,11 +1,77 @@
 import Craft
 import SwiftUI
 
+/// Preserves in-progress non-secret `InlineAsk` answers across compact collapse and detail-sheet handoff,
+/// strictly keyed by `form.id`. Never stores secret/Vault field values.
+@MainActor
+final class InlineAskDraftStore {
+    static let shared = InlineAskDraftStore()
+
+    struct Draft: Equatable {
+        var selectedByKey: [String: [String]] = [:]
+        var customByKey: [String: String] = [:]
+        var customOpenKeys: Set<String> = []
+        var textValues: [String: String] = [:]
+    }
+
+    private var drafts: [UUID: Draft] = [:]
+
+    func draft(for id: UUID) -> Draft? {
+        drafts[id]
+    }
+
+    func save(_ draft: Draft, for id: UUID) {
+        drafts[id] = draft
+    }
+
+    func clear(for id: UUID) {
+        drafts.removeValue(forKey: id)
+    }
+}
+
+/// Compact summary fallback shown when tight keyboard + card budget forces `InlineAsk` below its minimum inline height.
+/// Keeps `form.id` registered and offers the single 「展开详情」 sheet fallback after cleanly releasing inline focus.
+struct InlineAskCompactSummaryBar: View {
+    let form: Asker.Form
+    let onExpandDetails: () -> Void
+
+    var body: some View {
+        HStack(spacing: Ink.Space.s) {
+            Image(systemName: "questionmark.bubble")
+                .foregroundStyle(Ink.accent)
+                .accessibilityHidden(true)
+            Text(L.format("ask.questionHeader", form.from, form.title))
+                .font(.system(size: Ink.Size.sub, weight: .medium))
+                .foregroundStyle(Ink.ink)
+                .lineLimit(1)
+            Spacer(minLength: Ink.Space.s)
+            Button {
+                Haptics.light()
+                onExpandDetails()
+            } label: {
+                Text(L.t("ask.expandDetails"))
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .padding(.horizontal, Ink.Space.m)
+                    .padding(.vertical, Ink.Space.xs)
+                    .background(Ink.accentWash, in: Capsule(style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, Ink.Space.l)
+        .padding(.vertical, Ink.Space.s)
+        .paperCard()
+        .onAppear { Asker.shared.inlineSeen.insert(form.id) }
+        .onDisappear { Asker.shared.inlineSeen.remove(form.id) }
+    }
+}
+
 /// A companion's short question (ask_user with nothing secret), answered in the conversation itself:
 /// single-select, multi-select, optional inline custom input, or short text fields.
 /// Anything secret NEVER uses this view and routes strictly to `FormSheet`.
 struct InlineAsk: View {
     let form: Asker.Form
+    var onExpandDetails: (() -> Void)? = nil
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var selectedByKey: [String: [String]] = [:]
@@ -15,8 +81,9 @@ struct InlineAsk: View {
 
     private var largeText: Bool { typeSize.isAccessibilitySize }
 
-    init(form: Asker.Form) {
+    init(form: Asker.Form, onExpandDetails: (() -> Void)? = nil) {
         self.form = form
+        self.onExpandDetails = onExpandDetails
         var initialSelected: [String: [String]] = [:]
         var initialCustom: [String: String] = [:]
         var initialOpen: Set<String> = []
@@ -29,6 +96,14 @@ struct InlineAsk: View {
             values: &unusedValues,
             usesSegmentedPicker: { _ in false }
         )
+        if let saved = InlineAskDraftStore.shared.draft(for: form.id) {
+            for (k, v) in saved.selectedByKey { initialSelected[k] = v }
+            for (k, v) in saved.customByKey { initialCustom[k] = v }
+            initialOpen.formUnion(saved.customOpenKeys)
+            for (k, v) in saved.textValues where !v.isEmpty && (initialCustom[k]?.isEmpty ?? true) {
+                initialCustom[k] = v
+            }
+        }
         _selectedByKey = State(initialValue: initialSelected)
         _customByKey = State(initialValue: initialCustom)
         _customOpenKeys = State(initialValue: initialOpen)
@@ -56,8 +131,50 @@ struct InlineAsk: View {
         }
         .padding(Ink.Space.l)
         .paperCard()
-        .onAppear { Asker.shared.inlineSeen.insert(form.id) }
-        .onDisappear { Asker.shared.inlineSeen.remove(form.id) }
+        .onAppear {
+            Asker.shared.inlineSeen.insert(form.id)
+            restoreSavedDraftIfNeeded()
+        }
+        .onDisappear {
+            persistDraft()
+            Asker.shared.inlineSeen.remove(form.id)
+        }
+        .onChange(of: selectedByKey) { _, _ in persistDraft() }
+        .onChange(of: customByKey) { _, _ in persistDraft() }
+        .onChange(of: customOpenKeys) { _, _ in persistDraft() }
+    }
+
+    private func persistDraft() {
+        guard Asker.shared.current?.id == form.id else { return }
+        var textValues: [String: String] = [:]
+        for field in form.fields where !field.secret && field.effectiveKind == .text {
+            textValues[field.key] = customByKey[field.key] ?? ""
+        }
+        InlineAskDraftStore.shared.save(
+            InlineAskDraftStore.Draft(
+                selectedByKey: selectedByKey,
+                customByKey: customByKey,
+                customOpenKeys: customOpenKeys,
+                textValues: textValues
+            ),
+            for: form.id
+        )
+    }
+
+    private func restoreSavedDraftIfNeeded() {
+        guard let saved = InlineAskDraftStore.shared.draft(for: form.id) else { return }
+        for (k, v) in saved.selectedByKey where selectedByKey[k] != v {
+            selectedByKey[k] = v
+        }
+        for (k, v) in saved.customByKey where customByKey[k] != v {
+            customByKey[k] = v
+        }
+        for (k, v) in saved.textValues where customByKey[k] != v {
+            customByKey[k] = v
+        }
+        if !saved.customOpenKeys.isSubset(of: customOpenKeys) {
+            customOpenKeys.formUnion(saved.customOpenKeys)
+        }
     }
 
     private var header: some View {
@@ -69,6 +186,21 @@ struct InlineAsk: View {
                 .font(.system(size: Ink.Size.sub, weight: .semibold))
                 .foregroundStyle(Ink.ink)
                 .fixedSize(horizontal: false, vertical: true)
+            if let onExpandDetails {
+                Spacer(minLength: 0)
+                Button {
+                    Haptics.light()
+                    persistDraft()
+                    onExpandDetails()
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: Ink.Size.small, weight: .semibold))
+                        .foregroundStyle(Ink.inkFaint)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L.t("ask.expandDetails"))
+            }
         }
     }
 
@@ -108,6 +240,7 @@ struct InlineAsk: View {
 
                 Button {
                     Haptics.light()
+                    InlineAskDraftStore.shared.clear(for: form.id)
                     Asker.shared.cancel(form.id)
                 } label: {
                     Text(L.t("actions.cancel"))
@@ -122,6 +255,7 @@ struct InlineAsk: View {
             HStack {
                 Button {
                     Haptics.light()
+                    InlineAskDraftStore.shared.clear(for: form.id)
                     Asker.shared.cancel(form.id)
                 } label: {
                     Text(L.t("actions.cancel"))
@@ -180,6 +314,7 @@ struct InlineAsk: View {
             encoded[field.key] = AskSheetLogic.encodedNonSecretField(field, response: response)
         }
         Haptics.grab()
+        InlineAskDraftStore.shared.clear(for: form.id)
         Asker.shared.answer(encoded, to: form.id)
     }
 
