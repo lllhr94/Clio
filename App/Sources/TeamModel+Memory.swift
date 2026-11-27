@@ -82,6 +82,12 @@ extension TeamModel {
     }
 
     private func applyCommittedMemoryBook(_ committedBook: MemoryBook) {
+        if let incomingSeq = committedBook.storeSequence,
+           let currentSeq = memoryBook.storeSequence,
+           committedBook.storeEpoch == memoryBook.storeEpoch,
+           incomingSeq < currentSeq {
+            return
+        }
         memoryBook = committedBook
         if memories != committedBook.memories {
             memories = committedBook.memories
@@ -354,14 +360,27 @@ extension TeamModel {
             return hits.map(\.text)
         }
 
-        Self.settleMemory(&nextMemories, pinnedIDs: pins)
-        var nextBook = memoryBook
-        nextBook.memories = nextMemories
-        guard (try? await commitMemoryBookPreparedAsync(
-            nextBook,
-            mutation: .recall(ids: touchedIDs, nowMs: now),
-            orderedSecrets: orderedSecrets
-        )) != nil else {
+        guard (try? await serializedMemoryMutation {
+            guard self.canMutateMemoryState else { return }
+            if let key, self.isPlanModeActive(for: key) { return }
+            let livePins = self.keeping ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
+            var liveMemories = self.memories
+            var liveTouched = Set<String>()
+            for index in liveMemories.indices where hitIDs.contains(liveMemories[index].id) {
+                liveMemories[index].deep = nil
+                liveMemories[index].used = now
+                liveTouched.insert(liveMemories[index].id)
+            }
+            guard !liveTouched.isEmpty else { return }
+            Self.settleMemory(&liveMemories, pinnedIDs: livePins)
+            var latestBook = self.memoryBook
+            latestBook.memories = liveMemories
+            _ = try await self.commitMemoryBookPreparedAsync(
+                latestBook,
+                mutation: .recall(ids: liveTouched, nowMs: now),
+                orderedSecrets: orderedSecrets
+            )
+        }) != nil else {
             return []
         }
         if let key, isPlanModeActive(for: key) {
