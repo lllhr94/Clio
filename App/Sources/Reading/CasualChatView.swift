@@ -40,7 +40,6 @@ struct CasualChatView: View {
     @State private var showingStickers = false
     @State private var pendingHandoffSummary: String?
     @State private var reviewCandidateText: String?
-    @State private var pickingPhoto = false
     @State private var selectedPhotoItem: PhotosPickerItem?
 
     init(
@@ -151,7 +150,6 @@ struct CasualChatView: View {
         } message: {
             Text(L.t("casual.promoteMemoryMessage"))
         }
-        .photosPicker(isPresented: $pickingPhoto, selection: $selectedPhotoItem, matching: .images)
         .task(id: selectedPhotoItem) {
             guard let picked = selectedPhotoItem else { return }
             defer { selectedPhotoItem = nil }
@@ -331,9 +329,7 @@ struct CasualChatView: View {
                             }
                         }
                     }
-                    Button {
-                        pickingPhoto = true
-                    } label: {
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                         Label(L.t("casual.importSticker"), systemImage: "photo.badge.plus")
                     }
                     .buttonStyle(WideButtonStyle(filled: false))

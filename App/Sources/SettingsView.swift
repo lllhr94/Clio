@@ -24,7 +24,7 @@ struct SettingsView: View {
     @AppStorage(SearchEngine.providerKey) private var searchProviderRaw = WebSearchProvider.builtin.rawValue
 
     @State private var storageBytes: Int64?
-    @State private var path: [SettingsPage] = []
+    @State private var path = NavigationPath()
     @State private var query = ""
     @State private var searching = false
     @State private var sheet: SettingsPage?
@@ -435,7 +435,7 @@ struct SettingsView: View {
             ServicesHubPage(team: team) { open(.add) }
         case .models:
             DefaultModelsPage(team: team) {
-                path.append(.services)
+                path.append(SettingsPage.services)
             }
         case .image:
             ImageModelPage(team: team)

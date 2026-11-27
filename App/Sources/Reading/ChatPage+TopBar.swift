@@ -340,6 +340,7 @@ struct ChatTopBarView: View {
             historyInView: historyInView,
             onDismissTyping: onDismissTyping,
             onHitRectChanged: onHitRectChanged,
+            trackMode: $trackMode,
             roaming: $roaming,
             sharing: $sharing,
             exportFailed: $exportFailed,
@@ -396,11 +397,19 @@ private struct ChatCenteredIdentityPill: View {
     let isImmersiveCollapsed: Bool
     let onDismissTyping: () -> Void
 
+    enum DeferredHubAction {
+        case nameCard
+        case details
+        case manageProviders
+    }
+
     @Binding var trackMode: ChatTrackMode
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
     @State private var showCompanionHub = false
+    @State private var deferredHubAction: DeferredHubAction?
     @State private var lastHubToggleAt: TimeInterval = 0
+    @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isRoom: Bool { chat.roomId != nil }
@@ -463,13 +472,39 @@ private struct ChatCenteredIdentityPill: View {
                 viewportWidth: viewportWidth,
                 isTyping: isTyping,
                 onDismissTyping: onDismissTyping,
+                onDeferAction: { action in
+                    deferredHubAction = action
+                    onDismissTyping()
+                    showCompanionHub = false
+                },
                 isPresented: $showCompanionHub,
-                trackMode: $trackMode,
-                detailOpen: $detailOpen,
-                cardOpen: $cardOpen
+                trackMode: $trackMode
             )
             .presentationCompactAdaptation(.popover)
             .presentationBackground(Ink.paperRaised)
+            .onDisappear {
+                consumeDeferredHubActionIfNeeded()
+            }
+        }
+    }
+
+    private func consumeDeferredHubActionIfNeeded() {
+        guard let action = deferredHubAction else { return }
+        deferredHubAction = nil
+        Task { @MainActor in
+            // Wait for UIKit's popover dismissal transition to finish before presenting a sheet/cover.
+            try? await Task.sleep(for: .milliseconds(160))
+            guard !showCompanionHub else { return }
+            switch action {
+            case .nameCard:
+                cardOpen = true
+            case .details:
+                detailOpen = true
+            case .manageProviders:
+                if let url = URL(string: "clio://settings/services") {
+                    openURL(url)
+                }
+            }
         }
     }
 
@@ -571,19 +606,18 @@ private struct ChatCompanionHubPopover: View {
     let viewportWidth: CGFloat
     let isTyping: Bool
     let onDismissTyping: () -> Void
+    let onDeferAction: (ChatCenteredIdentityPill.DeferredHubAction) -> Void
 
     @Binding var isPresented: Bool
     @Binding var trackMode: ChatTrackMode
-    @Binding var detailOpen: Bool
-    @Binding var cardOpen: Bool
 
     @State private var route: Route = .root
     @State private var navigatingForward = true
     @State private var compressing = false
-    @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isRoom: Bool { chat.roomId != nil }
+    private var isCasualTrack: Bool { (!isRoom && trackMode == .casual) || chat.key.hasPrefix("casual-") }
     private var doing: String? { team.workDetail(for: chat.key).words }
     private var working: Bool { doing != nil || chat.hasStreaming }
     private var waiting: Approval? { team.approvals.first { $0.chat == chat.key } }
@@ -595,11 +629,21 @@ private struct ChatCompanionHubPopover: View {
     }
 
     private var currentResolved: (endpoint: Endpoint, model: String)? {
+        if isCasualTrack {
+            guard let found = team.resolveActive(bot.model ?? team.settings.defaultModel)
+                    ?? team.resolveActive(team.settings.defaultModel)
+                    ?? team.resolve(bot.model ?? team.settings.defaultModel)
+                    ?? team.resolve(team.settings.defaultModel) else { return nil }
+            return (found.endpoint, found.model)
+        }
         guard let current = team.current(chat.key, bot: speaker) else { return nil }
         return (current.endpoint, current.model)
     }
 
     private var currentModelRef: String? {
+        if isCasualTrack {
+            return bot.model ?? team.settings.defaultModel
+        }
         let options = team.options(chat.key)
         return options.model ?? bot.model ?? team.settings.defaultModel
     }
@@ -722,16 +766,16 @@ private struct ChatCompanionHubPopover: View {
             rootHeaderSection
             hairlineDivider
             rootModelRowSection
-            if offeredSelections.count > 1 || !savedSelection.isDefault {
-                hairlineDivider
-                rootThinkingSection
-            }
-            if !chat.key.hasPrefix("casual-") {
+            if !isCasualTrack {
+                if offeredSelections.count > 1 || !savedSelection.isDefault {
+                    hairlineDivider
+                    rootThinkingSection
+                }
                 hairlineDivider
                 rootPlanModeSection
+                hairlineDivider
+                rootContextSection
             }
-            hairlineDivider
-            rootContextSection
         }
     }
 
@@ -813,15 +857,13 @@ private struct ChatCompanionHubPopover: View {
             HStack(spacing: Ink.Space.xs) {
                 if !isRoom {
                     hubActionIcon(title: L.t("chatHub.nameCard"), symbol: "person.text.rectangle") {
-                        isPresented = false
-                        onDismissTyping()
-                        cardOpen = true
+                        onDeferAction(.nameCard)
                     }
                 }
-                hubActionIcon(title: L.t("chatHub.details"), symbol: "info.circle") {
-                    isPresented = false
-                    onDismissTyping()
-                    detailOpen = true
+                if !isCasualTrack {
+                    hubActionIcon(title: L.t("chatHub.details"), symbol: "info.circle") {
+                        onDeferAction(.details)
+                    }
                 }
             }
         }
@@ -879,7 +921,7 @@ private struct ChatCompanionHubPopover: View {
 
                 Spacer(minLength: 0)
 
-                if !isRoom {
+                if !isRoom && !isCasualTrack {
                     Image(systemName: "chevron.right")
                         .font(.system(size: Ink.Size.micro, weight: .semibold))
                         .foregroundStyle(Ink.inkFaint)
@@ -890,7 +932,7 @@ private struct ChatCompanionHubPopover: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
-        .disabled(isRoom)
+        .disabled(isRoom || isCasualTrack)
     }
 
     private var rootThinkingSection: some View {
@@ -915,10 +957,24 @@ private struct ChatCompanionHubPopover: View {
                 }
             }
             if unfulfilled {
-                Text("当前模型暂不支持已保存的「\(savedSelection.title)」，已保留原设定。")
-                    .font(.system(size: Ink.Size.micro))
-                    .foregroundStyle(Ink.warn)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                    Text("当前模型暂不支持已保存的「\(savedSelection.title)」，已保留原设定。")
+                        .font(.system(size: Ink.Size.micro))
+                        .foregroundStyle(Ink.warn)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        Haptics.light()
+                        team.setThinkingSelection(.inheritDefault, in: chat.key)
+                    } label: {
+                        Text("切回默认")
+                            .font(.system(size: Ink.Size.micro, weight: .semibold))
+                            .foregroundStyle(Ink.accent)
+                            .padding(.horizontal, Ink.Space.s)
+                            .padding(.vertical, Ink.Space.xs)
+                            .background(Ink.accentWash, in: Capsule(style: .continuous))
+                    }
+                    .buttonStyle(PressStyle())
+                }
             }
         }
         .padding(.horizontal, Ink.Space.m)
@@ -1250,7 +1306,7 @@ private struct ChatCompanionHubPopover: View {
     }
 
     private func openModelPicker() {
-        guard !isRoom else { return }
+        guard !isRoom && !isCasualTrack else { return }
         Haptics.light()
         navigatingForward = true
         route = .providers
@@ -1258,11 +1314,7 @@ private struct ChatCompanionHubPopover: View {
 
     private func openProvidersSettings() {
         Haptics.light()
-        isPresented = false
-        onDismissTyping()
-        if let url = URL(string: "clio://settings/services") {
-            openURL(url)
-        }
+        onDeferAction(.manageProviders)
     }
 
     private func compressContext() {
@@ -1302,6 +1354,7 @@ private struct ChatTopBarControlsView: View {
     let onDismissTyping: () -> Void
     let onHitRectChanged: ((Int, CGRect) -> Void)?
 
+    @Binding var trackMode: ChatTrackMode
     @Binding var roaming: Bool
     @Binding var sharing: ChatPage.ShareFile?
     @Binding var exportFailed: Bool
@@ -1323,6 +1376,7 @@ private struct ChatTopBarControlsView: View {
     let onLoadOutlinePairs: () async -> [OutlineSheet.Pair]
 
     private var isRoom: Bool { chat.roomId != nil }
+    private var isCasualTrack: Bool { (!isRoom && trackMode == .casual) || chat.key.hasPrefix("casual-") }
     private var working: Bool { team.workDetail(for: chat.key).words != nil || chat.hasStreaming }
 
     var body: some View {
@@ -1343,23 +1397,36 @@ private struct ChatTopBarControlsView: View {
 
     private var headerMoreMenu: some View {
         Menu {
-            Section {
-                if historyInView {
-                    menuButton("chat.latest", icon: "arrow.down.to.line") {
-                        onReturnToLatest()
+            if isCasualTrack {
+                Section {
+                    Button {
+                        onDismissTyping()
+                        Haptics.light()
+                        trackMode = .formal
+                    } label: {
+                        Label(L.t("casual.trackFormal"), systemImage: "bubble.left.and.text.bubble.right")
+                    }
+                    if !isRoom {
+                        menuButton("chatHub.nameCard", icon: "person.text.rectangle") { cardOpen = true }
                     }
                 }
-                menuButton("chat.newConversation", icon: "square.and.pencil") {
-                    side.fresh(isRoom ? nil : bot.id)
-                }
-                menuButton("chat.find", icon: "magnifyingglass") { onStartFinding() }
-                menuButton("chat.outline", icon: "list.bullet.indent") {
-                    Task {
-                        outlinePairs = await onLoadOutlinePairs()
-                        outlining = true
+            } else {
+                Section {
+                    if historyInView {
+                        menuButton("chat.latest", icon: "arrow.down.to.line") {
+                            onReturnToLatest()
+                        }
                     }
-                }
-                if !chat.key.hasPrefix("casual-") {
+                    menuButton("chat.newConversation", icon: "square.and.pencil") {
+                        side.fresh(isRoom ? nil : bot.id)
+                    }
+                    menuButton("chat.find", icon: "magnifyingglass") { onStartFinding() }
+                    menuButton("chat.outline", icon: "list.bullet.indent") {
+                        Task {
+                            outlinePairs = await onLoadOutlinePairs()
+                            outlining = true
+                        }
+                    }
                     let planOn = team.isPlanModeActive(for: chat.key)
                     Button {
                         Haptics.light()
@@ -1371,63 +1438,63 @@ private struct ChatTopBarControlsView: View {
                         )
                     }
                 }
-            }
-            Menu(L.t("chatMenu.workbench"), systemImage: "wrench.and.screwdriver") {
-                menuButton("chat.files", icon: "folder") { filesOpen = true }
-                menuButton("nav.terminal", icon: "terminal") { terminalOpen = true }
-                menuButton("nav.browser", icon: "safari") { roaming = true }
-                menuButton("agent.skills", icon: "books.vertical") { chatSkillsOpen = true }
-                menuButton("chat.mcp", icon: "point.3.connected.trianglepath.dotted") { chatConnectorsOpen = true }
-                if working {
-                    menuButton("alwaysOn.open", icon: "moon.stars") { AlwaysOn.show(chat: chat.key) }
-                }
-            }
-            Menu(L.t("chatMenu.manageExport"), systemImage: "tray.full") {
-                menuButton("chat.compactContext", icon: "rectangle.compress.vertical") {
-                    Task {
-                        do {
-                            let count = try await team.compress(chat.key)
-                            Haptics.thud()
-                            ToastCenter.shared.show(
-                                count > 0 ? "已压缩 \(count) 条较早消息" : "前文暂不需要压缩",
-                                symbol: "rectangle.compress.vertical"
-                            )
-                        } catch {
-                            ToastCenter.shared.show(
-                                error.localizedDescription,
-                                symbol: "exclamationmark.triangle",
-                                tint: Ink.warn
-                            )
-                        }
+                Menu(L.t("chatMenu.workbench"), systemImage: "wrench.and.screwdriver") {
+                    menuButton("chat.files", icon: "folder") { filesOpen = true }
+                    menuButton("nav.terminal", icon: "terminal") { terminalOpen = true }
+                    menuButton("nav.browser", icon: "safari") { roaming = true }
+                    menuButton("agent.skills", icon: "books.vertical") { chatSkillsOpen = true }
+                    menuButton("chat.mcp", icon: "point.3.connected.trianglepath.dotted") { chatConnectorsOpen = true }
+                    if working {
+                        menuButton("alwaysOn.open", icon: "moon.stars") { AlwaysOn.show(chat: chat.key) }
                     }
                 }
-                menuButton("chat.rename", icon: "pencil") {
-                    renameText = team.title(of: chat.key) ?? ""
-                    renaming = true
-                }
-                menuButton("actions.share", icon: "square.and.arrow.up") {
-                    let title = team.title(of: chat.key) ?? bot.name
-                    Task {
-                        if let url = await team.exportChat(chat.key, title: title) {
-                            sharing = ChatPage.ShareFile(url: url)
-                            ToastCenter.shared.show("已准备好导出文件", symbol: "square.and.arrow.up")
-                        } else {
-                            exportFailed = true
-                            ToastCenter.shared.show(
-                                L.t("errors.exportChat"),
-                                symbol: "exclamationmark.triangle",
-                                tint: Ink.warn
-                            )
+                Menu(L.t("chatMenu.manageExport"), systemImage: "tray.full") {
+                    menuButton("chat.compactContext", icon: "rectangle.compress.vertical") {
+                        Task {
+                            do {
+                                let count = try await team.compress(chat.key)
+                                Haptics.thud()
+                                ToastCenter.shared.show(
+                                    count > 0 ? "已压缩 \(count) 条较早消息" : "前文暂不需要压缩",
+                                    symbol: "rectangle.compress.vertical"
+                                )
+                            } catch {
+                                ToastCenter.shared.show(
+                                    error.localizedDescription,
+                                    symbol: "exclamationmark.triangle",
+                                    tint: Ink.warn
+                                )
+                            }
                         }
                     }
+                    menuButton("chat.rename", icon: "pencil") {
+                        renameText = team.title(of: chat.key) ?? ""
+                        renaming = true
+                    }
+                    menuButton("actions.share", icon: "square.and.arrow.up") {
+                        let title = team.title(of: chat.key) ?? bot.name
+                        Task {
+                            if let url = await team.exportChat(chat.key, title: title) {
+                                sharing = ChatPage.ShareFile(url: url)
+                                ToastCenter.shared.show("已准备好导出文件", symbol: "square.and.arrow.up")
+                            } else {
+                                exportFailed = true
+                                ToastCenter.shared.show(
+                                    L.t("errors.exportChat"),
+                                    symbol: "exclamationmark.triangle",
+                                    tint: Ink.warn
+                                )
+                            }
+                        }
+                    }
+                    menuButton("chat.conversationHistory", icon: "book.pages") { leafing = true }
+                    menuButton("chat.details", icon: "info.circle") { detailOpen = true }
                 }
-                menuButton("chat.conversationHistory", icon: "book.pages") { leafing = true }
-                menuButton("chat.details", icon: "info.circle") { detailOpen = true }
-            }
-            Section {
-                Button(L.t("actions.clear"), systemImage: "trash", role: .destructive) {
-                    onDismissTyping()
-                    clearingChat = true
+                Section {
+                    Button(L.t("actions.clear"), systemImage: "trash", role: .destructive) {
+                        onDismissTyping()
+                        clearingChat = true
+                    }
                 }
             }
         } label: {

@@ -10,47 +10,80 @@ struct PlanCard: View {
     var revision: UInt64 = 0
     var turnID: String = ""
     var onExecutePlan: ((UInt64, String) -> Void)? = nil
+    var onRequestExpandWhenSqueezed: (() -> Void)? = nil
     var close: () -> Void
     @State private var open = false
+    @State private var pendingExpandAfterUnsqueeze = false
     @State private var detailsHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var done: Int { steps.filter { $0.state == "done" }.count }
     private var current: TeamModel.PlanStep? { steps.first { $0.state == "doing" } ?? steps.first { $0.state != "done" } }
     private var isEffectivelyOpen: Bool { open && !forceCollapsed }
+    private var canToggleOrRequestExpand: Bool { !forceCollapsed || onRequestExpandWhenSqueezed != nil }
 
     var body: some View {
         PlanReveal(progress: isEffectivelyOpen ? 1 : 0, maxHeight: maxHeight, naturalDetailsHeight: detailsHeight) {
-            Button {
-                guard !forceCollapsed else { return }
-                Haptics.tick(0.4)
-                withAnimation(reduceMotion ? nil : Ink.Motion.unfold) { open.toggle() }
-            } label: {
-                HStack(spacing: Ink.Space.s) {
-                    Image(systemName: "checklist").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
-                    Text(headline)
-                        .font(.system(size: Ink.Size.sub, weight: .medium))
-                        .foregroundStyle(Ink.ink)
-                        .lineLimit(1)
-                    Spacer(minLength: Ink.Space.s)
-                    Capsule().fill(Ink.rule).frame(width: 44, height: 4)
-                        .overlay(alignment: .leading) {
-                            Capsule().fill(Ink.accent).frame(width: 44 * CGFloat(done) / CGFloat(max(1, steps.count)), height: 4)
-                        }
-                    if !forceCollapsed {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: Ink.Size.micro, weight: .bold))
-                            .foregroundStyle(Ink.inkFaint)
-                            .rotationEffect(.degrees(isEffectivelyOpen ? 180 : 0))
+            HStack(spacing: Ink.Space.s) {
+                Button {
+                    if forceCollapsed {
+                        guard let onRequestExpandWhenSqueezed else { return }
+                        Haptics.tick(0.4)
+                        pendingExpandAfterUnsqueeze = true
+                        onRequestExpandWhenSqueezed()
+                        return
                     }
+                    Haptics.tick(0.4)
+                    withAnimation(reduceMotion ? nil : Ink.Motion.unfold) { open.toggle() }
+                } label: {
+                    HStack(spacing: Ink.Space.s) {
+                        Image(systemName: "checklist").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                        Text(headline)
+                            .font(.system(size: Ink.Size.sub, weight: .medium))
+                            .foregroundStyle(Ink.ink)
+                            .lineLimit(1)
+                        Spacer(minLength: Ink.Space.s)
+                        if !(planMode && onExecutePlan != nil && !steps.isEmpty && !isEffectivelyOpen) {
+                            Capsule().fill(Ink.rule).frame(width: 44, height: 4)
+                                .overlay(alignment: .leading) {
+                                    Capsule().fill(Ink.accent).frame(width: 44 * CGFloat(done) / CGFloat(max(1, steps.count)), height: 4)
+                                }
+                        }
+                        if canToggleOrRequestExpand {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: Ink.Size.micro, weight: .bold))
+                                .foregroundStyle(Ink.inkFaint)
+                                .rotationEffect(.degrees(isEffectivelyOpen ? 180 : 0))
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, Ink.Space.l)
-                .padding(.vertical, Ink.Space.s)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel("清单，做完 \(done) 步，共 \(steps.count) 步")
+                .accessibilityValue(L.t(isEffectivelyOpen ? "chat.planExpanded" : "chat.planCollapsed"))
+
+                if planMode, let onExecutePlan, !steps.isEmpty, !isEffectivelyOpen {
+                    Button {
+                        Haptics.thud()
+                        onExecutePlan(revision, turnID)
+                    } label: {
+                        HStack(spacing: Ink.Space.xs) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                            Text(L.t("plan.executeAction"))
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Ink.paper)
+                        .padding(.horizontal, Ink.Space.m)
+                        .padding(.vertical, Ink.Space.xs + 2)
+                        .background(Ink.accent, in: Capsule(style: .continuous))
+                    }
+                    .buttonStyle(PressStyle())
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("清单，做完 \(done) 步，共 \(steps.count) 步")
-            .accessibilityValue(L.t(isEffectivelyOpen ? "chat.planExpanded" : "chat.planCollapsed"))
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.s)
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Ink.Space.m) {
@@ -103,6 +136,11 @@ struct PlanCard: View {
         .onChange(of: forceCollapsed) { _, collapsed in
             if collapsed && open {
                 open = false
+            } else if !collapsed && pendingExpandAfterUnsqueeze {
+                pendingExpandAfterUnsqueeze = false
+                withAnimation(reduceMotion ? nil : Ink.Motion.unfold) {
+                    open = true
+                }
             }
         }
         .animation(reduceMotion ? nil : Ink.Motion.settle, value: steps)

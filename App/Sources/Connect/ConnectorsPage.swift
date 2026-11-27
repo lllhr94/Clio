@@ -26,16 +26,17 @@ struct ConnectorsPage: View {
     }
 
     private var content: some View {
-        ScrollView {
-                let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isSearching = !needle.isEmpty
+        return ScrollView {
                 let lookup = ServerLookup(servers: hills.servers)
                 LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
-                    if query.isEmpty {
+                    if !isSearching {
                         suggestCard
                     }
                     let connected = mine(needle: needle)
                     if !connected.isEmpty { section(L.t("connectors.connected"), connected, lookup: lookup) }
-                    ForEach(Connector.groups.filter { kind == "全部" || $0 == kind }, id: \.self) { group in
+                    ForEach(Connector.groups.filter { Self.matchesCategory(group: $0, selectedKind: kind, needle: needle) }, id: \.self) { group in
                         let items = Connector.catalog.filter {
                             $0.group == group && $0.matches(needle) && lookup.server(of: $0) == nil
                         }
@@ -63,7 +64,7 @@ struct ConnectorsPage: View {
             }
             // The kinds stay put under the search field, on paper, so the list never shows through behind them.
             .safeAreaInset(edge: .top, spacing: 0) {
-                if query.isEmpty {
+                if !isSearching {
                     categories
                         .padding(.horizontal, Ink.Space.page)
                         .padding(.vertical, Ink.Space.s)
@@ -147,6 +148,11 @@ struct ConnectorsPage: View {
         }
     }
 
+    /// Category filtering applies only while not actively searching (categories bar is hidden during search).
+    static func matchesCategory(group: String, selectedKind: String, needle: String) -> Bool {
+        !needle.isEmpty || selectedKind == "全部" || group == selectedKind
+    }
+
     /// Everything connected: from the catalog, and the ones added by address.
     private func mine(needle: String) -> [Connector] {
         hills.servers.compactMap { server in
@@ -154,7 +160,7 @@ struct ConnectorsPage: View {
             return Connector(id: server.connector ?? server.id, name: server.name, icon: "point.3.connected.trianglepath.dotted",
                              line: URL(string: server.url)?.host ?? server.url, url: server.url, auth: .oauth, group: "自己加的", serverId: server.id)
         }
-        .filter { (kind == "全部" || $0.group == kind) && $0.matches(needle) }
+        .filter { Self.matchesCategory(group: $0.group, selectedKind: kind, needle: needle) && $0.matches(needle) }
     }
 
     private func heading(_ title: String) -> some View {
