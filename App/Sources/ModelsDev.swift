@@ -158,16 +158,28 @@ enum ModelsDev {
         _ = await refresh()
     }
 
-    /// Single-flight catalog refresh with strict structural & anti-degradation validation.
+    /// Single-flight catalog refresh with streaming byte cap + strict structural & anti-degradation validation.
     @discardableResult
     static func refresh() async -> Bool {
         await refreshCoordinator.run {
             do {
+                let policy = ModelsDevCatalogSnapshot.ValidationPolicy.default
                 var request = URLRequest(url: source)
                 request.timeoutInterval = 30
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
-                _ = try applyValidatedRefreshData(data, writeCache: true)
+                if let expected = (response as? HTTPURLResponse)?.expectedContentLength,
+                   expected > 0, Int(expected) > policy.maxBytes {
+                    throw CatalogValidationError.oversize(bytes: Int(expected), limit: policy.maxBytes)
+                }
+                var data = Data()
+                for try await byte in bytes {
+                    data.append(byte)
+                    if data.count > policy.maxBytes {
+                        throw CatalogValidationError.oversize(bytes: data.count, limit: policy.maxBytes)
+                    }
+                }
+                _ = try applyValidatedRefreshData(data, writeCache: true, policy: policy)
                 return true
             } catch {
                 Diag.note("模型资料库没更新：\(error.localizedDescription)")
@@ -184,11 +196,14 @@ enum ModelsDev {
         writeCache: Bool = true,
         policy: ModelsDevCatalogSnapshot.ValidationPolicy = .default
     ) throws -> ModelsDevCatalogSnapshot {
+        let existing = lock.withLock { cachedSnapshot }
+        let baseline = (existing?.totalModels ?? 0) >= policy.minModels ? existing : nil
         let nextGen = nextGeneration()
         let validated = try ModelsDevCatalogSnapshot.parseAndValidate(
             data: data,
             generation: nextGen,
-            policy: policy
+            policy: policy,
+            previous: baseline
         )
         if writeCache {
             let encoded = try JSONEncoder().encode(validated)

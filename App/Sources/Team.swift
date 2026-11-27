@@ -1456,6 +1456,34 @@ final class TeamModel: ObservableObject {
         resume(key)
     }
 
+    /// Checks before ANY network activity (including `foldQuietly`) whether an `explicitOff` selection
+    /// lacks a verified off-encoding on the speaker(s) that will run in this turn.
+    private func preflightUnfulfilledExplicitOffReason(for key: String, snapshot: ModelsDevCatalogSnapshot) -> String? {
+        guard options(key).effectiveThinkingSelection.isExplicitOff else { return nil }
+        let targetBots: [BotInfo]
+        if key.hasPrefix("room-"), let room = rooms.first(where: { Self.key(room: $0.id) == key }) {
+            targetBots = (room.members ?? []).compactMap { id in bots.first { $0.id == id } }
+        } else if let bot = bots.first(where: { Self.key(bot: $0.id) == key }) {
+            targetBots = [bot]
+        } else {
+            return nil
+        }
+        for bot in targetBots {
+            guard let found = current(key, bot: bot) else { continue }
+            let resolution = resolvedThinking(
+                for: key,
+                endpoint: found.endpoint,
+                model: found.model,
+                intent: .userChat,
+                snapshot: snapshot
+            )
+            if case .unfulfilledExplicitOff(let reason) = resolution.fulfillment {
+                return reason
+            }
+        }
+        return nil
+    }
+
     /// 「接着做」: a turn iOS cut short in the background goes on from where it stopped.
     func resume(_ key: String) {
         guard canAcceptInput(for: key), runs[key] == nil else { return }
@@ -1480,6 +1508,24 @@ final class TeamModel: ObservableObject {
         // If the user leaves while it works, iOS gives a little time (about half a minute) to finish; see `leaving`.
         graces[token] = UIApplication.shared.beginBackgroundTask(withName: "clio-turn") { [weak self] in
             MainActor.assumeIsolated { self?.graceRunsOut(key, token: token) }
+        }
+        // Pre-flight explicitOff check BEFORE launching any network work (including background compression).
+        let frozenTurnCatalog = ModelsDev.currentSnapshot()
+        if let blockedReason = preflightUnfulfilledExplicitOffReason(for: key, snapshot: frozenTurnCatalog) {
+            fail(key, blockedReason)
+            let cancelled = Task.isCancelled
+            let wasActiveToken = (runs[key]?.token == token)
+            if wasActiveToken {
+                runs[key] = nil
+                doing[key] = nil
+                activeTurnExperienceSource.removeValue(forKey: key)
+            }
+            if runs[key] == nil { streamed[key] = nil }
+            notify(key, .finished)
+            WidgetFeed.publish(self)
+            BackgroundTurn.end(chat: key, token: token, ok: false && !cancelled)
+            endGrace(token)
+            return
         }
         // Never waits on a compression: it runs alongside, and this turn reads the chat as it is.
         foldQuietly(key)
@@ -1712,11 +1758,17 @@ final class TeamModel: ObservableObject {
         switch thinkingResolution.fulfillment {
         case .fulfilled(let effective, _, _):
             agent.thinking = effective.approximateLegacyThinking
+            if endpoint.kind == .openai {
+                agent.thinkingBodyFields = thinkingResolution.bodyFields
+            }
         case .unfulfilledExplicitOff(let reason):
             fail(key, reason)
             return false
         case .unfulfilledSelection:
             agent.thinking = .auto
+            if endpoint.kind == .openai {
+                agent.thinkingBodyFields = thinkingResolution.bodyFields
+            }
         }
         agent.inbox = { [weak self] in await self?.takeInbox(key) ?? [] }
         agent.screen = Self.screen
@@ -2565,12 +2617,19 @@ final class TeamModel: ObservableObject {
         agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
-        // Helper delegation never blindly forwards parent thinking onto a different model/contract.
-        let helperThinking = resolvedThinking(for: key, endpoint: found.endpoint, model: found.model, intent: .userChat)
-        if case .fulfilled(let effective, _, _) = helperThinking.fulfillment {
-            agent.thinking = effective.approximateLegacyThinking
-        } else {
-            agent.thinking = .auto
+        // Helper delegation never blindly forwards parent thinking onto another companion/model contract;
+        // it runs under `.inheritDefault` compiled against the helper's own endpoint contract.
+        let helperContract = thinkingContract(for: found.endpoint, model: found.model)
+        let helperStyle: ThinkingStyle? = found.endpoint.kind.supportsThinkingStyleSelection ? found.endpoint.thinkingStyle : nil
+        let helperResolution = ThinkingRuleResolver.resolve(
+            selection: .inheritDefault,
+            contract: helperContract,
+            style: helperStyle,
+            intent: .userChat
+        )
+        agent.thinking = .auto
+        if found.endpoint.kind == .openai {
+            agent.thinkingBodyFields = helperResolution.bodyFields
         }
         agent.maxSteps = min(Pref.maxSteps, 24)
         let before = doing[key]

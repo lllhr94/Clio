@@ -500,7 +500,8 @@ public struct ModelsDevCatalogSnapshot: Codable, Equatable, Sendable {
     public static func parseAndValidate(
         data: Data,
         generation: UInt64 = 1,
-        policy: ValidationPolicy = .default
+        policy: ValidationPolicy = .default,
+        previous: ModelsDevCatalogSnapshot? = nil
     ) throws -> ModelsDevCatalogSnapshot {
         if data.count > policy.maxBytes {
             throw CatalogValidationError.oversize(bytes: data.count, limit: policy.maxBytes)
@@ -554,14 +555,6 @@ public struct ModelsDevCatalogSnapshot: Codable, Equatable, Sendable {
                 guard !trimmedID.isEmpty else { continue }
                 totalModels += 1
 
-                let hasModalities = modelDict["modalities"] is [String: Any]
-                let hasLimit = modelDict["limit"] is [String: Any]
-                let hasReasoningField = modelDict["reasoning"] is Bool
-                let hasToolCallField = modelDict["tool_call"] is Bool
-                if hasModalities || hasLimit || (hasReasoningField && hasToolCallField) {
-                    validRequiredFieldModels += 1
-                }
-
                 let inputs = (modelDict["modalities"] as? [String: Any])?["input"] as? [String] ?? []
                 let attachment = modelDict["attachment"] as? Bool ?? false
                 let sees = inputs.contains("image") || (attachment && inputs.isEmpty)
@@ -572,25 +565,35 @@ public struct ModelsDevCatalogSnapshot: Codable, Equatable, Sendable {
                 let contextWindow = (limitDict?["context"] as? NSNumber)?.intValue ?? 0
                 let outputLimit = (limitDict?["output"] as? NSNumber)?.intValue ?? 0
 
+                let hasValidModalities = !inputs.isEmpty
+                let hasValidLimit = contextWindow > 0 || outputLimit > 0
+                let hasReasoningField = modelDict["reasoning"] is Bool
+                let hasToolCallField = modelDict["tool_call"] is Bool
+                if hasValidModalities || hasValidLimit || (hasReasoningField && hasToolCallField) {
+                    validRequiredFieldModels += 1
+                }
+
                 var hasToggle = false
                 var explicitOffEffortToken: String? = nil
                 var efforts: [String] = []
                 var budgetMin: Int? = nil
                 var budgetMax: Int? = nil
-                var hasReasoningOptions = false
+                var parsedValidReasoningOption = false
 
                 if let options = modelDict["reasoning_options"] as? [[String: Any]], !options.isEmpty {
-                    hasReasoningOptions = true
                     for option in options {
                         guard let type = (option["type"] as? String)?.lowercased() else { continue }
                         switch type {
                         case "toggle":
                             hasToggle = true
+                            parsedValidReasoningOption = true
                         case "effort":
-                            if let values = option["values"] as? [String] {
+                            if let values = option["values"] as? [String], !values.isEmpty {
+                                var parsedAnyValue = false
                                 for rawVal in values {
                                     let val = rawVal.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                                     guard !val.isEmpty else { continue }
+                                    parsedAnyValue = true
                                     if val == "none" || val == "off" || val == "disabled" {
                                         hasToggle = true
                                         if explicitOffEffortToken == nil { explicitOffEffortToken = val }
@@ -598,20 +601,25 @@ public struct ModelsDevCatalogSnapshot: Codable, Equatable, Sendable {
                                         efforts.append(val)
                                     }
                                 }
+                                if parsedAnyValue { parsedValidReasoningOption = true }
                             }
                         case "budget_tokens":
-                            if let minVal = (option["min"] as? NSNumber)?.intValue {
+                            var parsedBudget = false
+                            if let minVal = (option["min"] as? NSNumber)?.intValue, !(option["min"] is Bool) {
                                 budgetMin = minVal
+                                parsedBudget = true
                             }
-                            if let maxVal = (option["max"] as? NSNumber)?.intValue {
+                            if let maxVal = (option["max"] as? NSNumber)?.intValue, !(option["max"] is Bool) {
                                 budgetMax = maxVal
+                                parsedBudget = true
                             }
+                            if parsedBudget { parsedValidReasoningOption = true }
                         default:
                             break
                         }
                     }
                 }
-                if hasReasoningOptions {
+                if parsedValidReasoningOption {
                     reasoningOptionsCount += 1
                 }
 
@@ -628,7 +636,7 @@ public struct ModelsDevCatalogSnapshot: Codable, Equatable, Sendable {
                 }
 
                 let reasoningMode: CatalogReasoningMode
-                if reasoning == nil && !hasReasoningOptions {
+                if reasoning == nil && !parsedValidReasoningOption {
                     reasoningMode = .unspecified
                 } else if reasoning == false {
                     reasoningMode = .disabled
@@ -686,7 +694,15 @@ public struct ModelsDevCatalogSnapshot: Codable, Equatable, Sendable {
         guard validRatio >= policy.minValidModelFieldRatio else {
             throw CatalogValidationError.missingRequiredFields(validRatio: validRatio, minimum: policy.minValidModelFieldRatio)
         }
-        guard reasoningOptionsCount >= policy.minReasoningOptionsModels && interleavedCount >= policy.minInterleavedModels else {
+        let minReasoningRequired = max(
+            policy.minReasoningOptionsModels,
+            previous.map { $0.modelsWithReasoningOptions / 2 } ?? 0
+        )
+        let minInterleavedRequired = max(
+            policy.minInterleavedModels,
+            previous.map { $0.modelsWithInterleaved / 2 } ?? 0
+        )
+        guard reasoningOptionsCount >= minReasoningRequired && interleavedCount >= minInterleavedRequired else {
             throw CatalogValidationError.capabilityDegradation(
                 reasoningOptionsCount: reasoningOptionsCount,
                 interleavedCount: interleavedCount
@@ -797,11 +813,17 @@ public struct EndpointContractKey: Codable, Equatable, Hashable, Sendable {
 
 /// User-confirmed manual thinking rule bound strictly to an `(origin, protocolKind, route, modelID)` contract.
 /// On backup restore, rules MUST be revalidated against the restored endpoint contract before activation.
+/// Tolerantly preserves unknown future `wireStyle` strings on decode/re-encode and marks such rules invalid/inactive.
 public struct ManualThinkingRule: Codable, Equatable, Hashable, Sendable {
     public var contract: EndpointContractKey
     public var canDisable: Bool
     public var supportedEfforts: [String]
-    public var wireStyle: ThinkingStyle?
+    public var wireStyle: ThinkingStyle? {
+        didSet {
+            if wireStyle != nil { unknownWireStyleRaw = nil }
+        }
+    }
+    public var unknownWireStyleRaw: String?
     public var ruleGeneration: UInt64
 
     public init(
@@ -809,17 +831,60 @@ public struct ManualThinkingRule: Codable, Equatable, Hashable, Sendable {
         canDisable: Bool,
         supportedEfforts: [String],
         wireStyle: ThinkingStyle? = nil,
+        unknownWireStyleRaw: String? = nil,
         ruleGeneration: UInt64 = 1
     ) {
         self.contract = contract
         self.canDisable = canDisable
         self.supportedEfforts = supportedEfforts.map { $0.lowercased() }
         self.wireStyle = wireStyle
+        self.unknownWireStyleRaw = wireStyle == nil ? unknownWireStyleRaw : nil
         self.ruleGeneration = ruleGeneration
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case contract, canDisable, supportedEfforts, wireStyle, ruleGeneration
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        contract = try c.decode(EndpointContractKey.self, forKey: .contract)
+        canDisable = try c.decode(Bool.self, forKey: .canDisable)
+        supportedEfforts = (try c.decode([String].self, forKey: .supportedEfforts)).map { $0.lowercased() }
+        if let rawStyle = try c.decodeIfPresent(String.self, forKey: .wireStyle) {
+            if let known = ThinkingStyle(rawValue: rawStyle) {
+                wireStyle = known
+                unknownWireStyleRaw = nil
+            } else {
+                wireStyle = nil
+                unknownWireStyleRaw = rawStyle
+            }
+        } else {
+            wireStyle = nil
+            unknownWireStyleRaw = nil
+        }
+        ruleGeneration = try c.decodeIfPresent(UInt64.self, forKey: .ruleGeneration) ?? 1
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(contract, forKey: .contract)
+        try c.encode(canDisable, forKey: .canDisable)
+        try c.encode(supportedEfforts, forKey: .supportedEfforts)
+        if let wireStyle {
+            try c.encode(wireStyle.rawValue, forKey: .wireStyle)
+        } else if let unknownWireStyleRaw {
+            try c.encode(unknownWireStyleRaw, forKey: .wireStyle)
+        }
+        try c.encode(ruleGeneration, forKey: .ruleGeneration)
+    }
+
+    public var isDisabledByUnknownStyle: Bool {
+        unknownWireStyleRaw != nil
+    }
+
     public func isValid(for target: EndpointContractKey) -> Bool {
-        contract.matches(target)
+        !isDisabledByUnknownStyle && contract.matches(target)
     }
 }
 
@@ -853,6 +918,63 @@ public enum ThinkingRuleResolver {
         public var interleavedField: String?
         public var ruleGeneration: UInt64
         public var matchResult: CatalogMatchResult
+
+        public init(
+            contractKey: EndpointContractKey,
+            catalogProviderKey: String?,
+            isConfirmedOfficialOrigin: Bool,
+            isKnownContract: Bool,
+            supportsThinking: Bool,
+            canExplicitlyDisable: Bool,
+            offeredSelections: [ThinkingSelection],
+            effortAliases: [String: String],
+            mutualExclusionPolicy: String?,
+            echoesReasoning: Bool,
+            interleavedField: String?,
+            ruleGeneration: UInt64,
+            matchResult: CatalogMatchResult
+        ) {
+            self.contractKey = contractKey
+            self.catalogProviderKey = catalogProviderKey
+            self.isConfirmedOfficialOrigin = isConfirmedOfficialOrigin
+            self.isKnownContract = isKnownContract
+            self.supportsThinking = supportsThinking
+            self.canExplicitlyDisable = canExplicitlyDisable
+            self.offeredSelections = offeredSelections
+            self.effortAliases = effortAliases
+            self.mutualExclusionPolicy = mutualExclusionPolicy
+            self.echoesReasoning = echoesReasoning
+            self.interleavedField = interleavedField
+            self.ruleGeneration = ruleGeneration
+            self.matchResult = matchResult
+        }
+
+        public static func disabled(
+            for key: EndpointContractKey,
+            ruleGeneration: UInt64,
+            reason: String
+        ) -> ConfirmedContract {
+            ConfirmedContract(
+                contractKey: key,
+                catalogProviderKey: nil,
+                isConfirmedOfficialOrigin: false,
+                isKnownContract: false,
+                supportsThinking: false,
+                canExplicitlyDisable: false,
+                offeredSelections: [.inheritDefault],
+                effortAliases: [:],
+                mutualExclusionPolicy: nil,
+                echoesReasoning: false,
+                interleavedField: nil,
+                ruleGeneration: ruleGeneration,
+                matchResult: CatalogMatchResult(
+                    entry: nil,
+                    confidence: .ambiguousUnknown,
+                    matchedStage: 0,
+                    explanation: reason
+                )
+            )
+        }
     }
 
     public enum SelectionFulfillment: Equatable, Sendable {
@@ -1356,21 +1478,20 @@ public enum ThinkingRuleResolver {
                 )
             }
 
-            // 2f. Official provider host, but model not yet in snapshot -> fall back to verified official ThinkingStyle contract.
+            // 2f. Official provider host, but model lacks authoritative catalog entry ->
+            // treat as unconfirmed hint ONLY (never infer `canExplicitlyDisable` without model-level evidence or manual rule).
             let officialStyle = style ?? ThinkingStyle.guess(baseURL: key.origin)
-            let legacyOffered = officialStyle.levels(thinks: true).map { ThinkingSelection.fromLegacy($0) }
-            let canDisable = officialStyle != .none && officialStyle.canStop
             return ConfirmedContract(
                 contractKey: key,
                 catalogProviderKey: officialKey,
                 isConfirmedOfficialOrigin: true,
-                isKnownContract: true,
-                supportsThinking: legacyOffered.count > 1,
-                canExplicitlyDisable: canDisable,
-                offeredSelections: legacyOffered,
-                effortAliases: officialStyle == .deepseek ? ["medium": "high", "xhigh": "high"] : [:],
+                isKnownContract: false,
+                supportsThinking: match.entry?.thinks ?? false,
+                canExplicitlyDisable: false,
+                offeredSelections: [.inheritDefault],
+                effortAliases: [:],
                 mutualExclusionPolicy: nil,
-                echoesReasoning: officialStyle.echoesReasoning,
+                echoesReasoning: match.entry?.interleavedField != nil || officialStyle.echoesReasoning,
                 interleavedField: match.entry?.interleavedField,
                 ruleGeneration: activeSnapshot.generation,
                 matchResult: match

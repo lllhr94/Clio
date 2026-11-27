@@ -123,6 +123,8 @@ public struct Agent: Sendable {
 
     /// How hard to think.
     public var thinking: Thinking = .auto
+    /// Optional pre-resolved v2 thinking wire fields (from `ThinkingRuleResolver`).
+    public var thinkingBodyFields: [String: ThinkingWireValue]? = nil
     /// Seconds to wait before each new try of a request that failed on the way; one entry per try.
     public var retryDelays: [Double] = [1, 3]
     /// What the person said while the turn was at work (插话): read between steps, before the model is asked again.
@@ -142,7 +144,15 @@ public struct Agent: Sendable {
 
     /// Asks once with no tools and returns the whole answer: for summaries and titles.
     public func ask(_ prompt: String) async throws -> String {
-        var request = ModelRequest(model: model, system: system, messages: [.user(prompt)], temperature: temperature, outputLimit: outputLimit, thinking: thinking)
+        var request = ModelRequest(
+            model: model,
+            system: system,
+            messages: [.user(prompt)],
+            temperature: temperature,
+            outputLimit: outputLimit,
+            thinking: thinking,
+            thinkingBodyFields: thinkingBodyFields
+        )
         let retryArbiter = WholeTurnRetryArbiter()
         var text = ""
         var finished: String?
@@ -162,6 +172,7 @@ public struct Agent: Sendable {
                                            canTrimContext: false, hasTransientRetry: attempt < retryDelays.count) {
                 case .retryWithoutThinking:
                     request.thinking = .auto
+                    request.thinkingBodyFields = nil
                 case .retryTransient:
                     let wait = retryDelays[attempt]
                     attempt += 1
@@ -241,7 +252,8 @@ public struct Agent: Sendable {
             }
             var request = ModelRequest(
                 model: model, system: system, messages: requestMessages(startingAt: retainedStart),
-                tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking
+                tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking,
+                thinkingBodyFields: thinkingBodyFields
             )
             var text = ""
             var images: [ReplyImage] = []
@@ -310,7 +322,9 @@ public struct Agent: Sendable {
                         let reason = (error as? ProviderError)?.message ?? error.localizedDescription
                         await emit(.thinkingRefused(thinking, reason: reason))
                         thinking = .auto
+                        thinkingBodyFields = nil
                         request.thinking = .auto
+                        request.thinkingBodyFields = nil
                     case .retryShorterContext:
                         retainedStart = activeTurnStart
                         request.messages = requestMessages(startingAt: retainedStart)

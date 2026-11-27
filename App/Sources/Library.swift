@@ -402,20 +402,10 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
                 route: kind.defaultRoutePath,
                 modelID: model
             )
-            return ThinkingRuleResolver.ConfirmedContract(
-                contractKey: fallbackKey,
-                catalogProviderKey: nil,
-                isConfirmedOfficialOrigin: false,
-                isKnownContract: false,
-                supportsThinking: false,
-                canExplicitlyDisable: false,
-                offeredSelections: [.inheritDefault],
-                effortAliases: [:],
-                mutualExclusionPolicy: nil,
-                echoesReasoning: false,
-                interleavedField: nil,
+            return ThinkingRuleResolver.ConfirmedContract.disabled(
+                for: fallbackKey,
                 ruleGeneration: activeSnapshot.generation,
-                matchResult: .init(entry: nil, confidence: .ambiguousUnknown, matchedStage: 0, explanation: disabledProtocolReason ?? "端点未启用")
+                reason: disabledProtocolReason ?? "端点未启用"
             )
         }
         let effectiveStyle: ThinkingStyle? = kind.supportsThinkingStyleSelection ? style : nil
@@ -596,8 +586,11 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
             return DisabledProtocolProvider(reason: disabledReason)
         }
         switch kind {
-        case .openai, .openaiResponses, .openaiCodex:
+        case .openai:
             return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle, fixedRoute: true)
+        case .openaiResponses, .openaiCodex:
+            // Avoid authorization-vs-wire route mismatch (`/responses` vs `/chat/completions`) before PR 2B wires `OpenAIResponsesProvider`.
+            return DisabledProtocolProvider(reason: "「\(name)」所选的 \(kind.displayTitle) 协议正在接入中，暂未发起请求。")
         case .anthropic:
             return AnthropicProvider(
                 baseURL: baseURL,

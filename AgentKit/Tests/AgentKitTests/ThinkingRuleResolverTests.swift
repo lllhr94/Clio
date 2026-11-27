@@ -454,4 +454,202 @@ final class ThinkingRuleResolverTests: XCTestCase {
         let intersected = ThinkingRuleResolver.intersectOfferings([dsContract, gpt5Contract])
         XCTAssertEqual(intersected, [.inheritDefault, .effort("low"), .effort("high")])
     }
+
+    func testResolvedBodyFieldsReachOpenAIWireBodyWithoutLossyDowngrade() throws {
+        let snapshot = try makeFixtureSnapshot()
+
+        // gpt-5 `minimal` stays `"minimal"` on the wire (never downgraded to `"low"`).
+        let gpt5Contract = ThinkingRuleResolver.contract(
+            for: EndpointContractKey(
+                origin: "https://api.openai.com",
+                protocolKind: "openai",
+                route: "/v1/chat/completions",
+                modelID: "gpt-5"
+            ),
+            style: .effort,
+            snapshot: snapshot
+        )
+        let minRes = ThinkingRuleResolver.resolve(selection: .effort("minimal"), contract: gpt5Contract, style: .effort)
+        let minReq = ModelRequest(
+            model: "gpt-5",
+            system: "",
+            messages: [.user("hi")],
+            thinking: .low,
+            thinkingBodyFields: minRes.bodyFields
+        )
+        let minBody = OpenAIProvider.body(minReq, style: .effort)
+        XCTAssertEqual(minBody["reasoning_effort"] as? String, "minimal")
+
+        // gpt-5.2 `xhigh` stays `"xhigh"` on the wire (never downgraded to `"high"`).
+        let gpt52Contract = ThinkingRuleResolver.contract(
+            for: EndpointContractKey(
+                origin: "https://api.openai.com",
+                protocolKind: "openai",
+                route: "/v1/chat/completions",
+                modelID: "gpt-5.2"
+            ),
+            style: .effort,
+            snapshot: snapshot
+        )
+        let xhRes = ThinkingRuleResolver.resolve(selection: .effort("xhigh"), contract: gpt52Contract, style: .effort)
+        let xhReq = ModelRequest(
+            model: "gpt-5.2",
+            system: "",
+            messages: [.user("hi")],
+            thinking: .high,
+            thinkingBodyFields: xhRes.bodyFields
+        )
+        let xhBody = OpenAIProvider.body(xhReq, style: .effort)
+        XCTAssertEqual(xhBody["reasoning_effort"] as? String, "xhigh")
+
+        // Bailian effort model sends `reasoning_effort` without `thinking_budget` on actual wire body.
+        let dsBailianContract = ThinkingRuleResolver.contract(
+            for: EndpointContractKey(
+                origin: "https://dashscope.aliyuncs.com",
+                protocolKind: "openai",
+                route: "/compatible-mode/v1/chat/completions",
+                modelID: "deepseek-v4-flash-0731"
+            ),
+            style: .qwen,
+            snapshot: snapshot
+        )
+        let bailianRes = ThinkingRuleResolver.resolve(selection: .effort("high"), contract: dsBailianContract, style: .qwen)
+        let bailianReq = ModelRequest(
+            model: "deepseek-v4-flash-0731",
+            system: "",
+            messages: [.user("hi")],
+            thinking: .high,
+            thinkingBodyFields: bailianRes.bodyFields
+        )
+        let bailianBody = OpenAIProvider.body(bailianReq, style: .qwen)
+        XCTAssertEqual(bailianBody["enable_thinking"] as? Bool, true)
+        XCTAssertEqual(bailianBody["reasoning_effort"] as? String, "high")
+        XCTAssertNil(bailianBody["thinking_budget"])
+    }
+
+    func testUnlistedOfficialModelDoesNotClaimDisableAndManualRuleToleratesUnknownWireStyle() throws {
+        let snapshot = try makeFixtureSnapshot()
+
+        // Unlisted model on OpenRouter must NOT gain `canExplicitlyDisable` from generic `.openrouter.canStop`.
+        let unlistedKey = EndpointContractKey(
+            origin: "https://openrouter.ai",
+            protocolKind: "openai",
+            route: "/api/v1/chat/completions",
+            modelID: "vendor/unlisted-thinking-model"
+        )
+        let unlistedContract = ThinkingRuleResolver.contract(for: unlistedKey, style: .openrouter, snapshot: snapshot)
+        XCTAssertFalse(unlistedContract.isKnownContract)
+        XCTAssertFalse(unlistedContract.canExplicitlyDisable)
+        let offAttempt = ThinkingRuleResolver.resolve(selection: .explicitOff, contract: unlistedContract, style: .openrouter)
+        guard case .unfulfilledExplicitOff = offAttempt.fulfillment else {
+            return XCTFail("Unlisted OpenRouter model must reject explicitOff without model-level evidence")
+        }
+
+        // ManualThinkingRule with future unknown `wireStyle` decodes tolerantly, preserves raw string, and stays inactive.
+        let rawRuleJSON = Data("""
+        {
+          "contract": {
+            "origin": "https://relay.example.com",
+            "protocolKind": "openai",
+            "route": "/v1/chat/completions",
+            "modelID": "demo"
+          },
+          "canDisable": true,
+          "supportedEfforts": ["low", "high"],
+          "wireStyle": "future_style_v9",
+          "ruleGeneration": 2
+        }
+        """.utf8)
+        let decoded = try JSONDecoder().decode(ManualThinkingRule.self, from: rawRuleJSON)
+        XCTAssertNil(decoded.wireStyle)
+        XCTAssertEqual(decoded.unknownWireStyleRaw, "future_style_v9")
+        XCTAssertTrue(decoded.isDisabledByUnknownStyle)
+        XCTAssertFalse(decoded.isValid(for: decoded.contract))
+        let reencoded = try JSONEncoder().encode(decoded)
+        let roundTrip = try JSONDecoder().decode(ManualThinkingRule.self, from: reencoded)
+        XCTAssertEqual(roundTrip.unknownWireStyleRaw, "future_style_v9")
+    }
+
+    func testEmptyOptionsAndRelativeDegradationAreRejectedByCatalogValidator() throws {
+        // Empty `reasoning_options: [{}]` and empty `limit: {}` must NOT satisfy validation thresholds.
+        var emptyFieldsServices: [String: Any] = [:]
+        for p in 0..<12 {
+            var models: [String: Any] = [:]
+            for m in 0..<10 {
+                models["m-\(p)-\(m)"] = [
+                    "modalities": [:],
+                    "limit": [:],
+                    "reasoning_options": [[:]],
+                ]
+            }
+            emptyFieldsServices["p-\(p)"] = ["models": models]
+        }
+        let emptyPayload = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 2,
+            "services": emptyFieldsServices,
+        ])
+        XCTAssertThrowsError(try ModelsDevCatalogSnapshot.parseAndValidate(data: emptyPayload)) { error in
+            guard case CatalogValidationError.missingRequiredFields = error else {
+                return XCTFail("Expected missingRequiredFields for empty limit/modalities, got \(error)")
+            }
+        }
+
+        // Relative degradation: when previous healthy snapshot had 100 reasoning_options and 60 interleaved,
+        // a refresh dropping to 25 reasoning_options and 12 interleaved must be rejected even though above absolute floor.
+        var prevEntries: [String: [String: CatalogModelEntry]] = [:]
+        var modelsMap: [String: CatalogModelEntry] = [:]
+        for i in 0..<100 {
+            modelsMap["m-\(i)"] = CatalogModelEntry(
+                rawModelID: "m-\(i)",
+                catalogProviderKey: "p0",
+                canonicalModelID: "m-\(i)",
+                normalizedAliases: ["m-\(i)"],
+                sees: false,
+                tools: true,
+                reasoning: true,
+                reasoningMode: .effortSet,
+                canToggleOff: true,
+                supportedEfforts: ["low", "high"],
+                interleavedField: i < 60 ? "reasoning_content" : nil,
+                contextWindow: 128_000,
+                outputLimit: 8192
+            )
+        }
+        prevEntries["p0"] = modelsMap
+        let healthyPrevious = ModelsDevCatalogSnapshot(generation: 1, entriesByProvider: prevEntries)
+
+        var degradedServices: [String: Any] = [:]
+        var idx = 0
+        for p in 0..<12 {
+            var models: [String: Any] = [:]
+            for m in 0..<10 {
+                var item: [String: Any] = [
+                    "reasoning": true,
+                    "tool_call": true,
+                    "modalities": ["input": ["text"]],
+                    "limit": ["context": 128_000, "output": 8192],
+                ]
+                if idx < 25 {
+                    item["reasoning_options"] = [["type": "toggle"]]
+                }
+                if idx < 12 {
+                    item["interleaved"] = ["field": "reasoning_content"]
+                }
+                models["m-\(p)-\(m)"] = item
+                idx += 1
+            }
+            degradedServices["svc-\(p)"] = ["models": models]
+        }
+        let relativeDegraded = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": 2,
+            "services": degradedServices,
+        ])
+        XCTAssertThrowsError(
+            try ModelsDevCatalogSnapshot.parseAndValidate(data: relativeDegraded, previous: healthyPrevious)
+        ) { error in
+            guard case CatalogValidationError.capabilityDegradation = error else {
+                return XCTFail("Expected relative capabilityDegradation, got \(error)")
+            }
+        }
+    }
 }

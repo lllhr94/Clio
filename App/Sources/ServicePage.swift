@@ -1018,24 +1018,18 @@ struct ModelSheet: View {
         .onDisappear {
             commitCustomName()
         }
-        .onChange(of: traits.thinks) { oldValue, thinks in
-            guard hasLoaded, oldValue != thinks else { return }
-            traits.thinksSource = .userManual
+    }
+
+    private func persistTraitsChange(_ next: ModelTraits, markThinksManual: Bool = false) {
+        var updated = next
+        if markThinksManual {
+            updated.thinksSource = .userManual
             hasLegacyConflict = false
-            if !thinks && traits.levels != nil {
-                traits.levels = nil
-                traits.levelsSource = .userManual
-            } else if thinks && traits.levels?.isEmpty == true {
-                traits.levels = nil
-                traits.levelsSource = .catalog
-            }
         }
-        .onChange(of: traits) { _, value in
-            guard hasLoaded, value != endpoint?.traits(model) else { return }
-            let baseline = endpoint?.traits(model, ignoringCorrection: true) ?? ModelTraits.known(model)
-            let isBaseline = value.hasSameCapabilities(as: baseline) && value.thinksSource != .userManual
-            team.setTraits(endpointId, model: model, isBaseline ? nil : value)
-        }
+        traits = updated
+        let baseline = endpoint?.traits(model, ignoringCorrection: true) ?? ModelTraits.known(model)
+        let isBaseline = updated.hasSameCapabilities(as: baseline) && updated.thinksSource != .userManual
+        team.setTraits(endpointId, model: model, isBaseline ? nil : updated)
     }
 
     private var legacyConflictCard: some View {
@@ -1129,15 +1123,50 @@ struct ModelSheet: View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
             SectionTitle(L.t("settings.modelCapabilities"))
             VStack(spacing: 0) {
-                toggleRow(L.t("settings.modelVision"), isOn: $traits.sees)
+                toggleRow(L.t("settings.modelVision"), isOn: Binding(
+                    get: { traits.sees },
+                    set: { next in
+                        var updated = traits
+                        updated.sees = next
+                        persistTraitsChange(updated)
+                    }
+                ))
                 Kit.rule(inset: Ink.Space.l)
-                toggleRow(L.t("settings.modelTools"), isOn: $traits.tools)
+                toggleRow(L.t("settings.modelTools"), isOn: Binding(
+                    get: { traits.tools },
+                    set: { next in
+                        var updated = traits
+                        updated.tools = next
+                        persistTraitsChange(updated)
+                    }
+                ))
                 Kit.rule(inset: Ink.Space.l)
-                toggleRow(L.t("settings.modelReasoning"), isOn: $traits.thinks)
+                toggleRow(L.t("settings.modelReasoning"), isOn: Binding(
+                    get: { traits.thinks },
+                    set: { next in
+                        var updated = traits
+                        updated.thinks = next
+                        if !next && updated.levels != nil {
+                            updated.levels = nil
+                            updated.levelsSource = .userManual
+                        } else if next && updated.levels?.isEmpty == true {
+                            updated.levels = nil
+                            updated.levelsSource = .catalog
+                        }
+                        persistTraitsChange(updated, markThinksManual: true)
+                    }
+                ))
                 Kit.rule(inset: Ink.Space.l)
                 StopRow(
                     title: L.t("settings.modelContextLabel"),
-                    value: $traits.window,
+                    value: Binding(
+                        get: { traits.window },
+                        set: { next in
+                            var updated = traits
+                            updated.window = next
+                            persistTraitsChange(updated)
+                        }
+                    ),
                     stops: windowChoices.map { Stop(value: $0, name: Tokens.short($0) + " token") }
                 )
                 .padding(.horizontal, Ink.Space.l)
@@ -1188,8 +1217,10 @@ struct ModelSheet: View {
             if traits.levels != nil {
                 Button(L.t("settings.clearTestedLevels")) {
                     Haptics.tick(0.5)
-                    traits.levels = nil
-                    traits.levelsSource = .catalog
+                    var updated = traits
+                    updated.levels = nil
+                    updated.levelsSource = .catalog
+                    persistTraitsChange(updated)
                 }
                 .font(.system(size: Ink.Size.small, weight: .semibold))
                 .foregroundStyle(Ink.accent)
@@ -1324,7 +1355,7 @@ struct ModelSheet: View {
             var found = traits
             if let sees = sight.sees { found.sees = sees }
             if let calls = tools.calls { found.tools = calls }
-            if found != traits { traits = found }
+            if found != traits { persistTraitsChange(found) }
             note = lines.joined(separator: "\n")
             working = false
         }
