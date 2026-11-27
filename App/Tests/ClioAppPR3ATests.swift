@@ -119,11 +119,11 @@ final class ClioAppPR3ATests: XCTestCase {
 
     func testTeamModelPlanModeIsolatesGlobalGrantsAndBlocksMemoryWriteAndPendingApprovals() {
         let team = TeamModel()
-        team.keeping = false
+        team.phase = .demo
         Grant.desk.policy = .allow
         Grant.memory.policy = .allow
 
-        let key = TeamModel.key(bot: "plan-test-bot")
+        let key = TeamModel.key(bot: "plan-test-bot-\(UUID().uuidString.lowercased())")
         XCTAssertFalse(team.isPlanModeActive(for: key))
         XCTAssertTrue(team.canWriteMemories(beforeCompressing: key))
 
@@ -207,11 +207,16 @@ final class ClioAppPR3ATests: XCTestCase {
 
     func testPlanRecordRevisionAndTurnIDGuardUnlockPlanAndExecute() {
         let team = TeamModel()
-        team.keeping = false
         team.phase = .ready
-        let bot = BotInfo(id: "plan-bot", name: "规划助手")
+        let bot = BotInfo(id: "plan-bot-\(UUID().uuidString.lowercased())", name: "规划助手")
         team.bots = [bot]
         let key = TeamModel.key(bot: bot.id)
+        defer {
+            team.stop(key)
+            ChatDisk.finishWrites()
+            Disk.remove(Disk.chatFile(key))
+            Disk.remove(TeamModel.optionsFile(key))
+        }
 
         team.setPlanMode(true, in: key)
         team.setPlan(key, [TeamModel.PlanStep(text: "第一步：调研结构", state: "todo")], turnID: "turn-1")
@@ -255,9 +260,9 @@ final class ClioAppPR3ATests: XCTestCase {
 
     func testRecallToolUsesZeroWriteRecallReadOnlyInPlanMode() async throws {
         let team = TeamModel()
-        team.keeping = false
+        team.phase = .demo
         Grant.memory.policy = .allow
-        let bot = BotInfo(id: "recall-bot", name: "回忆助手")
+        let bot = BotInfo(id: "recall-bot-\(UUID().uuidString.lowercased())", name: "回忆助手")
         team.bots = [bot]
         let key = TeamModel.key(bot: bot.id)
         team.memories = [
