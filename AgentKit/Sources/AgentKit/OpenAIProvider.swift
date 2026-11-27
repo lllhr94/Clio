@@ -6,24 +6,66 @@ public struct OpenAIProvider: ModelProvider {
     public var apiKey: String
     /// How this service wants to hear about thinking.
     public var style: ThinkingStyle
-    private var fixedRoute: Bool
+    public var customHeaders: [String: String]
+    var fixedRoute: Bool
 
-    public init(baseURL: String, apiKey: String, style: ThinkingStyle? = nil, fixedRoute: Bool = false) {
+    public init(
+        baseURL: String,
+        apiKey: String,
+        style: ThinkingStyle? = nil,
+        fixedRoute: Bool = false,
+        customHeaders: [String: String] = [:]
+    ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.style = style ?? ThinkingStyle.guess(baseURL: baseURL)
         self.fixedRoute = fixedRoute
+        self.customHeaders = customHeaders
+    }
+
+    func effectiveContractKey(for model: String, endpointURL: URL? = nil) -> EndpointContractKey {
+        let resolvedURL = endpointURL ?? (try? HTTP.endpoint(baseURL, "/chat/completions"))
+        let route = resolvedURL?.path.isEmpty == false ? resolvedURL!.path : "/chat/completions"
+        return EndpointContractKey(origin: baseURL, protocolKind: "openai", route: route, modelID: model)
     }
 
     public func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
-            var http = URLRequest(url: try HTTP.endpoint(baseURL, "/chat/completions"))
+            let url = try HTTP.endpoint(baseURL, "/chat/completions")
+            let derivedContract = effectiveContractKey(for: request.model, endpointURL: url)
+            if let supplied = request.contractKey, !supplied.matches(derivedContract) {
+                throw ProviderError("请求契约与当前服务地址或协议不匹配，已阻止发送。")
+            }
+            if case .missingOrIncompatible(let reason) = Self.verifyContinuation(
+                request.messages,
+                style: style,
+                contractKey: derivedContract,
+                speakerOrThreadID: request.speakerOrThreadID,
+                hasTools: !request.tools.isEmpty
+            ) {
+                throw ProviderError(reason)
+            }
+            var boundRequest = request
+            boundRequest.contractKey = derivedContract
+            var http = URLRequest(url: url)
             http.httpMethod = "POST"
             http.setValue("application/json", forHTTPHeaderField: "Content-Type")
             http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            http.httpBody = try HTTP.json(Self.body(request, style: style))
-            let session = fixedRoute ? FixedModelRoute.session : HTTP.session
-            return Self.splittingThoughts(HTTP.stream(http, acceptsJSON: true, session: session, decode: Self.decode))
+            var mergedHeaders = customHeaders
+            for (k, v) in request.customHeaders { mergedHeaders[k] = v }
+            HTTP.applyNonSecretHeaders(mergedHeaders, to: &http)
+            http.httpBody = try HTTP.json(Self.body(boundRequest, style: style))
+            let session = fixedRoute ? FixedModelRoute.session : nil
+            return Self.splittingThoughts(
+                HTTP.stream(
+                    http,
+                    acceptsJSON: true,
+                    session: session,
+                    rejectAllRedirects: fixedRoute,
+                    timeouts: request.streamTimeouts,
+                    decode: Self.decode
+                )
+            )
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
@@ -36,7 +78,9 @@ public struct OpenAIProvider: ModelProvider {
     public func catalog() async throws -> (ids: [String], windows: [String: Int]) {
         var http = URLRequest(url: try HTTP.endpoint(baseURL, "/models"))
         http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        let list = try await HTTP.get(http)
+        HTTP.applyNonSecretHeaders(customHeaders, to: &http)
+        let session = fixedRoute ? FixedModelRoute.session : nil
+        let list = try await HTTP.get(http, session: session, rejectAllRedirects: fixedRoute)
         var windows: [String: Int] = [:]
         var ids: [String] = []
         for entry in list["data"]?.array ?? [] {
@@ -121,11 +165,39 @@ public struct OpenAIProvider: ModelProvider {
         }
     }
 
+    /// Verifies whether mandatory reasoning continuation for Chat Completions (e.g. DeepSeek/Kimi with tools)
+    /// can be safely projected under the target contract without cross-origin/cross-speaker replay.
+    public static func verifyContinuation(
+        _ messages: [Message],
+        style: ThinkingStyle,
+        contractKey: EndpointContractKey,
+        speakerOrThreadID: String? = nil,
+        hasTools: Bool
+    ) -> ContinuationProjectionStatus {
+        guard style.echoesReasoning, hasTools, style == .deepseek || style == .kimi else {
+            return .notRequired
+        }
+        let turnStart = messages.lastIndex(where: { $0.role == .user }) ?? 0
+        for (index, message) in messages.enumerated() where index > turnStart && message.role == .assistant {
+            guard let payloads = message.continuationPayloads, !payloads.isEmpty else { continue }
+            let compatible = payloads.contains {
+                $0.wireKind == "openai_reasoning_content"
+                    && $0.isCompatible(with: contractKey, speakerOrThreadID: speakerOrThreadID)
+            }
+            if !compatible {
+                return .missingOrIncompatible(
+                    reason: "历史推理载荷来自不同的服务源站、协议或发言者，无法安全续传给当前 \(style.title) 工具轮。"
+                )
+            }
+        }
+        return .compatible
+    }
+
     static func body(_ request: ModelRequest, style: ThinkingStyle = .effort) -> [String: Any] {
         var messages: [[String: Any]] = []
         if !request.system.isEmpty { messages.append(["role": "system", "content": request.system]) }
-        // Services that keep a model's thoughts want all of them back once tools are in play (DeepSeek refuses a
-        // tool call without them); the others need them only inside the turn still running.
+        // Services that echo reasoning want all of them back once tools are in play (DeepSeek refuses a tool call
+        // without them); services with `echoesReasoning == false` must NEVER receive `reasoning_content`.
         let turnStart = (style.echoesReasoning && !request.tools.isEmpty) ? -1 : (request.messages.lastIndex { $0.role == .user } ?? 0)
         // Tool messages carry text only here; pictures a tool brought back follow as a user message after them.
         var held: [ImagePart] = []
@@ -158,8 +230,22 @@ public struct OpenAIProvider: ModelProvider {
                         ["id": call.id, "type": "function", "function": ["name": call.name, "arguments": call.arguments.isEmpty ? "{}" : call.arguments]]
                     }
                 }
-                if index > turnStart {
-                    if let reasoning = message.reasoning, !reasoning.isEmpty {
+                if style.echoesReasoning, index > turnStart {
+                    if let payloads = message.continuationPayloads, !payloads.isEmpty {
+                        // Contract-bound continuation payloads: NEVER replay without an explicit matching target contract.
+                        if let target = request.contractKey {
+                            let matching = payloads
+                                .filter { payload in
+                                    payload.wireKind == "openai_reasoning_content"
+                                        && payload.isCompatible(with: target, speakerOrThreadID: request.speakerOrThreadID)
+                                }
+                                .sorted { $0.blockOrder < $1.blockOrder }
+                            if !matching.isEmpty {
+                                let combined = matching.map(\.opaqueData).joined()
+                                if !combined.isEmpty { item["reasoning_content"] = combined }
+                            }
+                        }
+                    } else if let reasoning = message.reasoning, !reasoning.isEmpty {
                         item["reasoning_content"] = reasoning
                     } else if !message.toolCalls.isEmpty, style == .deepseek || style == .kimi {
                         item["reasoning_content"] = ""

@@ -4,6 +4,26 @@ public enum ImageGenerationError: Error, Equatable {
     case invalidEndpoint, invalidResponse, contentRejected, insufficientQuota, invalidKey, rateLimited, timeout, serviceUnavailable
 }
 
+/// Distinguishes standard `/images/generations` endpoints (`.openai`, `.openaiResponses`)
+/// from the gated experimental `.openaiCodex` subscription image pipeline.
+public enum ImageEndpointMode: String, Codable, Equatable, Sendable {
+    case standard
+    case codexExperimental
+}
+
+/// Result of probing an experimental `.openaiCodex` endpoint's image capabilities without polluting chat models.
+public struct CodexImageProbeResult: Equatable, Sendable {
+    public let supported: Bool
+    public let supportedModels: [String]
+    public let note: String?
+
+    public init(supported: Bool, supportedModels: [String], note: String? = nil) {
+        self.supported = supported
+        self.supportedModels = supportedModels
+        self.note = note
+    }
+}
+
 extension OpenAIProvider {
     /// Returns the image bytes from an OpenAI-compatible images endpoint.
     public func generateImage(model: String, prompt: String, size: String) async throws -> Data {
@@ -15,12 +35,13 @@ extension OpenAIProvider {
 
     func generateImage(model: String, prompt: String, size: String, session: URLSession?) async throws -> Data {
         let request = try imageRequest(model: model, prompt: prompt, size: size)
-        let lease = session == nil ? HTTP.SessionPool.shared.acquireLease() : nil
-        let activeSession = session ?? lease?.session ?? HTTP.session
+        let lease = (session == nil && !fixedRoute) ? HTTP.SessionPool.shared.acquireLease() : nil
+        let activeSession = session ?? (fixedRoute ? FixedModelRoute.session : (lease?.session ?? HTTP.session))
+        let taskDelegate: URLSessionTaskDelegate = fixedRoute ? FixedModelRoute.rejectDelegate : HTTP.RedirectGuardDelegate.shared
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (bytes, response) = try await activeSession.bytes(for: request)
+            (bytes, response) = try await activeSession.bytes(for: request, delegate: taskDelegate)
         } catch {
             if let lease { HTTP.SessionPool.shared.releaseLease(lease) }
             throw error
@@ -83,6 +104,7 @@ extension OpenAIProvider {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        HTTP.applyNonSecretHeaders(customHeaders, to: &request)
         request.httpBody = try HTTP.json(["model": model, "prompt": prompt, "size": size, "n": 1])
         return request
     }
@@ -107,5 +129,67 @@ extension OpenAIProvider {
         if status == 429 { return .rateLimited }
         if status >= 500 { return .serviceUnavailable }
         return .invalidResponse
+    }
+}
+
+extension OpenAIResponsesProvider {
+    public var imageEndpointMode: ImageEndpointMode {
+        isCodex ? .codexExperimental : .standard
+    }
+
+    /// Generates an image using the appropriate pipeline:
+    /// - `.openaiResponses`: standard `/images/generations` (strictly without unsupported `complexity: low`).
+    /// - `.openaiCodex`: experimental gated path (never injects `complexity: low`, degrades cleanly when unpermitted).
+    public func generateImage(model: String, prompt: String, size: String) async throws -> Data {
+        try await generateImage(model: model, prompt: prompt, size: size, session: nil)
+    }
+
+    func generateImage(model: String, prompt: String, size: String, session: URLSession?) async throws -> Data {
+        let delegate = OpenAIProvider(baseURL: baseURL, apiKey: apiKey, fixedRoute: fixedRoute, customHeaders: customHeaders)
+        return try await delegate.generateImage(model: model, prompt: prompt, size: size, session: session)
+    }
+
+    /// Probes experimental `.openaiCodex` image model availability by inspecting the endpoint's `/models` catalog
+    /// without injecting invalid fields (`complexity: low`) or mutating chat model filters.
+    public func probeCodexImageCapabilities() async -> CodexImageProbeResult {
+        await probeCodexImageCapabilities(session: nil)
+    }
+
+    func probeCodexImageCapabilities(session: URLSession?) async -> CodexImageProbeResult {
+        guard isCodex else {
+            return CodexImageProbeResult(supported: true, supportedModels: [], note: nil)
+        }
+        do {
+            let discovered = try await catalog(session: session).ids
+            let imageModels = discovered.filter(Self.looksLikeImageModelID)
+            if imageModels.isEmpty {
+                return CodexImageProbeResult(
+                    supported: false,
+                    supportedModels: [],
+                    note: "当前 Codex 订阅账号未返回可用生图模型，已自动隐藏生图入口。"
+                )
+            }
+            return CodexImageProbeResult(supported: true, supportedModels: imageModels, note: nil)
+        } catch let failure as ProviderError where failure.status == 401 || failure.status == 403 {
+            return CodexImageProbeResult(
+                supported: false,
+                supportedModels: [],
+                note: "当前 Codex 订阅权限不支持生图探测，已温和降级。"
+            )
+        } catch {
+            return CodexImageProbeResult(
+                supported: false,
+                supportedModels: [],
+                note: "Codex 生图能力暂不可用，不影响聊天使用。"
+            )
+        }
+    }
+
+    static func looksLikeImageModelID(_ id: String) -> Bool {
+        let lower = id.lowercased()
+        return lower.contains("gpt-image")
+            || lower.contains("dall-e")
+            || lower.contains("image-generation")
+            || lower.hasPrefix("imagen")
     }
 }
