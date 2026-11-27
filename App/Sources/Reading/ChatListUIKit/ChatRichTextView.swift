@@ -18,6 +18,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     }
 
     var onQuoteSelection: ((String) -> Void)?
+    var onSubConversationSelection: ((String, String) -> Void)?
     var onSaveNoteSelection: ((String) -> Void)?
     var onSpeakSelection: ((String) -> Void)?
     var onSelectionActiveChanged: ((UUID, Bool) -> Void)?
@@ -646,6 +647,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         clearSelectionIfNeeded()
         clearTileLayers()
         onQuoteSelection = nil
+        onSubConversationSelection = nil
         onSaveNoteSelection = nil
         onSpeakSelection = nil
         onSelectionActiveChanged = nil
@@ -1880,6 +1882,33 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 textView?.selectedRange = NSRange(location: 0, length: 0)
                 self?.publishSelection(false)
                 DispatchQueue.main.async { onQuoteSelection(cleaned) }
+            })
+        }
+        if !currentIsLive, !currentIsLiveTail, let owner = currentOwnerID,
+           let entryID = owner.split(separator: "#", maxSplits: 1).first.map(String.init),
+           onSubConversationSelection != nil || (onQuoteSelection != nil && UUID(uuidString: entryID) != nil) {
+            custom.append(UIAction(
+                title: L.t("subConversation.title"),
+                image: UIImage(systemName: "arrow.branch")
+            ) { [weak self, weak textView] _ in
+                guard let self, self.currentOwnerID == owner else { return }
+                textView?.selectedRange = NSRange(location: 0, length: 0)
+                self.publishSelection(false)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.currentOwnerID == owner else { return }
+                    if let callback = self.onSubConversationSelection {
+                        callback(cleaned, entryID)
+                    } else {
+                        var responder: UIResponder? = self
+                        while let current = responder {
+                            if let presenter = current as? UIViewController {
+                                SubConversationSheet.present(quote: cleaned, entryID: entryID, from: presenter)
+                                break
+                            }
+                            responder = current.next
+                        }
+                    }
+                }
             })
         }
         if let onSaveNoteSelection {

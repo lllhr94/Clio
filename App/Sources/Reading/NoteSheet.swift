@@ -17,6 +17,7 @@ struct NoteSheet: View {
     @State private var theme: Theme = .paper
     @State private var title: String
     @State private var signed = true
+    @State private var galleryMat = false
     @State private var saved = false
     @State private var previewWidth: CGFloat = 0
     private static let exportWidth: CGFloat = 390
@@ -64,7 +65,7 @@ struct NoteSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: Ink.Space.xl) {
-                    sheet(width: previewWidth > 0 ? min(Self.exportWidth, max(1, previewWidth - Ink.Space.page * 2)) : nil)
+                    artwork(width: previewWidth > 0 ? min(Self.exportWidth, max(1, previewWidth - Ink.Space.page * 2)) : nil)
                         .clipShape(.rect(cornerRadius: Ink.Radius.card, style: .continuous))
                         .shadow(color: Ink.Artwork.black.opacity(0.10), radius: Ink.Space.l, y: Ink.Space.s)
                     let themeLayout = previewWidth > 0 && previewWidth < Ink.Size.body * 16
@@ -103,6 +104,12 @@ struct NoteSheet: View {
                                 .paperCard()
                         }
                         Toggle("署上\(from)的名字", isOn: $signed)
+                            .font(Ink.label)
+                            .tint(Ink.accent)
+                            .padding(.horizontal, Ink.Space.l)
+                            .frame(minHeight: Ink.Bar.height)
+                            .paperCard()
+                        Toggle(L.t("noteArt.galleryMat"), isOn: $galleryMat)
                             .font(Ink.label)
                             .tint(Ink.accent)
                             .padding(.horizontal, Ink.Space.l)
@@ -179,10 +186,24 @@ struct NoteSheet: View {
 
     @MainActor
     private func rendered() -> UIImage? {
-        let renderer = ImageRenderer(content: sheet(width: Self.exportWidth))
+        let renderer = ImageRenderer(content: artwork(width: Self.exportWidth))
         // Very long pages at a lower scale, so the picture stays within what the phone can hold.
         renderer.scale = (text.count + (question?.count ?? 0)) > 4000 ? 2 : 3
         return renderer.uiImage
+    }
+
+    @ViewBuilder
+    private func artwork(width: CGFloat?) -> some View {
+        if galleryMat {
+            let inset = Ink.Space.m
+            sheet(width: width.map { max(1, $0 - inset * 2) })
+                .overlay(Rectangle().strokeBorder(theme.words.opacity(0.16), lineWidth: 0.5))
+                .padding(inset)
+                .background(theme.ground)
+                .overlay(Rectangle().inset(by: Ink.Space.xs).strokeBorder(theme.words.opacity(0.2), lineWidth: 0.5))
+        } else {
+            sheet(width: width)
+        }
     }
 
     private func save() {

@@ -39,7 +39,7 @@ struct InteractiveDocument: Equatable, Sendable {
 }
 
 /// Give WebKit access to one copy carrying our policy, never the original document's neighbours.
-private final class PreparedPreview: Sendable {
+final class PreparedPreview: Sendable {
     static let limit = 12 * 1024 * 1024
     let file: URL
 
@@ -47,7 +47,7 @@ private final class PreparedPreview: Sendable {
 
     deinit { try? FileManager.default.removeItem(at: file) }
 
-    static func make(_ document: InteractiveDocument) -> PreparedPreview? {
+    static func make(_ document: InteractiveDocument, theme: CardStyleKit.Theme? = nil) -> PreparedPreview? {
         let mountScope = document.mount.flatMap { MountedFolders.openForUI($0) }
         defer { mountScope?.token.stop() }
         if document.mount != nil, mountScope == nil { return nil }
@@ -61,17 +61,24 @@ private final class PreparedPreview: Sendable {
         guard let data = try? reader.read(upToCount: limit + 1), data.count <= limit,
               let source = String(data: data, encoding: .utf8) else { return nil }
 
-        let child = (document.url.pathExtension.lowercased() == "svg" ? "<!doctype html><html><body>" : "") + source
+        let isSVG = document.url.pathExtension.lowercased() == "svg"
+        let child = (isSVG ? "<!doctype html><html><body>" : "") + source
         // Put the child policy after its doctype when present, to keep standards-mode sizing.
         let policy = """
         <meta http-equiv="x-dns-prefetch-control" content="off">
         <meta http-equiv="Content-Security-Policy" content="\(restricted); frame-src 'none'">
         """
+        let assets: String
+        if let theme, !isSVG, CardStyleKit.isOptedIn(source) {
+            assets = CardStyleKit.injection(theme: theme)
+        } else {
+            assets = ""
+        }
         let payload: String
         if let doctype = child.range(of: #"^\s*<!doctype\s+[^>]+>"#, options: [.regularExpression, .caseInsensitive]) {
-            payload = String(child[..<doctype.upperBound]) + policy + String(child[doctype.upperBound...])
+            payload = String(child[..<doctype.upperBound]) + policy + assets + String(child[doctype.upperBound...])
         } else {
-            payload = policy + child
+            payload = policy + assets + child
         }
         let quoted = payload.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;")
         let html = """
@@ -98,6 +105,30 @@ private final class PreparedPreview: Sendable {
     private static let restricted = """
     default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline';     img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; object-src 'none';     worker-src 'none'; form-action 'none'; base-uri 'none'
     """
+}
+
+private struct PreviewRequest: Equatable {
+    let document: InteractiveDocument
+    let theme: CardStyleKit.Theme
+}
+
+extension CardStyleKit.Theme {
+    @MainActor
+    static func current(dark: Bool) -> Self {
+        let look = Clio.Theme.shared
+        let traits = UITraitCollection(userInterfaceStyle: dark ? .dark : .light)
+        let color = UIColor(Ink.accent).resolvedColor(with: traits)
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        var snapshot = Self(scheme: dark ? "dark" : "light", palette: look.key, oled: look.oled, white: look.white)
+        if color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) {
+            let rgb = [red, green, blue].map { Int((min(1, max(0, $0)) * 255).rounded()) }
+            snapshot.accent = String(format: "#%02x%02x%02x", rgb[0], rgb[1], rgb[2])
+        }
+        return snapshot
+    }
 }
 
 @MainActor
@@ -274,13 +305,18 @@ final class InteractiveThumbnails {
         }
     }
 
-    func image(for document: InteractiveDocument) async -> UIImage? {
+    static func cacheKey(revision: String, theme: CardStyleKit.Theme) -> String {
+        "\(CardStyleKit.kitVersion)|\(theme.signature)|\(revision)"
+    }
+
+    func image(for document: InteractiveDocument, theme: CardStyleKit.Theme? = nil) async -> UIImage? {
         if let mount = document.mount, !MountedFolders.isCurrent(mount) { return nil }
+        let theme = theme ?? .current(dark: UITraitCollection.current.userInterfaceStyle == .dark)
         let startRevision = MountedFolders.revision
         let revision = await Task.detached(priority: .utility) { document.fileInfo?.revision }.value
         guard !Task.isCancelled, let revision else { return nil }
         if let mount = document.mount, startRevision != MountedFolders.revision || !MountedFolders.isCurrent(mount) { return nil }
-        let key = revision as NSString
+        let key = Self.cacheKey(revision: revision, theme: theme) as NSString
         if let image = cache.object(forKey: key) { return image }
 
         let previous = tail
@@ -290,7 +326,7 @@ final class InteractiveThumbnails {
             guard let self, !Task.isCancelled else { return nil }
             if let mount = document.mount, startRevision != MountedFolders.revision || !MountedFolders.isCurrent(mount) { return nil }
             if let image = self.cache.object(forKey: key) { return image }
-            guard let image = await self.render(document) else { return nil }
+            guard let image = await self.render(document, theme: theme) else { return nil }
             if let mount = document.mount, startRevision != MountedFolders.revision || !MountedFolders.isCurrent(mount) { return nil }
             if let pixels = image.cgImage {
                 self.cache.setObject(image, forKey: key, cost: pixels.bytesPerRow * pixels.height)
@@ -305,8 +341,8 @@ final class InteractiveThumbnails {
         return await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
     }
 
-    private func render(_ document: InteractiveDocument) async -> UIImage? {
-        let prepared = await Task.detached(priority: .utility) { PreparedPreview.make(document) }.value
+    private func render(_ document: InteractiveDocument, theme: CardStyleKit.Theme) async -> UIImage? {
+        let prepared = await Task.detached(priority: .utility) { PreparedPreview.make(document, theme: theme) }.value
         guard let prepared, !Task.isCancelled, let rules = await PreviewRules.get(), !Task.isCancelled else { return nil }
         let frame = CGRect(x: 0, y: 0, width: 440, height: 264)
         let web = OfflineWebPreview(prepared, rules: rules, frame: frame, muted: true)
@@ -363,12 +399,14 @@ struct InteractivePreviewPage: View {
 struct InteractivePreviewThumbnail: View {
     let document: InteractiveDocument
     @State private var image: UIImage?
+    @Environment(\.colorScheme) private var scheme
 
     private var mountValid: Bool {
         document.mount.map(MountedFolders.isCurrent) ?? true
     }
 
     var body: some View {
+        let theme = CardStyleKit.Theme.current(dark: scheme == .dark)
         Ink.paperRaised
             .aspectRatio(5.0 / 3.0, contentMode: .fit)
             .overlay {
@@ -382,9 +420,10 @@ struct InteractivePreviewThumbnail: View {
             }
             .clipShape(.rect(cornerRadius: Ink.Radius.small, style: .continuous))
             .accessibilityHidden(true)
-            .task(id: document) {
+            .task(id: PreviewRequest(document: document, theme: theme)) {
+                image = nil
                 guard mountValid else { image = nil; return }
-                let preview = await InteractiveThumbnails.shared.image(for: document)
+                let preview = await InteractiveThumbnails.shared.image(for: document, theme: theme)
                 if !Task.isCancelled { image = mountValid ? preview : nil }
             }
             .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in
@@ -395,11 +434,13 @@ struct InteractivePreviewThumbnail: View {
 
 struct InteractivePreviewContent: View {
     let document: InteractiveDocument
+    @Environment(\.colorScheme) private var scheme
     @State private var web: OfflineWebPreview?
     @State private var ready = false
     @State private var failed = false
 
     var body: some View {
+        let theme = CardStyleKit.Theme.current(dark: scheme == .dark)
         ZStack {
             if let web {
                 PreviewWebView(view: web.view).opacity(ready ? 1 : 0)
@@ -417,12 +458,12 @@ struct InteractivePreviewContent: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background { InteractivePreviewRotation() }
-        .task(id: document) {
+        .task(id: PreviewRequest(document: document, theme: theme)) {
             web?.stop()
             web = nil
             ready = false
             failed = false
-            let prepared = await Task.detached(priority: .userInitiated) { PreparedPreview.make(document) }.value
+            let prepared = await Task.detached(priority: .userInitiated) { PreparedPreview.make(document, theme: theme) }.value
             let rules = await PreviewRules.get()
             guard !Task.isCancelled else { return }
             guard let prepared, let rules else { failed = true; return }

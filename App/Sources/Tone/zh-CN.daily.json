@@ -1,4 +1,40 @@
 {
+  "subConversation": {
+    "title": "支线追问",
+    "independent": "独立对话",
+    "copy": "复制结论",
+    "return": "带回原对话",
+    "promote": "转为独立对话",
+    "question": "继续追问",
+    "send": "发送追问",
+    "failed": "支线操作未完成，请重试。",
+    "actions": "支线操作"
+  },
+  "noteArt": {
+    "galleryMat": "细线装裱"
+  },
+  "artifacts": {
+    "tab": {
+      "directory": "目录",
+      "library": "资料库"
+    },
+    "kind": {
+      "document": "文档",
+      "card": "交互卡片",
+      "image": "图片",
+      "code": "代码",
+      "other": "其他"
+    },
+    "allTypes": "全部类型",
+    "allCompanions": "全部助手",
+    "empty": "还没有符合条件的资料。",
+    "unavailable": "暂时无法读取资料库。",
+    "openSource": "打开来源对话"
+  },
+  "petActivity": {
+    "workingCount": "%@ 项任务正在进行",
+    "petting": "摸摸宠物"
+  },
   "companion": {
     "missingPetDefault": "这台手机还没有它用的宠物，头像先用默认宠物。导入那只宠物后，可以点头像手动换回。",
     "missingPetStill": "这台手机还没有它用的宠物，头像先用资料卡附带的定格图。导入那只宠物后，可以点头像手动换回。",

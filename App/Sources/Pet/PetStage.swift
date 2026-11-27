@@ -52,8 +52,26 @@ struct PetStage: View {
     @State private var sleeping = false
     @State private var nextIdle = Date().addingTimeInterval(.random(in: 45...150))
     @State private var taps: [Date] = []
+    @State private var pettingBurst: UUID?
+    @State private var burstExpanded = false
+    @State private var resourceRevision = false
 
-    private var mood: PetMood { perch.mood }
+    private var mood: PetMood {
+        let sideCount = SubConversationActivity.shared.running.count
+        guard sideCount > 0 else { return perch.mood }
+        switch perch.mood {
+        case .waiting, .sweeping: return perch.mood
+        case .idle: return .working(sideCount)
+        case .working(let count): return .working(count + sideCount)
+        case .thinking, .writing: return .working(1 + sideCount)
+        }
+    }
+    private var allowsParticles: Bool {
+        _ = resourceRevision
+        let power = ProcessInfo.processInfo
+        return PetPerch.allowsPettingParticles(reduceMotion: calm, reduceVisualEffects: Theme.shared.reduceVisualEffects,
+                                              lowPower: power.isLowPowerModeEnabled, thermal: power.thermalState)
+    }
 
     private var asleep: Bool { sleeping && mood == .idle && oneOff == nil && !dragging }
 
@@ -134,6 +152,15 @@ struct PetStage: View {
             }
         }
         .onChange(of: mood) { _, _ in touch() }
+        .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
+            resourceRevision.toggle()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            resourceRevision.toggle()
+        }
+        .onChange(of: allowsParticles) { _, allowed in
+            if !allowed { pettingBurst = nil }
+        }
     }
 
     /// Always the composer's top edge; while dragged, held up a little above it.
@@ -161,10 +188,26 @@ struct PetStage: View {
                 }
             }
             .frame(width: width, height: stand, alignment: .bottom)
+            .overlay(alignment: .topTrailing) {
+                if case .working(let count) = mood, count > 1 {
+                    Text(count.formatted())
+                        .font(Ink.uiMono(Ink.Size.micro))
+                        .foregroundStyle(Ink.ink)
+                        .padding(.horizontal, Ink.Space.xs)
+                        .padding(.vertical, Ink.Space.xs)
+                        .background(Ink.paperRaised, in: .capsule)
+                        .overlay(Capsule().strokeBorder(Ink.rule, lineWidth: 0.5))
+                        .allowsHitTesting(false)
+                        .accessibilityLabel(L.format("petActivity.workingCount", count.formatted()))
+                }
+            }
+            .overlay(alignment: .top) { particles }
             .contentShape(Rectangle())
             .gesture(tapGesture(width: width))
+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.32, maximumDistance: 8).onEnded { _ in petting() })
             .contextMenu { menu }
-            .accessibilityLabel(L.t("nav.pet") + "，点一下逗它，左右拖动换位置，长按有菜单")
+            .accessibilityLabel(L.t("nav.pet"))
+            .accessibilityAction(named: L.t("petActivity.petting")) { petting() }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { perch.bodyHit = $0 }
             .onDisappear { perch.bodyHit = .null }
             .onChange(of: anim) { since = Date() }
@@ -179,6 +222,45 @@ struct PetStage: View {
                 try? await Task.sleep(for: .milliseconds(pack.animations[landingAnim ?? ""]?.total ?? 230))
                 if !Task.isCancelled { landingAnim = nil }
             }
+    }
+
+    private var particles: some View {
+        ZStack {
+            if let pettingBurst, allowsParticles {
+                ForEach(0..<4) { index in
+                    Circle()
+                        .fill(index.isMultiple(of: 2) ? Ink.seal : Ink.paperRaised)
+                        .frame(width: Ink.Space.xs, height: Ink.Space.xs)
+                        .offset(x: burstExpanded ? CGFloat(index * 10 - 15) : 0,
+                                y: burstExpanded ? CGFloat(-12 - (index % 2) * 8) : 0)
+                        .opacity(burstExpanded ? 0 : 0.85)
+                }
+                .task(id: pettingBurst) {
+                    await Task.yield()
+                    guard !Task.isCancelled, allowsParticles else { return }
+                    withAnimation(.easeOut(duration: 0.4)) { burstExpanded = true }
+                    try? await Task.sleep(for: .milliseconds(420))
+                    if !Task.isCancelled { self.pettingBurst = nil }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func petting() {
+        guard !dragging else { return }
+        touch()
+        Haptics.petWake()
+        react("tickle", fallback: "tapRight")
+        if allowsParticles {
+            var still = Transaction()
+            still.disablesAnimations = true
+            withTransaction(still) {
+                burstExpanded = false
+                pettingBurst = UUID()
+            }
+        }
     }
 
     private func currentAnim(_ pack: PetPack) -> String {
@@ -217,8 +299,7 @@ struct PetStage: View {
             }
             // A bubble about another conversation: the pet takes you there.
             if let bubble = news.bubble {
-                news.dismiss()
-                NotificationCenter.default.post(name: .clioOpenChat, object: bubble.chat)
+                PetBubble.open(bubble)
                 return
             }
             let now = Date()
@@ -334,6 +415,11 @@ struct PetStage: View {
 struct PetBubble: View {
     let bubble: PetNews.Bubble
 
+    static func open(_ bubble: PetNews.Bubble) {
+        PetNews.shared.dismiss()
+        NotificationCenter.default.post(name: .clioOpenChat, object: bubble.chat)
+    }
+
     var body: some View {
         Text(bubble.text)
             .font(.system(size: Ink.Size.small, weight: .medium))
@@ -349,8 +435,7 @@ struct PetBubble: View {
             .overlay(Capsule().strokeBorder(Ink.rule, lineWidth: 0.5))
             .contentShape(.capsule)
             .onTapGesture {
-                PetNews.shared.dismiss()
-                NotificationCenter.default.post(name: .clioOpenChat, object: bubble.chat)
+                Self.open(bubble)
             }
             .gesture(DragGesture(minimumDistance: 10).onEnded { value in
                 if value.translation.height < -10 { PetNews.shared.dismiss() }
