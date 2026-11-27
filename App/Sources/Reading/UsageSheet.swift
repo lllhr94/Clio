@@ -110,7 +110,7 @@ struct UsageSheet: View {
                 if team.toolOutputUndo[key] != nil {
                     Button(L.t("chat.toolOutputsUndo")) {
                         _ = team.undoToolOutputCompaction(key)
-                        Task { estimate = await team.contextEstimate(key) }
+                        Task { self.estimate = await team.contextEstimate(key) }
                     }
                     .font(Ink.footnote)
                     .buttonStyle(TapStyle())
