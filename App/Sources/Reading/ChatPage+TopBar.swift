@@ -463,8 +463,8 @@ private struct ChatCenteredIdentityPill: View {
                 viewportWidth: viewportWidth,
                 isTyping: isTyping,
                 onDismissTyping: onDismissTyping,
-                trackMode: $trackMode,
                 isPresented: $showCompanionHub,
+                trackMode: $trackMode,
                 detailOpen: $detailOpen,
                 cardOpen: $cardOpen
             )
