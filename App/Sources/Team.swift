@@ -174,6 +174,9 @@ final class TeamModel: ObservableObject {
     @Published var busyBots: Set<String> = []
 
     var entries: [String: [Entry]] = [:]
+    /// Chats whose on-disk JSON was transiently unreadable (or corrupt without successful backup-aside);
+    /// blocked from full-file overwrite until a subsequent checked read succeeds.
+    var unreadableChats: Set<String> = []
     let modelInputLog = ModelInputLog()
     /// Conversations whose earlier page is being brought back right now (one at a time per conversation).
     @Published var openingLeaves: Set<String> = []
@@ -409,6 +412,87 @@ final class TeamModel: ObservableObject {
         var count: Int
         /// Made by compressing: the id of the 「前情提要」 note left in the conversation, so the fold can be undone.
         var marker: String?
+        /// Non-reusable conversation identity carried over from `ChatOptions.conversationID` when shelved.
+        var conversationID: String? = nil
+    }
+
+    enum ConversationTarget: Equatable, Sendable {
+        case active(String)
+        case leaf(chatKey: String, leaf: Leaf)
+        case gone
+    }
+
+    /// Returns the non-reusable conversation identity for the current active conversation in slot `key`,
+    /// lazily allocating and persisting one on first use.
+    func activeConversationID(for key: String) -> String {
+        let current = options(key)
+        if let existing = current.conversationID, !existing.isEmpty {
+            return existing
+        }
+        let fresh = UUID().uuidString.lowercased()
+        var updated = current
+        updated.conversationID = fresh
+        setOptions(key, updated)
+        return fresh
+    }
+
+    /// Locates where `conversationID` currently resides (the active slot, a shelved leaf, or deleted/cleared).
+    func resolveConversationTarget(slotKey: String, conversationID: String?) -> ConversationTarget {
+        guard let conversationID, !conversationID.isEmpty else {
+            return .active(slotKey)
+        }
+        if options(slotKey).conversationID == conversationID {
+            return .active(slotKey)
+        }
+        if let found = leaves(slotKey).first(where: { $0.conversationID == conversationID }) {
+            return .leaf(chatKey: slotKey, leaf: found)
+        }
+        return .gone
+    }
+
+    /// Idempotently appends an entry directly into a shelved leaf file on disk and confirms write success,
+    /// without touching or tainting the newer active conversation occupying `chatKey`.
+    func appendToShelvedLeaf(_ entry: Entry, chatKey: String, leaf: Leaf) -> Bool {
+        let leafThreadKey = Self.threadKey(chatKey, leaf: leaf.id)
+        let list: [Entry]
+        if keeping {
+            switch Disk.loadChatChecked(leafThreadKey) {
+            case .missing:
+                list = []
+            case .loaded(let existing):
+                list = existing
+            case .corrupt(let recovered, let quarantined, _):
+                guard quarantined else { return false }
+                list = recovered
+            case .unreadable:
+                return false
+            }
+        } else {
+            list = entries[leafThreadKey] ?? []
+        }
+
+        if list.contains(where: { $0.id == entry.id }) {
+            return true
+        }
+        var updated = list
+        updated.append(entry)
+        if keeping {
+            do {
+                try Disk.write(updated, Self.leafFile(chatKey, leaf.id))
+            } catch {
+                return false
+            }
+            var currentLeaves = leaves(chatKey)
+            if let idx = currentLeaves.firstIndex(where: { $0.id == leaf.id }) {
+                currentLeaves[idx].at = max(currentLeaves[idx].at, entry.at)
+                _ = writeEditedLeaves(chatKey, currentLeaves)
+                leafBook[chatKey] = currentLeaves
+            }
+            scheduleIndexSync(chatKey, leafID: leaf.id, leafTitle: leaf.title, entries: updated)
+        } else {
+            entries[leafThreadKey] = updated
+        }
+        return true
     }
 
     var leafBook: [String: [Leaf]] = [:]
@@ -616,7 +700,14 @@ final class TeamModel: ObservableObject {
         let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? Words.t("一段絮语")
         let named = options(key).title
         let title = named ?? String(first.replacingOccurrences(of: "\n", with: " ").prefix(28))
-        let leaf = Leaf(id: UUID().uuidString, title: title, at: current.last?.at ?? Now.ms, count: current.filter { $0.note != true && $0.message.role != .tool }.count)
+        let shelvedConversationID = activeConversationID(for: key)
+        let leaf = Leaf(
+            id: UUID().uuidString,
+            title: title,
+            at: current.last?.at ?? Now.ms,
+            count: current.filter { $0.note != true && $0.message.role != .tool }.count,
+            conversationID: shelvedConversationID
+        )
         let leafKey = Self.threadKey(key, leaf: leaf.id)
         let waiting = queued[key] ?? []
         let nextLeaves = [leaf] + leaves(key)
@@ -641,6 +732,7 @@ final class TeamModel: ObservableObject {
         }
         var value = options(key)
         value.title = nil
+        value.conversationID = UUID().uuidString.lowercased()
         setOptions(key, value)
         setSummary(key, nil)
         clearPlan(key)
@@ -729,7 +821,9 @@ final class TeamModel: ObservableObject {
         setSummary(key, nil)
         var cleared = options(key)
         cleared.title = nil
+        cleared.conversationID = UUID().uuidString.lowercased()
         setOptions(key, cleared)
+        unreadableChats.remove(key)
         entries[key] = []
         clearPreview(key)
         notify(key, .changed)
@@ -904,6 +998,10 @@ final class TeamModel: ObservableObject {
             moveThread(leafKey, to: key)
             rename(key, to: leaf.title)
         }
+        var reopenedOptions = options(key)
+        reopenedOptions.conversationID = leaf.conversationID ?? UUID().uuidString.lowercased()
+        setOptions(key, reopenedOptions)
+        unreadableChats.remove(key)
         scheduleIndexDeleteChat(key, includingLeaves: false, leafID: leaf.id)
         scheduleIndexSync(key, entries: kept)
         let last = kept.last { $0.message.role == .assistant && !$0.message.text.isEmpty }?.message.text
@@ -989,7 +1087,21 @@ final class TeamModel: ObservableObject {
     }
 
     func append(_ entry: Entry, to key: String, event: TurnEvent = .changed, onSaved: (@Sendable (Bool) -> Void)? = nil) {
+        if keeping && unreadableChats.contains(key) {
+            let rechecked = Disk.loadChatChecked(key)
+            _ = applyChatLoadOutcome(rechecked, for: key)
+            if unreadableChats.contains(key) {
+                Diag.note("对话 \(key) 仍不可读，已拒绝写入以防止覆盖原历史。")
+                onSaved?(false)
+                return
+            }
+        }
         var list = history(key)
+        if keeping && unreadableChats.contains(key) {
+            Diag.note("对话 \(key) 读取失败，已拒绝写入以防止覆盖原历史。")
+            onSaved?(false)
+            return
+        }
         list.append(entry)
         entries[key] = list
         if keeping {
@@ -1099,10 +1211,12 @@ final class TeamModel: ObservableObject {
 
     func beginBackupRestore() {
         queueDispatchSuspended = true
+        subtasks.cancelAllForBackupRestore(team: self)
     }
 
     func finishBackupRestoreSucceeded() {
         queueDispatchSuspended = true
+        subtasks.cancelAllForBackupRestore(team: self)
         for key in Array(runs.keys) {
             stop(key)
         }
@@ -2996,6 +3110,24 @@ final class TeamModel: ObservableObject {
     }
 
     func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String, executionChat: String? = nil, workplace: WorkPlace? = nil) async -> Bool {
+        var effectiveAsk = ask
+        var targetIsShelvedLeaf = false
+        if let executionChat,
+           let thread = subtasks.threads.first(where: { $0.attempts.contains(where: { $0.attemptID == executionChat }) }),
+           let parentConvID = thread.parentConversationID {
+            switch resolveConversationTarget(slotKey: chat, conversationID: parentConvID) {
+            case .active:
+                break
+            case .leaf(_, let leaf):
+                targetIsShelvedLeaf = true
+                let prefix = "【来自已收起对话「\(leaf.title)」的后台任务】\n"
+                if !effectiveAsk.reason.hasPrefix(prefix) {
+                    effectiveAsk.reason = prefix + effectiveAsk.reason
+                }
+            case .gone:
+                return false
+            }
+        }
         let id = UUID().uuidString
         let authChat = executionChat ?? chat
         let invocationID = ToolInvocation.currentID ?? ""
@@ -3008,15 +3140,15 @@ final class TeamModel: ObservableObject {
             hostID: boundHostID,
             grantID: boundGrant?.rawValue ?? ""
         )
-        let hasDetail = (ask.detail?.isEmpty == false) || (ask.code?.isEmpty == false)
-        let detail = hasDetail ? Approval.Detail(text: ask.detail, code: ask.code) : nil
+        let hasDetail = (effectiveAsk.detail?.isEmpty == false) || (effectiveAsk.code?.isEmpty == false)
+        let detail = hasDetail ? Approval.Detail(text: effectiveAsk.detail, code: effectiveAsk.code) : nil
         let approval = Approval(
             id: id, botId: bot, roomId: chat.hasPrefix("room-") ? String(chat.dropFirst(5)) : nil, chat: chat,
             executionChat: executionChat,
             hostID: isWorkspaceTool ? boundHostID : nil,
             boundGrant: boundGrant,
-            tool: ask.title, toolName: tool, reason: ask.reason, detail: detail,
-            at: Now.ms, answerable: true, forced: ask.forced, planReadOnlySafe: ask.planReadOnlySafe
+            tool: effectiveAsk.title, toolName: tool, reason: effectiveAsk.reason, detail: detail,
+            at: Now.ms, answerable: true, forced: effectiveAsk.forced, planReadOnlySafe: effectiveAsk.planReadOnlySafe
         )
         let before = doing[chat]
         var announced = false
@@ -3027,11 +3159,13 @@ final class TeamModel: ObservableObject {
                 id: id,
                 evaluate: { self.pendingDecision(for: approval) },
                 onEnqueue: {
-                    self.doing[chat] = "等你批准"
-                    BackgroundTurn.step(chat: chat, doing: "等你批准")
-                    if !announced {
-                        self.record(.waiting, in: chat)
-                        announced = true
+                    if !targetIsShelvedLeaf {
+                        self.doing[chat] = "等你批准"
+                        BackgroundTurn.step(chat: chat, doing: "等你批准")
+                        if !announced {
+                            self.record(.waiting, in: chat)
+                            announced = true
+                        }
                     }
                     if !self.approvals.contains(where: { $0.id == id }) {
                         withAnimation(.spring(response: 0.45, dampingFraction: 0.75)) { self.approvals.append(approval) }
@@ -3061,7 +3195,7 @@ final class TeamModel: ObservableObject {
         if Task.isCancelled {
             receipts.revoke(invocation: invocationID)
         }
-        if doing[chat] == "等你批准" { doing[chat] = before }
+        if !targetIsShelvedLeaf && doing[chat] == "等你批准" { doing[chat] = before }
         WidgetFeed.publish(self)
         return Task.isCancelled ? false : allowed
     }

@@ -353,13 +353,51 @@ struct CasualChatView: View {
     }
 }
 
+/// Process-wide single-shot cold-start coordinator for Casual Track outbox batches.
+/// Ensures `reconcileOnColdStart()` runs strictly ONCE on app launch rather than every time a Casual page opens,
+/// so opening companion B's Casual page can NEVER flip companion A's live `.inFlight` batch to `.needsReconcile`.
+final class CasualColdStartCoordinator: @unchecked Sendable {
+    static let shared = CasualColdStartCoordinator()
+
+    private let lock = NSLock()
+    private var hasReconciled = false
+    private var pendingInitialByBot: [String: [CasualOutboxBatch]] = [:]
+
+    func reconcileOnceOnLaunch(store: CasualTrackStore = CasualTrackController.sharedStore) {
+        let shouldRun = lock.withLock { () -> Bool in
+            guard !hasReconciled else { return false }
+            hasReconciled = true
+            return true
+        }
+        guard shouldRun else { return }
+        let recovery = store.reconcileOnColdStart()
+        let grouped = Dictionary(grouping: recovery.batchesReadyForInitialSend, by: \.botID)
+        lock.withLock {
+            pendingInitialByBot = grouped
+        }
+    }
+
+    func takeRecoveredInitialBatches(for botID: String) -> [CasualOutboxBatch] {
+        lock.withLock {
+            pendingInitialByBot.removeValue(forKey: botID) ?? []
+        }
+    }
+
+    func resetForTesting() {
+        lock.withLock {
+            hasReconciled = false
+            pendingInitialByBot.removeAll()
+        }
+    }
+}
+
 /// Owns the per-`(botID, casualSessionID)` `CasualSendQueue` independently of keyboard/focus callbacks.
 @MainActor
 final class CasualTrackController: ObservableObject {
-    static let sharedStore: CasualTrackStore = {
+    nonisolated static let sharedStore: CasualTrackStore = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dbURL = appSupport.appendingPathComponent("ClioIndex", isDirectory: true).appendingPathComponent("clio-casual.db")
-        return CasualTrackStore(canonicalTeamDirectory: Disk.root, projectionDatabaseURL: dbURL)
+        return CasualTrackStore(canonicalTeamDirectory: Disk.root, projectionDatabaseURL: dbURL, isWriteFrozen: { Disk.frozen })
     }()
 
     let botID: String
@@ -385,9 +423,18 @@ final class CasualTrackController: ObservableObject {
 
     func reload() {
         entries = store.entries(for: botID)
-        let recovery = store.reconcileOnColdStart()
-        recoveredInitialBatches = recovery.batchesReadyForInitialSend.filter { $0.botID == botID }
-        reconcileBatches = recovery.batchesNeedingReconcile.filter { $0.botID == botID }
+        if store === Self.sharedStore {
+            CasualColdStartCoordinator.shared.reconcileOnceOnLaunch(store: store)
+            let newlyClaimed = CasualColdStartCoordinator.shared.takeRecoveredInitialBatches(for: botID)
+            if !newlyClaimed.isEmpty {
+                recoveredInitialBatches.append(contentsOf: newlyClaimed)
+            }
+        } else {
+            let queued = store.outboxBatches(for: botID).filter { $0.state == .queuedBeforeSend }
+            let existingIDs = Set(recoveredInitialBatches.map(\.batchID))
+            recoveredInitialBatches.append(contentsOf: queued.filter { !existingIDs.contains($0.batchID) })
+        }
+        reconcileBatches = store.outboxBatches(for: botID).filter { $0.state == .needsReconcile }
     }
 
     func restoreQuietDraftIfNeeded() -> String? {
@@ -461,7 +508,8 @@ final class CasualTrackController: ObservableObject {
         }
     }
 
-    func explicitlyResendReconciledBatch(_ batch: CasualOutboxBatch, team: TeamModel, bot: BotInfo) {
+    @discardableResult
+    func explicitlyResendReconciledBatch(_ batch: CasualOutboxBatch, team: TeamModel, bot: BotInfo, dispatchNow: Bool = true) -> Bool {
         let fresh = CasualOutboxBatch(
             botID: botID,
             casualSessionID: queue.casualSessionID,
@@ -469,15 +517,24 @@ final class CasualTrackController: ObservableObject {
             state: .queuedBeforeSend,
             trackEpoch: queue.currentTrackEpoch
         )
-        try? store.saveOutboxBatch(fresh)
+        // Must confirm the new batch is durably persisted BEFORE completing/closing the reconciled batch.
+        do {
+            try store.saveOutboxBatch(fresh)
+        } catch {
+            Diag.note("没能保存重发的闲谈批次（\(error.localizedDescription)），已保留原待核对记录。")
+            return false
+        }
         _ = try? store.markOutboxCompleted(batchID: batch.batchID)
         reconcileBatches.removeAll { $0.batchID == batch.batchID }
-        Task { @MainActor [weak self, weak team] in
-            guard let self, let team else { return }
-            if let inFlight = try? self.store.commitStep2MarkInFlight(batchID: fresh.batchID) {
-                await self.dispatchBatch(inFlight, team: team, bot: bot, onSuggestHandoff: { _ in })
+        if dispatchNow {
+            Task { @MainActor [weak self, weak team] in
+                guard let self, let team else { return }
+                if let inFlight = try? self.store.commitStep2MarkInFlight(batchID: fresh.batchID) {
+                    await self.dispatchBatch(inFlight, team: team, bot: bot, onSuggestHandoff: { _ in })
+                }
             }
         }
+        return true
     }
 
     func discardReconciledBatch(_ batch: CasualOutboxBatch) {
@@ -559,22 +616,41 @@ final class CasualTrackController: ObservableObject {
             return
         }
         let reply = buffer.text
-        _ = try? store.markOutboxCompleted(batchID: batch.batchID)
-        stickersUsedInCurrentTurn = 0
-
-        let segments = reply
-            .components(separatedBy: "\n\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        for seg in segments {
-            let entry = CasualEntry(botID: botID, role: .assistant, text: seg, batchID: batch.batchID)
-            _ = try? store.appendEntry(entry)
+        guard persistReplyAndComplete(batchID: batch.batchID, reply: reply) else {
+            return
         }
-        entries = store.entries(for: botID)
 
         let heavyHints = ["写代码", "改文件", "重型", "正式对话", "转入正式"]
         if heavyHints.contains(where: { prompt.contains($0) || reply.contains($0) }) {
             onSuggestHandoff(prompt)
         }
+    }
+
+    /// Atomically persists all reply segments BEFORE marking the outbox batch `.completed`.
+    /// Returns `false` if persistence failed, leaving the outbox batch uncompleted so nothing is lost.
+    @discardableResult
+    func persistReplyAndComplete(batchID: String, reply: String) -> Bool {
+        let segments = reply
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let replyEntries = segments.enumerated().map { idx, seg in
+            CasualEntry(
+                id: "a-\(batchID)-\(idx)",
+                botID: botID,
+                role: .assistant,
+                text: seg,
+                batchID: batchID
+            )
+        }
+        do {
+            _ = try store.appendEntriesAndCompleteOutbox(entries: replyEntries, batchID: batchID)
+        } catch {
+            Diag.note("没能保存闲谈回复（\(error.localizedDescription)），已保留发件箱待核对。")
+            return false
+        }
+        stickersUsedInCurrentTurn = 0
+        entries = store.entries(for: botID)
+        return true
     }
 }

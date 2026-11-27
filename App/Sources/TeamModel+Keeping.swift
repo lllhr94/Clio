@@ -19,6 +19,15 @@ extension TeamModel {
         let queued: [String: [StoredQueuedMessage]]
 
         nonisolated static func read() -> Self {
+            do {
+                _ = try Backup.reconcileInterruptedRestoreIfNeeded()
+            } catch {
+                let reason = error.localizedDescription
+                DispatchQueue.main.async {
+                    Diag.note("上次中断的备份恢复尚未完成自动还原：\(reason)")
+                }
+            }
+            CasualColdStartCoordinator.shared.reconcileOnceOnLaunch()
             let barrierBlocked = QueuedStore.reconcilePreRestoreBarrier(teamRoot: Disk.root)
             QueuedStore.reconcilePendingLeafOpens(teamRoot: Disk.root)
             let settings = Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings()
@@ -233,7 +242,17 @@ extension TeamModel {
             // deduplicate any ID appearing in both `base` and `base~leaf`.
             for (base, leafIds) in leavesByBase {
                 guard let activeItems = kept[base], !activeItems.isEmpty else { continue }
-                let activeIsEmptyOnDisk = Disk.loadChat(base).isEmpty
+                let activeIsEmptyOnDisk: Bool
+                switch Disk.loadChatChecked(base) {
+                case .missing:
+                    activeIsEmptyOnDisk = true
+                case .loaded(let entries):
+                    activeIsEmptyOnDisk = entries.isEmpty
+                case .corrupt(let recovered, let quarantined, _):
+                    activeIsEmptyOnDisk = quarantined && recovered.isEmpty
+                case .unreadable:
+                    activeIsEmptyOnDisk = false
+                }
                 var activeFiltered = activeItems
                 for leafId in leafIds {
                     let leafKey = TeamModel.threadKey(base, leaf: leafId)

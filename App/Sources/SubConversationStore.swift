@@ -82,11 +82,23 @@ actor SubConversationStore {
 
     private func canonicalRecords() throws -> [SubConversationRecord] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .compactMap { url in
-                guard url.pathExtension == "json", let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { return nil }
-                return try load(id)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        var loaded: [SubConversationRecord] = []
+        for url in files {
+            guard url.pathExtension == "json",
+                  let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { continue }
+            do {
+                loaded.append(try load(id))
+            } catch {
+                // Keep the corrupt file untouched on disk and skip it instead of breaking the whole store.
+                let name = url.lastPathComponent
+                let reason = error.localizedDescription
+                DispatchQueue.main.async {
+                    Diag.note("子对话文件 \(name) 损坏，已跳过保留原件（\(reason)）")
+                }
             }
+        }
+        return loaded
     }
 
     private func write(_ record: SubConversationRecord) throws {

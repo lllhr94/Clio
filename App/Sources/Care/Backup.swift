@@ -29,6 +29,185 @@ enum Backup {
         var bytes: Int
     }
 
+    struct RestoreFileOps {
+        var moveItem: (URL, URL) throws -> Void = { try FileManager.default.moveItem(at: $0, to: $1) }
+        var removeItem: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
+        static let live = RestoreFileOps()
+    }
+
+    private struct RestoreJournal: Codable, Sendable {
+        enum Phase: String, Codable, Sendable {
+            case swapping
+            case committed
+        }
+
+        var version: Int = 1
+        var phase: Phase
+        var swappedFolders: [String]
+        var hadLiveFolders: [String]
+        var swappedSkills: Bool
+        var hadLiveSkills: Bool
+        var workspaceRootPath: String
+        var previousEndpoints: [Endpoint]
+        var preparedEndpoints: [Endpoint]
+    }
+
+    private static let restoreJournalFileName = ".restore-journal.json"
+
+    private static func writeRestoreJournal(_ journal: RestoreJournal, to url: URL) throws {
+        let data = try JSONEncoder().encode(journal)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    /// Cold-start and pre-restore crash reconciliation for interrupted directory swaps.
+    /// Guarantees `.restore-old` is NEVER deleted if it is the sole surviving valid copy of user data.
+    @discardableResult
+    static func reconcileInterruptedRestoreIfNeeded(
+        support supportOverride: URL? = nil,
+        workspaceRoot workspaceRootOverride: URL? = nil,
+        fileOps: RestoreFileOps = .live,
+        discardCredentials: (([Endpoint], [Endpoint]) -> Void)? = nil
+    ) throws -> Bool {
+        let base = supportOverride ?? Self.support
+        let wsRoot = workspaceRootOverride ?? Workspace.root
+        let manager = FileManager.default
+        let journalURL = base.appendingPathComponent(restoreJournalFileName)
+        let old = base.appendingPathComponent(".restore-old", isDirectory: true)
+        let staging = base.appendingPathComponent(".restore-staging", isDirectory: true)
+        let cleanupCreds: ([Endpoint], [Endpoint]) -> Void = discardCredentials ?? { discarded, active in
+            TeamModel.discardCredentials(from: discarded, keeping: active)
+        }
+
+        if manager.fileExists(atPath: journalURL.path),
+           let data = try? Data(contentsOf: journalURL),
+           let journal = try? JSONDecoder().decode(RestoreJournal.self, from: data) {
+            switch journal.phase {
+            case .committed:
+                if lstatExists(old) {
+                    try fileOps.removeItem(old)
+                }
+                if lstatExists(staging) {
+                    try? fileOps.removeItem(staging)
+                }
+                cleanupCreds(journal.previousEndpoints, journal.preparedEndpoints)
+                if journal.swappedSkills {
+                    SkillShelf.invalidate()
+                }
+                try? manager.removeItem(at: journalURL)
+                return true
+
+            case .swapping:
+                var firstError: Error?
+                if journal.swappedSkills {
+                    let liveSkills = URL(fileURLWithPath: journal.workspaceRootPath, isDirectory: true)
+                        .appendingPathComponent("技能", isDirectory: true)
+                    let backupSkills = old.appendingPathComponent("Skills", isDirectory: true)
+                    if journal.hadLiveSkills {
+                        if lstatExists(backupSkills) {
+                            do {
+                                if lstatExists(liveSkills) { try fileOps.removeItem(liveSkills) }
+                                try fileOps.moveItem(backupSkills, liveSkills)
+                            } catch {
+                                if firstError == nil { firstError = error }
+                            }
+                        }
+                    } else if lstatExists(liveSkills) {
+                        do {
+                            try fileOps.removeItem(liveSkills)
+                        } catch {
+                            if firstError == nil { firstError = error }
+                        }
+                    }
+                }
+
+                for folder in journal.swappedFolders.reversed() {
+                    let live = base.appendingPathComponent(folder, isDirectory: true)
+                    let backup = old.appendingPathComponent(folder, isDirectory: true)
+                    let hadLive = journal.hadLiveFolders.contains(folder)
+                    if hadLive {
+                        if lstatExists(backup) {
+                            do {
+                                if lstatExists(live) { try fileOps.removeItem(live) }
+                                try fileOps.moveItem(backup, live)
+                            } catch {
+                                if firstError == nil { firstError = error }
+                            }
+                        }
+                    } else if lstatExists(live) {
+                        do {
+                            try fileOps.removeItem(live)
+                        } catch {
+                            if firstError == nil { firstError = error }
+                        }
+                    }
+                }
+
+                if lstatExists(staging) {
+                    try? fileOps.removeItem(staging)
+                }
+                cleanupCreds(journal.preparedEndpoints, journal.previousEndpoints)
+                if let firstError {
+                    throw firstError
+                }
+                if lstatExists(old) {
+                    let remaining = (try? manager.contentsOfDirectory(atPath: old.path)) ?? []
+                    if remaining.isEmpty {
+                        try? fileOps.removeItem(old)
+                    }
+                }
+                try? manager.removeItem(at: journalURL)
+                return true
+            }
+        }
+
+        guard lstatExists(old) else {
+            if lstatExists(staging) {
+                try? fileOps.removeItem(staging)
+            }
+            return false
+        }
+
+        // Legacy interrupted restore without a readable journal: recover any missing live folder from `.restore-old`.
+        var recoveredAny = false
+        for folder in folders {
+            let live = base.appendingPathComponent(folder, isDirectory: true)
+            let backup = old.appendingPathComponent(folder, isDirectory: true)
+            if !lstatExists(live) && lstatExists(backup) {
+                try fileOps.moveItem(backup, live)
+                recoveredAny = true
+            }
+        }
+        let liveSkills = wsRoot.appendingPathComponent("技能", isDirectory: true)
+        let backupSkills = old.appendingPathComponent("Skills", isDirectory: true)
+        if !lstatExists(liveSkills) && lstatExists(backupSkills) {
+            try fileOps.moveItem(backupSkills, liveSkills)
+            recoveredAny = true
+        }
+
+        // Only delete `.restore-old` once every folder inside it is confirmed to have a live counterpart.
+        let remainingItems = (try? manager.contentsOfDirectory(atPath: old.path)) ?? []
+        var safeToDeleteOld = true
+        for name in remainingItems {
+            if name == "Skills" {
+                if !lstatExists(liveSkills) { safeToDeleteOld = false }
+            } else if folders.contains(name) {
+                if !lstatExists(base.appendingPathComponent(name, isDirectory: true)) { safeToDeleteOld = false }
+            } else {
+                safeToDeleteOld = false
+            }
+        }
+        if safeToDeleteOld {
+            try fileOps.removeItem(old)
+            if manager.fileExists(atPath: journalURL.path) {
+                try? manager.removeItem(at: journalURL)
+            }
+        }
+        if lstatExists(staging) {
+            try? fileOps.removeItem(staging)
+        }
+        return recoveredAny
+    }
+
     /// Reads only the first 18 magic bytes of a backup file without loading the archive into memory.
     static func isEncryptedBackup(at url: URL) -> Bool {
         let scoped = url.startAccessingSecurityScopedResource()
@@ -329,11 +508,29 @@ enum Backup {
 
     /// Reads a backup and puts it back, all or nothing (the 0.34 review, #1):
     /// 1. validates file type/size, decrypts if encrypted (`CLIO-BACKUP-ENC-1\n`), and checks every entry length;
-    /// 2. stages `Team/`, `Portraits/`, and `Skills/` into temporary directories off to the side;
-    /// 3. atomically swaps staged directories in while preserving rollback copies until everything succeeds;
-    /// 4. applies settings and keys last, once files are in.
+    /// 2. reconciles any interrupted prior restore, freezes and drains all writers, and stages copies off to the side;
+    /// 3. swaps staged directories under a persisted `.restore-journal.json` state machine;
+    /// 4. cleans old copies/credentials and applies settings only once the swap is durably committed.
     static func restore(from url: URL, passphrase: String? = nil) throws -> Summary {
-        ChatDisk.finishWrites()
+        try restore(
+            from: url,
+            passphrase: passphrase,
+            support: nil,
+            workspaceRoot: nil,
+            fileOps: .live,
+            skipGlobalBridges: false
+        )
+    }
+
+    static func restore(
+        from url: URL,
+        passphrase: String? = nil,
+        support supportOverride: URL?,
+        workspaceRoot workspaceRootOverride: URL?,
+        fileOps: RestoreFileOps = .live,
+        skipGlobalBridges: Bool = false
+    ) throws -> Summary {
+        if !skipGlobalBridges { ChatDisk.finishWrites() }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
@@ -423,17 +620,63 @@ enum Backup {
             throw TeamError(message: "为了保护密钥安全，不能从未加密备份里导入模型密钥。请改用加密备份，或在重新导出时不勾选密钥。")
         }
 
-        // 2. Stage into temporary folders off to the side.
+        // Verify `#keys` payload in memory before freezing writers or touching disk.
+        let restoredKeys: [String: String]?
+        if let item = items.last(where: { $0.path == "#keys" }) {
+            do {
+                restoredKeys = try JSONDecoder().decode([String: String].self, from: data.subdata(in: item.range))
+            } catch {
+                throw TeamError(message: "备份里的模型密钥读不出来，本机数据没有改动。")
+            }
+        } else {
+            restoredKeys = nil
+        }
+
+        // 2. Reconcile any interrupted prior restore FIRST so we never destroy a sole surviving `.restore-old` copy.
+        let baseSupport = supportOverride ?? Self.support
+        let workspaceRoot = workspaceRootOverride ?? Workspace.root
         let manager = FileManager.default
-        let staging = support.appendingPathComponent(".restore-staging", isDirectory: true)
-        let old = support.appendingPathComponent(".restore-old", isDirectory: true)
-        try? manager.removeItem(at: staging)
-        try? manager.removeItem(at: old)
-        defer { try? manager.removeItem(at: staging) }
+        let staging = baseSupport.appendingPathComponent(".restore-staging", isDirectory: true)
+        let old = baseSupport.appendingPathComponent(".restore-old", isDirectory: true)
+        let journalURL = baseSupport.appendingPathComponent(restoreJournalFileName)
+        do {
+            _ = try reconcileInterruptedRestoreIfNeeded(
+                support: baseSupport,
+                workspaceRoot: workspaceRoot,
+                fileOps: fileOps,
+                discardCredentials: skipGlobalBridges ? { _, _ in } : nil
+            )
+        } catch {
+            throw TeamError(message: "上次中断的恢复尚未完成还原（\(error.localizedDescription)），已中止本次恢复以保护原数据。")
+        }
+        if lstatExists(old) {
+            throw TeamError(message: "检测到未清理的旧恢复目录，无法确认它是否仍是唯一数据副本，已中止本次恢复以保护原数据。")
+        }
+
+        // Freeze and drain ALL live writers BEFORE copying live directories to staging or swapping them.
+        let wasFrozen = Disk.frozen
+        if !skipGlobalBridges {
+            Disk.frozen = true
+        }
+        var committed = false
+        defer {
+            if !skipGlobalBridges && !committed {
+                Disk.frozen = wasFrozen
+            }
+        }
+        if !skipGlobalBridges {
+            ChatDisk.finishWrites()
+            Disk.forgetPhotos()
+            SubtaskManager.sharedCanonicalStore.withWriteBarrier {}
+            CasualTrackController.sharedStore.withWriteBarrier {}
+        }
+
+        try? fileOps.removeItem(staging)
+        defer { try? fileOps.removeItem(staging) }
         try manager.createDirectory(at: staging, withIntermediateDirectories: true)
 
         for folder in folders {
-            let live = support.appendingPathComponent(folder, isDirectory: true)
+            let live = baseSupport.appendingPathComponent(folder, isDirectory: true)
             if isSymbolicLink(live) {
                 throw TeamError(message: "本地数据目录异常（包含符号链接），已中止恢复。")
             }
@@ -482,7 +725,6 @@ enum Backup {
         }
 
         // Verify staged Skills directory and destination Workspace.root/技能 before committing.
-        let workspaceRoot = Workspace.root
         let liveSkills = workspaceRoot.appendingPathComponent("技能", isDirectory: true)
         if hasStagedSkills {
             try verifyNoSymlinks(under: skillsStaging, root: skillsStaging)
@@ -497,49 +739,65 @@ enum Backup {
             }
         }
 
-        // Verify and stage credentials before any restored settings become visible to a reader.
-        let restoredKeys: [String: String]?
-        if let item = items.last(where: { $0.path == "#keys" }) {
-            do {
-                restoredKeys = try JSONDecoder().decode([String: String].self, from: data.subdata(in: item.range))
-            } catch {
-                throw TeamError(message: "备份里的模型密钥读不出来，本机数据没有改动。")
+        let stagedSettings = staging.appendingPathComponent("Team/settings.json")
+        let liveTeam = baseSupport.appendingPathComponent("Team", isDirectory: true)
+        let previousEndpoints: [Endpoint]
+        if skipGlobalBridges {
+            let liveSettingsURL = liveTeam.appendingPathComponent("settings.json")
+            if let liveData = try? Data(contentsOf: liveSettingsURL),
+               let liveSettings = try? JSONDecoder().decode(TeamSettings.self, from: liveData) {
+                previousEndpoints = liveSettings.endpoints
+            } else {
+                previousEndpoints = []
             }
         } else {
-            restoredKeys = nil
+            previousEndpoints = Disk.load(TeamSettings.self, "settings.json")?.endpoints ?? []
         }
-
-        let stagedSettings = staging.appendingPathComponent("Team/settings.json")
-        let wasFrozen = Disk.frozen
-        Disk.frozen = true
-        var committed = false
-        defer { if !committed { Disk.frozen = wasFrozen } }
-        ChatDisk.finishWrites()
-        Disk.forgetPhotos()
-        let previousEndpoints = Disk.load(TeamSettings.self, "settings.json")?.endpoints ?? []
         var preparedEndpoints: [Endpoint] = []
         var swappedTargets: [(live: URL, backup: URL?)] = []
+        var journalWritten = false
+        var journal = RestoreJournal(
+            phase: .swapping,
+            swappedFolders: [],
+            hadLiveFolders: [],
+            swappedSkills: false,
+            hadLiveSkills: false,
+            workspaceRootPath: workspaceRoot.path,
+            previousEndpoints: previousEndpoints,
+            preparedEndpoints: []
+        )
 
         do {
             // Drain all live memory/experience writers inside the barrier while `Disk.frozen == true`,
             // then capture final local tombstones and apply atomic tombstone union before swap.
-            let liveTeam = support.appendingPathComponent("Team", isDirectory: true)
-            let localRetractedHashes = try MemoryStoreBridge.shared.withBackupBarrier {
-                try collectLocalRetractedHashes(
-                    in: liveTeam,
-                    memoryStoreTombstones: MemoryStoreBridge.shared.tombstoneHashesSnapshot()
-                )
+            let localRetractedHashes: Set<String>
+            if skipGlobalBridges {
+                localRetractedHashes = try collectLocalRetractedHashes(in: liveTeam, memoryStoreTombstones: [])
+            } else {
+                localRetractedHashes = try MemoryStoreBridge.shared.withBackupBarrier {
+                    try collectLocalRetractedHashes(
+                        in: liveTeam,
+                        memoryStoreTombstones: MemoryStoreBridge.shared.tombstoneHashesSnapshot()
+                    )
+                }
             }
             try applyTombstoneUnionToStagedTeam(stagedTeam: stagedTeam, localRetractedHashes: localRetractedHashes)
 
+            // Never let restored Casual Track outbox batches auto-dispatch on next open.
+            _ = try CasualTrackStore.demoteRestoredOutboxBatches(in: stagedTeam)
+
             if manager.fileExists(atPath: stagedSettings.path) {
                 var settings = try JSONDecoder().decode(TeamSettings.self, from: Data(contentsOf: stagedSettings))
-                do {
-                    preparedEndpoints = try TeamModel.prepareBackupServices(
-                        previous: previousEndpoints, restored: settings.endpoints, keys: restoredKeys
-                    )
-                } catch {
-                    throw TeamError(message: "没能保存备份里的模型服务密钥。请解锁手机后再试，原来的密钥还在。")
+                if skipGlobalBridges {
+                    preparedEndpoints = settings.endpoints
+                } else {
+                    do {
+                        preparedEndpoints = try TeamModel.prepareBackupServices(
+                            previous: previousEndpoints, restored: settings.endpoints, keys: restoredKeys
+                        )
+                    } catch {
+                        throw TeamError(message: "没能保存备份里的模型服务密钥。请解锁手机后再试，原来的密钥还在。")
+                    }
                 }
                 settings.endpoints = preparedEndpoints.map { endpoint in
                     var validated = endpoint
@@ -558,64 +816,111 @@ enum Backup {
                 throw TeamError(message: "备份缺少模型服务设置，无法确认密钥应该用在哪个地址。")
             }
 
+            journal.preparedEndpoints = preparedEndpoints
             try manager.createDirectory(at: old, withIntermediateDirectories: true)
+            try writeRestoreJournal(journal, to: journalURL)
+            journalWritten = true
 
-            // 3. Atomic swap only after credentials, settings, and staged files are all verified.
+            // 3. Crash-recoverable swap only after credentials, settings, and staged files are all verified.
             for folder in folders {
-                let live = support.appendingPathComponent(folder, isDirectory: true)
+                let live = baseSupport.appendingPathComponent(folder, isDirectory: true)
                 let fresh = staging.appendingPathComponent(folder, isDirectory: true)
                 guard manager.fileExists(atPath: fresh.path) else { continue }
                 let backup = old.appendingPathComponent(folder, isDirectory: true)
                 let hadLive = lstatExists(live)
+                journal.swappedFolders.append(folder)
+                if hadLive { journal.hadLiveFolders.append(folder) }
+                try writeRestoreJournal(journal, to: journalURL)
                 if hadLive {
-                    try manager.moveItem(at: live, to: backup)
+                    try fileOps.moveItem(live, backup)
                 }
                 swappedTargets.append((live: live, backup: hadLive ? backup : nil))
-                try manager.moveItem(at: fresh, to: live)
+                try fileOps.moveItem(fresh, live)
             }
 
             if hasStagedSkills {
                 let backupSkills = old.appendingPathComponent("Skills", isDirectory: true)
                 let hadLiveSkills = lstatExists(liveSkills)
+                journal.swappedSkills = true
+                journal.hadLiveSkills = hadLiveSkills
+                try writeRestoreJournal(journal, to: journalURL)
                 if hadLiveSkills {
-                    try manager.moveItem(at: liveSkills, to: backupSkills)
+                    try fileOps.moveItem(liveSkills, backupSkills)
                 }
                 swappedTargets.append((live: liveSkills, backup: hadLiveSkills ? backupSkills : nil))
-                try manager.moveItem(at: skillsStaging, to: liveSkills)
+                try fileOps.moveItem(skillsStaging, liveSkills)
             }
+
+            // Persist committed phase BEFORE removing `.restore-old` or old credential slots.
+            journal.phase = .committed
+            try writeRestoreJournal(journal, to: journalURL)
         } catch {
+            var rollbackClean = true
             for entry in swappedTargets.reversed() {
-                try? manager.removeItem(at: entry.live)
-                if let backup = entry.backup, manager.fileExists(atPath: backup.path) {
-                    try? manager.moveItem(at: backup, to: entry.live)
+                if let backup = entry.backup {
+                    if lstatExists(backup) {
+                        do {
+                            if lstatExists(entry.live) {
+                                try fileOps.removeItem(entry.live)
+                            }
+                            try fileOps.moveItem(backup, entry.live)
+                        } catch {
+                            rollbackClean = false
+                        }
+                    } else if !lstatExists(entry.live) {
+                        rollbackClean = false
+                    }
+                } else if lstatExists(entry.live) {
+                    do {
+                        try fileOps.removeItem(entry.live)
+                    } catch {
+                        rollbackClean = false
+                    }
                 }
             }
-            if (try? manager.contentsOfDirectory(atPath: old.path))?.isEmpty == true {
-                try? manager.removeItem(at: old)
+            if !skipGlobalBridges {
+                TeamModel.discardCredentials(from: preparedEndpoints, keeping: previousEndpoints)
             }
-            TeamModel.discardCredentials(from: preparedEndpoints, keeping: previousEndpoints)
-            throw TeamError(message: "恢复没成功（\(error.localizedDescription)），本地数据已经还原成原样。")
+            if rollbackClean {
+                if (try? manager.contentsOfDirectory(atPath: old.path))?.isEmpty == true {
+                    try? fileOps.removeItem(old)
+                }
+                if journalWritten {
+                    try? manager.removeItem(at: journalURL)
+                }
+                throw TeamError(message: "恢复没成功（\(error.localizedDescription)），本地数据已经还原成原样。")
+            } else {
+                // Keep `.restore-journal.json` and `.restore-old` intact so cold launch completes rollback safely.
+                throw TeamError(message: "恢复中断且自动回滚未能完整完成（\(error.localizedDescription)）。原有数据仍保留在恢复目录中，请重新打开 Clio 自动还原。")
+            }
         }
 
         committed = true
-        try? manager.removeItem(at: old)
-        TeamModel.discardCredentials(from: previousEndpoints, keeping: preparedEndpoints)
-        if hasStagedSkills {
-            SkillShelf.invalidate()
+        try? fileOps.removeItem(old)
+        if !skipGlobalBridges {
+            TeamModel.discardCredentials(from: previousEndpoints, keeping: preparedEndpoints)
+            if hasStagedSkills {
+                SkillShelf.invalidate()
+            }
+        }
+        if !lstatExists(old) {
+            try? manager.removeItem(at: journalURL)
         }
 
         // 4. Import UI preferences, now that the restored files are in.
-        for item in items where item.path == "#settings" {
-            let body = data.subdata(in: item.range)
-            if let settings = try? PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] {
-                for (key, value) in settings where restorable.contains(where: { key.hasPrefix($0) }) {
-                    UserDefaults.standard.set(value, forKey: key)
+        if !skipGlobalBridges {
+            for item in items where item.path == "#settings" {
+                let body = data.subdata(in: item.range)
+                if let settings = try? PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any] {
+                    for (key, value) in settings where restorable.contains(where: { key.hasPrefix($0) }) {
+                        UserDefaults.standard.set(value, forKey: key)
+                    }
+                    count += 1
                 }
-                count += 1
             }
-        }
-        if archiveContainedMounts || strippedStagedMounts {
-            UserDefaults.standard.set(true, forKey: "chat.backupStrippedMounts")
+            if archiveContainedMounts || strippedStagedMounts {
+                UserDefaults.standard.set(true, forKey: "chat.backupStrippedMounts")
+            }
         }
         if restoredKeys != nil { count += 1 }
         return Summary(files: count, bytes: rawData.count)
