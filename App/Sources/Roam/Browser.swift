@@ -617,13 +617,13 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
             return "信匣里「\(entry)」没写用在哪个网站。请用户在信匣里给它补上网址，再来填。"
         }
         while wantedHost.hasSuffix(".") { wantedHost.removeLast() }
-        let wantedPort = parsedSite?.port
+        let expectedPort = parsedSite?.port ?? (explicitHTTP ? 80 : 443)
 
         if currentScheme != "https" && !explicitHTTP {
             return "这一页是明文 HTTP（\(currentHost)），信匣里「\(entry)」默认只在 HTTPS 网站填入。如确认是受信任的内网服务，请在信匣里把网址明确写为 http:// 开头。"
         }
-        if let wantedPort, currentPort != wantedPort {
-            return "这一页的端口是 \(currentPort)，信匣里「\(entry)」限定用于端口 \(wantedPort)，不填。"
+        if currentPort != expectedPort {
+            return "这一页的端口是 \(currentPort)，信匣里「\(entry)」限定用于端口 \(expectedPort)，不填。"
         }
 
         if currentHost == wantedHost {

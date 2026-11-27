@@ -331,6 +331,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
             )
             var stampedBook = appBook
             stampedBook.storeEpoch = stampedEpoch
+            stampedBook.storeSequence = stateLock.withLock { syncSequence }
 
             let currentBots = stateLock.withLock { botSummaries }
             if !Disk.frozen {
@@ -546,8 +547,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
         guard !Disk.frozen else {
             throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
         }
-        let (loadBlocked, currentEpoch) = stateLock.withLock {
-            (canonicalLoadFailed, canonicalStateEpoch)
+        let (loadBlocked, currentEpoch, currentSeq) = stateLock.withLock {
+            (canonicalLoadFailed, canonicalStateEpoch, syncSequence)
         }
         guard !loadBlocked else {
             throw TeamError(message: "记忆文件暂不可读，已跳过覆盖写入以防丢失原有记忆。")
@@ -556,6 +557,9 @@ final class MemoryStoreBridge: @unchecked Sendable {
             throw TeamError(message: "记忆档案或检索投影正在等待修复，已跳过覆盖写入以防覆盖最新恢复内容。")
         }
         if let expectedEpoch, currentEpoch != expectedEpoch {
+            throw TeamError(message: "记忆档案版本已更新，已跳过过期覆盖写入。")
+        }
+        if case .none = mutation, let expectedSeq = book.storeSequence, currentSeq != expectedSeq {
             throw TeamError(message: "记忆档案版本已更新，已跳过过期覆盖写入。")
         }
 
@@ -664,7 +668,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 expectedEpoch: capturedEpoch
             )
         }
-        applyPromptState(payload, to: promptState)
+        let liveEpoch = stateLock.withLock { canonicalStateEpoch }
+        if payload.sanitizedAppBook.storeEpoch == liveEpoch {
+            applyPromptState(payload, to: promptState)
+        }
         return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
     }
 
@@ -705,7 +712,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 }
             }
         }
-        applyPromptState(payload, to: promptState)
+        let liveEpoch = stateLock.withLock { canonicalStateEpoch }
+        if payload.sanitizedAppBook.storeEpoch == liveEpoch {
+            applyPromptState(payload, to: promptState)
+        }
         return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
     }
 
@@ -875,8 +885,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
                     && (workingTombstones[hash] != nil || effectiveSuppressedHashes.contains(hash))
                 if !blockedByTombstone {
                     if var existing = workingRecordsByID[memory.id] {
-                        existing.text = safeText
-                        existing.textSHA256 = hash
+                        // Refresh layer/timestamps only; never let a stale `.remember` overwrite newer `.edit` text.
                         existing.layer = existing.pinned ? .pinned : .surface
                         existing.usedAtMs = max(existing.usedAtMs ?? 0, rememberNow)
                         existing.updatedAtMs = max(existing.updatedAtMs, rememberNow)

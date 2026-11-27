@@ -73,6 +73,8 @@ final class Secrets: ObservableObject {
     ) -> ApprovalAsk {
         let rawID = (arguments["id"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let fieldLabel = arguments["field"]?.string == "user" ? "用户名" : "密码"
+        let autoSubmit = arguments["submit"]?.bool == true
+        let actionLabel = autoSubmit ? "填入并提交" : "填入"
         let item = itemOverride ?? cachedItem(rawID)
         let origin = currentOriginOverride ?? BrowserSession.currentOriginDescription(for: chat)
         let itemTitle = item.map { "「\($0.title)」" } ?? (rawID.isEmpty ? "（未指定编号）" : "编号 \(rawID)")
@@ -84,7 +86,7 @@ final class Secrets: ObservableObject {
             siteSummary = "未找到对应条目"
         }
         let targetPage = origin ?? "当前页面"
-        let reason = Words.t("将信匣\(itemTitle)的\(fieldLabel)填入 \(targetPage)")
+        let reason = Words.t("将信匣\(itemTitle)的\(fieldLabel)\(actionLabel)到 \(targetPage)")
         let detail = Words.t("适用网站：\(siteSummary)\n当前页面：\(targetPage)\n信匣编号：\(rawID.isEmpty ? "—" : rawID)")
         return ApprovalAsk(title: Words.t("从信匣取出来填进网页"), reason: reason, detail: detail, forced: true)
     }

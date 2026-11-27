@@ -736,10 +736,13 @@ enum WebFetch {
     final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         let allowAuthorizedPrivate: Bool
         let initialDomain: NetworkAccessDomain
+        private let stateLock = NSLock()
+        private var enteredPublicZone: Bool
 
         init(allowAuthorizedPrivate: Bool = false, initialDomain: NetworkAccessDomain = .publicWeb) {
             self.allowAuthorizedPrivate = allowAuthorizedPrivate
             self.initialDomain = initialDomain
+            self.enteredPublicZone = (initialDomain == .publicWeb || initialDomain == .fakeIPProxy)
         }
 
         static func isCrossZoneEscalation(
@@ -778,16 +781,23 @@ enum WebFetch {
             let sanitized = Self.sanitizeRedirectRequest(request, from: response.url)
             let hasCreds = sanitized.value(forHTTPHeaderField: "Authorization") != nil
                 || sanitized.value(forHTTPHeaderField: "Cookie") != nil
-            let allowPrivateForHop = allowAuthorizedPrivate
-                && (initialDomain != .publicWeb && initialDomain != .fakeIPProxy)
+            let alreadyPublic = stateLock.withLock { enteredPublicZone }
+            let allowPrivateForHop = allowAuthorizedPrivate && !alreadyPublic
             let eval = await PrivateNetworkPolicy.shared.evaluateAsync(
                 url: next,
                 action: .read,
                 allowAuthorizedPrivate: allowPrivateForHop,
                 hasCredentials: hasCreds
             )
+            let targetIsPublic = (eval.domain == .publicWeb || eval.domain == .fakeIPProxy)
+            if alreadyPublic && !targetIsPublic {
+                return nil
+            }
             guard eval.allowed, !Self.isCrossZoneEscalation(from: initialDomain, to: eval.domain) else {
                 return nil
+            }
+            if targetIsPublic {
+                stateLock.withLock { enteredPublicZone = true }
             }
             return sanitized
         }

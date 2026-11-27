@@ -105,6 +105,36 @@ final class R1BAgentKitSecurityTests: XCTestCase {
             newRequest: URLRequest(url: privateURL)
         )
         XCTAssertNil(redirected, "Public-origin 302 redirect to an authorized private LAN host must be rejected")
+
+        // A private-origin request that redirects to public web must not be allowed to pivot back to private LAN.
+        let pivotDelegate = WebFetch.StayPublic(allowAuthorizedPrivate: true, initialDomain: .authorizedPrivate)
+        let publicHopURL = URL(string: "https://example.com/bounce")!
+        let firstHopResponse = HTTPURLResponse(
+            url: privateURL,
+            statusCode: 302,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Location": publicHopURL.absoluteString]
+        )!
+        let firstHop = await pivotDelegate.urlSession(
+            session,
+            task: dummyTask,
+            willPerformHTTPRedirection: firstHopResponse,
+            newRequest: URLRequest(url: publicHopURL)
+        )
+        XCTAssertNotNil(firstHop)
+        let bounceBackResponse = HTTPURLResponse(
+            url: publicHopURL,
+            statusCode: 302,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Location": privateURL.absoluteString]
+        )!
+        let bounceBack = await pivotDelegate.urlSession(
+            session,
+            task: dummyTask,
+            willPerformHTTPRedirection: bounceBackResponse,
+            newRequest: URLRequest(url: privateURL)
+        )
+        XCTAssertNil(bounceBack, "Once a redirect chain enters public web it must not bounce back into private LAN")
         session.invalidateAndCancel()
     }
 

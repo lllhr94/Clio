@@ -82,11 +82,15 @@ extension TeamModel {
     }
 
     private func applyCommittedMemoryBook(_ committedBook: MemoryBook) {
-        if let incomingSeq = committedBook.storeSequence,
-           let currentSeq = memoryBook.storeSequence,
-           committedBook.storeEpoch == memoryBook.storeEpoch,
-           incomingSeq < currentSeq {
-            return
+        if let incomingEpoch = committedBook.storeEpoch,
+           let currentEpoch = memoryBook.storeEpoch {
+            if incomingEpoch < currentEpoch { return }
+            if incomingEpoch == currentEpoch,
+               let incomingSeq = committedBook.storeSequence,
+               let currentSeq = memoryBook.storeSequence,
+               incomingSeq < currentSeq {
+                return
+            }
         }
         memoryBook = committedBook
         if memories != committedBook.memories {

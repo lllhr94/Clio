@@ -222,17 +222,23 @@ enum Vault {
         try? Data(contentsOf: file(key))
     }
 
-    private static func markExcludedFromBackup(_ url: URL) {
+    private static func markExcludedFromBackup(_ url: URL) throws {
         var target = url
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
-        try? target.setResourceValues(values)
+        try target.setResourceValues(values)
     }
 
     private static func writeProtectedLocked(_ data: Data, as key: String) throws {
         let target = file(key)
         try data.write(to: target, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        markExcludedFromBackup(target)
+        do {
+            try markExcludedFromBackup(target)
+        } catch {
+            // Never leave an unexcluded plaintext fallback secret file behind if backup exclusion fails.
+            try? FileManager.default.removeItem(at: target)
+            throw error
+        }
         forget()
     }
 
@@ -274,17 +280,31 @@ enum Vault {
         return removeProtectedLocked(key)
     }
 
-    static func excludeExistingFallbackFilesFromBackup(in folder: URL? = nil) {
+    private static let legacyExclusionLock = NSLock()
+    nonisolated(unsafe) private static var legacyExclusionSucceeded = false
+
+    @discardableResult
+    static func excludeExistingFallbackFilesFromBackup(in folder: URL? = nil) -> Bool {
         let targetFolder = folder ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: targetFolder.path) else { return }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: targetFolder.path) else { return false }
+        var allSucceeded = true
         for name in names where name.hasPrefix("link-") && name.hasSuffix(".json") {
-            markExcludedFromBackup(targetFolder.appendingPathComponent(name))
+            do {
+                try markExcludedFromBackup(targetFolder.appendingPathComponent(name))
+            } catch {
+                allSucceeded = false
+            }
         }
+        return allSucceeded
     }
 
-    private static let excludeLegacyFallbackFilesOnce: Void = {
-        excludeExistingFallbackFilesFromBackup()
-    }()
+    private static func ensureLegacyFallbackFilesExcluded() {
+        let alreadyDone: Bool = legacyExclusionLock.withLock { legacyExclusionSucceeded }
+        guard !alreadyDone else { return }
+        if excludeExistingFallbackFilesFromBackup() {
+            legacyExclusionLock.withLock { legacyExclusionSucceeded = true }
+        }
+    }
 
     static func load<Value: Decodable>(_ type: Value.Type, key: String) -> Value? {
         writes.lock()
@@ -416,7 +436,7 @@ enum Vault {
     }
 
     private static func file(_ key: String) -> URL {
-        _ = excludeLegacyFallbackFilesOnce
+        ensureLegacyFallbackFilesExcluded()
         let folder = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder.appendingPathComponent("link-\(safeFileComponent(key)).json")

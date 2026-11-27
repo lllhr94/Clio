@@ -156,11 +156,16 @@ final class R1BSecurityAndL10nAppTests: XCTestCase {
             entry: "家用路由器"
         ))
 
-        // Enforces explicit port.
+        // Enforces explicit and default ports.
         XCTAssertNotNil(BrowserSession.secretFillMismatchReason(
             expectedURL: URL(string: "https://nas.local:9000/login")!,
             site: "https://nas.local:8443",
             entry: "NAS"
+        ))
+        XCTAssertNotNil(BrowserSession.secretFillMismatchReason(
+            expectedURL: URL(string: "https://example.com:9443/login")!,
+            site: "example.com",
+            entry: "Example"
         ))
         XCTAssertNil(BrowserSession.secretFillMismatchReason(
             expectedURL: URL(string: "https://nas.local:8443/login")!,
@@ -291,6 +296,34 @@ final class R1BSecurityAndL10nAppTests: XCTestCase {
             XCTAssertTrue(diskIDs.contains("m-conc-\(idx)"), "Missing concurrent memory m-conc-\(idx)")
         }
         XCTAssertEqual(diskBook.memories.first(where: { $0.id == "m-seed" })?.text, "已编辑的初始事实")
+
+        // Stale `.remember` with same ID must not overwrite newer `.edit` text.
+        let staleRememberOfSeed = Memory(id: "m-seed", text: "初始事实", at: 1_000, by: nil, deep: nil, used: 4_000)
+        var staleRememberBook = staleSnapshot
+        staleRememberBook.memories[0] = staleRememberOfSeed
+        let (afterStaleRemember, _) = try await bridge.commitAppBookAsync(
+            staleRememberBook,
+            mutation: .remember(memory: staleRememberOfSeed, explicitUserAction: true, nowMs: 4_000),
+            suppressedHashes: [],
+            bots: [],
+            mainBotId: nil,
+            secrets: []
+        )
+        XCTAssertEqual(afterStaleRemember.memories.first(where: { $0.id == "m-seed" })?.text, "已编辑的初始事实")
+
+        // Stale full-book `.none` commit with outdated `storeSequence` must be rejected rather than clobbering newer memories.
+        XCTAssertThrowsError(
+            try bridge.commitAppBook(
+                staleSnapshot,
+                mutation: .none,
+                suppressedHashes: [],
+                bots: [],
+                mainBotId: nil,
+                secrets: []
+            )
+        ) {
+            XCTAssertTrue(($0 as? TeamError)?.message.contains("过期覆盖写入") == true)
+        }
     }
 
     // MARK: - CLIO-013: All 15 trace.* keys present in both daily and literary tones

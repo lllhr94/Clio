@@ -496,6 +496,7 @@ struct Desk: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .clioAppLockPreferenceChanged)) { _ in
                 WidgetFeed.publish(team, immediate: true)
+                LiveTurns.enforcePrivacyRedactionIfNeeded()
             }
             .task {
                 takeNotifications()

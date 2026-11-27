@@ -179,9 +179,33 @@ enum LiveTurns {
             if ending[chat]?.activity.id == activity.id {
                 ending.removeValue(forKey: chat)
             }
-            await activity.end(final, dismissalPolicy: .after(Date().addingTimeInterval(8 * 60)))
+            var finalState = state
+            if Self.isPrivacyRedacted {
+                finalState.doing = Self.redactedEndLine(line, ok: ok, privacyRedacted: true)
+            }
+            let refreshed = ActivityContent(state: finalState, staleDate: nil)
+            await activity.end(refreshed, dismissalPolicy: .after(Date().addingTimeInterval(8 * 60)))
         }
         ending[chat] = (activity, task)
+    }
+
+    /// Immediately redacts or dismisses already-published lock-screen activities when App Lock is turned on.
+    static func enforcePrivacyRedactionIfNeeded() {
+        guard isPrivacyRedacted else { return }
+        for (chat, pending) in ending {
+            pending.task.cancel()
+            ending.removeValue(forKey: chat)
+            Task { await pending.activity.end(nil, dismissalPolicy: .immediate) }
+        }
+        for (chat, activity) in running {
+            guard var state = states[chat] else { continue }
+            state.doing = redactedDoing(state.doing, needsApproval: state.phase == .waiting, privacyRedacted: true)
+            states[chat] = state
+            Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+        }
+        for activity in Activity<TurnAttributes>.activities where running[activity.attributes.chat] == nil {
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+        }
     }
 
     /// Cards left from a run that ended while Clio was closed.
