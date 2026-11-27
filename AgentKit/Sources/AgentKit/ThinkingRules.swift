@@ -1481,14 +1481,27 @@ public enum ThinkingRuleResolver {
             // 2f. Official provider host, but model lacks authoritative catalog entry ->
             // treat as unconfirmed hint ONLY (never infer `canExplicitlyDisable` without model-level evidence or manual rule).
             let officialStyle = style ?? ThinkingStyle.guess(baseURL: key.origin)
+            let unlistedThinks = match.entry?.thinks ?? false
+            var unlistedOffered: [ThinkingSelection] = [.inheritDefault]
+            if let entry = match.entry, !entry.supportedEfforts.isEmpty {
+                let efforts = canonicalSortEfforts(entry.supportedEfforts).filter { $0 != "none" }
+                unlistedOffered += efforts.map { .effort($0) }
+            } else if unlistedThinks {
+                if key.protocolKind == "anthropic" {
+                    unlistedOffered += [.effort("low"), .effort("medium"), .effort("high"), .effort("max")]
+                } else if officialStyle != .none {
+                    let efforts = officialStyle.levels(thinks: true).filter { $0 != .auto && $0 != .off }
+                    unlistedOffered += efforts.map { ThinkingSelection.fromLegacy($0) }
+                }
+            }
             return ConfirmedContract(
                 contractKey: key,
                 catalogProviderKey: officialKey,
                 isConfirmedOfficialOrigin: true,
                 isKnownContract: false,
-                supportsThinking: match.entry?.thinks ?? false,
+                supportsThinking: unlistedThinks || unlistedOffered.count > 1,
                 canExplicitlyDisable: false,
-                offeredSelections: [.inheritDefault],
+                offeredSelections: unlistedOffered,
                 effortAliases: [:],
                 mutualExclusionPolicy: nil,
                 echoesReasoning: match.entry?.interleavedField != nil || officialStyle.echoesReasoning,
@@ -1503,10 +1516,20 @@ public enum ThinkingRuleResolver {
         let hintThinks = match.entry?.thinks ?? false
         let relayStyle = style ?? .effort
         var hintOffered: [ThinkingSelection] = [.inheritDefault]
-        if let explicitStyle = style, explicitStyle != .none {
-            // User explicitly picked a ThinkingStyle on this relay, still not a verified off-contract unless manual rule exists.
-            let efforts = explicitStyle.levels(thinks: true).filter { $0 != .auto && $0 != .off }
-            hintOffered += efforts.map { ThinkingSelection.fromLegacy($0) }
+        if style != .none {
+            if let entry = match.entry, !entry.supportedEfforts.isEmpty {
+                let efforts = canonicalSortEfforts(entry.supportedEfforts).filter { $0 != "none" }
+                hintOffered += efforts.map { .effort($0) }
+            } else if key.protocolKind == "anthropic", hintThinks {
+                hintOffered += [.effort("low"), .effort("medium"), .effort("high"), .effort("max")]
+            } else if let explicitStyle = style, explicitStyle != .none {
+                // User explicitly picked a ThinkingStyle on this relay, still not a verified off-contract unless manual rule exists.
+                let efforts = explicitStyle.levels(thinks: true).filter { $0 != .auto && $0 != .off }
+                hintOffered += efforts.map { ThinkingSelection.fromLegacy($0) }
+            } else if hintThinks, relayStyle != .none {
+                let efforts = relayStyle.levels(thinks: true).filter { $0 != .auto && $0 != .off }
+                hintOffered += efforts.map { ThinkingSelection.fromLegacy($0) }
+            }
         }
         return ConfirmedContract(
             contractKey: key,
@@ -1670,32 +1693,40 @@ public enum ThinkingRuleResolver {
         }
     }
 
-    /// Computes the ordered intersection of realizable selections across multiple gathering speakers
-    /// (used ONLY when `ChatOptions.model == nil`; conversation-level model override resolves directly).
+    /// Computes the canonical, member-order-invariant intersection of directly realizable selections
+    /// across multiple gathering speakers (used ONLY when `ChatOptions.model == nil`).
     public static func intersectOfferings(_ contracts: [ConfirmedContract]) -> [ThinkingSelection] {
-        guard let first = contracts.first else { return [.inheritDefault] }
-        let rest = contracts.dropFirst()
-        var common: [ThinkingSelection] = []
-        for candidate in first.offeredSelections {
-            let realizableByAll = rest.allSatisfy { contract in
-                if case .inheritDefault = candidate { return true }
-                if case .explicitOff = candidate {
-                    return contract.isKnownContract && contract.canExplicitlyDisable
-                }
-                if contract.offeredSelections.contains(candidate) { return true }
-                if let name = candidate.effortName,
-                   contract.isKnownContract,
-                   let mapped = contract.effortAliases[name],
-                   contract.offeredSelections.contains(where: { $0.effortName == mapped }) {
-                    return true
-                }
+        guard !contracts.isEmpty else { return [.inheritDefault] }
+        var common: [ThinkingSelection] = [.inheritDefault]
+        if contracts.allSatisfy({ $0.isKnownContract && $0.canExplicitlyDisable }) {
+            common.append(.explicitOff)
+        }
+        let allOfferExplicitOn = contracts.allSatisfy { contract in
+            contract.offeredSelections.contains { selection in
+                if case .explicitOn = selection { return true }
                 return false
             }
-            if realizableByAll && !common.contains(candidate) {
-                common.append(candidate)
+        }
+        if allOfferExplicitOn {
+            common.append(.explicitOn())
+        }
+        var candidateEfforts: Set<String> = []
+        for contract in contracts {
+            for selection in contract.offeredSelections {
+                if let name = selection.effortName {
+                    candidateEfforts.insert(name)
+                }
             }
         }
-        return common.isEmpty ? [.inheritDefault] : common
+        for effort in canonicalSortEfforts(Array(candidateEfforts)) {
+            let supportedByAll = contracts.allSatisfy { contract in
+                contract.offeredSelections.contains { $0.effortName == effort }
+            }
+            if supportedByAll {
+                common.append(.effort(effort))
+            }
+        }
+        return common
     }
 
     // MARK: Wire Field Compilation
@@ -1715,9 +1746,20 @@ public enum ThinkingRuleResolver {
             return fields
         }
 
-        // Unknown relay without confirmed contract: never send speculative thinking parameters.
+        // Unconfirmed relay / unlisted model: never emit speculative disable or unoffered parameters;
+        // allow offered non-off selections so custom relays honor explicit user choices on the wire.
         if !contract.isKnownContract {
-            return fields
+            if case .explicitOff = selection {
+                return fields
+            }
+            let isOffered = contract.offeredSelections.contains { offered in
+                switch (offered, selection) {
+                case (.explicitOn, .explicitOn): return true
+                case (.effort(let a, _), .effort(let b, _)): return a.lowercased() == b.lowercased()
+                default: return false
+                }
+            }
+            guard isOffered else { return fields }
         }
 
         // DeepSeek official contract.

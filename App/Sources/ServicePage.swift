@@ -1054,6 +1054,7 @@ struct ModelSheet: View {
             HStack(spacing: Ink.Space.s) {
                 Button("跟随目录（推荐）") {
                     Haptics.tick(0.5)
+                    team.setManualThinkingRule(nil, for: model, in: endpointId)
                     team.setTraits(endpointId, model: model, nil)
                     if let resolution = endpoint?.traitsResolution(model) {
                         traits = resolution.baseline
@@ -1068,6 +1069,7 @@ struct ModelSheet: View {
 
                 Button("保持手动关闭") {
                     Haptics.tick(0.5)
+                    team.setManualThinkingRule(nil, for: model, in: endpointId)
                     var manual = endpoint?.overrides?[model] ?? traits
                     manual.thinks = false
                     manual.thinksSource = .userManual
@@ -1159,10 +1161,11 @@ struct ModelSheet: View {
                     set: { next in
                         var updated = traits
                         updated.thinks = next
-                        if !next && updated.levels != nil {
+                        if !next {
+                            team.setManualThinkingRule(nil, for: model, in: endpointId)
                             updated.levels = nil
                             updated.levelsSource = .userManual
-                        } else if next && updated.levels?.isEmpty == true {
+                        } else if updated.levels?.isEmpty == true {
                             updated.levels = nil
                             updated.levelsSource = .catalog
                         }
@@ -1184,7 +1187,7 @@ struct ModelSheet: View {
                 )
                 .padding(.horizontal, Ink.Space.l)
                 .frame(minHeight: Kit.rowHeight)
-                if traits.thinks || traits.levels != nil {
+                if traits.thinks || traits.levels != nil || hasManualThinkingRule {
                     Kit.rule(inset: Ink.Space.l)
                     thinkingLevelsRow
                 }
@@ -1207,40 +1210,143 @@ struct ModelSheet: View {
             .frame(minHeight: Kit.rowHeight)
     }
 
-    private var thinkingLevelsRow: some View {
-        HStack(alignment: .center, spacing: Ink.Space.m) {
-            VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                HStack(spacing: Ink.Space.s) {
-                    Text(L.t("settings.thinkingLevels"))
-                        .font(.system(size: Ink.Size.body))
-                        .foregroundStyle(Ink.ink)
-                    Text(traits.levels != nil ? L.t("settings.thinkingLevelsTested") : L.t("settings.thinkingLevelsDefault"))
-                        .font(.system(size: Ink.Size.micro, weight: .medium))
-                        .foregroundStyle(traits.levels != nil ? Ink.accent : Ink.inkFaint)
-                        .padding(.horizontal, Ink.Space.s)
-                        .padding(.vertical, Ink.Space.xs / 4)
-                        .background(traits.levels != nil ? Ink.accentWash : Ink.mine, in: .capsule)
+    private var hasManualThinkingRule: Bool {
+        endpoint?.validatedManualThinkingRule(for: model) != nil
+    }
+
+    private var currentThinkingContract: ThinkingRuleResolver.ConfirmedContract? {
+        endpoint.map { team.thinkingContract(for: $0, model: model) }
+    }
+
+    private var editableThinkingOptions: [ThinkingSelection] {
+        var options: [ThinkingSelection] = [.explicitOff]
+        var effortSet: Set<String> = ["low", "medium", "high", "max"]
+        if let offered = currentThinkingContract?.offeredSelections {
+            for selection in offered {
+                if let name = selection.effortName {
+                    effortSet.insert(name)
                 }
-                Text(displayedThinkingLevels)
-                    .font(.system(size: Ink.Size.small))
-                    .foregroundStyle(Ink.inkSoft)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: Ink.Space.s)
-            if traits.levels != nil {
-                Button(L.t("settings.clearTestedLevels")) {
-                    Haptics.tick(0.5)
-                    var updated = traits
-                    updated.levels = nil
-                    updated.levelsSource = .catalog
-                    persistTraitsChange(updated)
+        }
+        let sorted = effortSet.sorted { lhs, rhs in
+            let li = ThinkingSelection.effortOrder.firstIndex(of: lhs) ?? Int.max
+            let ri = ThinkingSelection.effortOrder.firstIndex(of: rhs) ?? Int.max
+            if li != ri { return li < ri }
+            return lhs < rhs
+        }
+        options += sorted.map { .effort($0) }
+        return options
+    }
+
+    private var thinkingLevelsRow: some View {
+        let isCustomized = hasManualThinkingRule || traits.levels != nil
+        let activeOffered = currentThinkingContract?.offeredSelections ?? [.inheritDefault]
+        return VStack(alignment: .leading, spacing: Ink.Space.s) {
+            HStack(alignment: .center, spacing: Ink.Space.m) {
+                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                    HStack(spacing: Ink.Space.s) {
+                        Text(L.t("settings.thinkingLevels"))
+                            .font(.system(size: Ink.Size.body))
+                            .foregroundStyle(Ink.ink)
+                        Text(isCustomized ? L.t("settings.thinkingLevelsTested") : L.t("settings.thinkingLevelsDefault"))
+                            .font(.system(size: Ink.Size.micro, weight: .medium))
+                            .foregroundStyle(isCustomized ? Ink.accent : Ink.inkFaint)
+                            .padding(.horizontal, Ink.Space.s)
+                            .padding(.vertical, Ink.Space.xs / 4)
+                            .background(isCustomized ? Ink.accentWash : Ink.mine, in: .capsule)
+                    }
+                    Text(displayedThinkingLevels)
+                        .font(.system(size: Ink.Size.small))
+                        .foregroundStyle(Ink.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .font(.system(size: Ink.Size.small, weight: .semibold))
-                .foregroundStyle(Ink.accent)
+                Spacer(minLength: Ink.Space.s)
+                if isCustomized {
+                    Button(L.t("settings.clearTestedLevels")) {
+                        Haptics.tick(0.5)
+                        team.setManualThinkingRule(nil, for: model, in: endpointId)
+                        var updated = traits
+                        updated.levels = nil
+                        updated.levelsSource = .catalog
+                        persistTraitsChange(updated)
+                    }
+                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                }
+            }
+            if endpoint?.contractKey(for: model) != nil {
+                ScrollView(.horizontal) {
+                    HStack(spacing: Ink.Space.s) {
+                        ForEach(editableThinkingOptions, id: \.stableID) { option in
+                            let selected = activeOffered.contains(option)
+                            Button {
+                                Haptics.tick(0.4)
+                                toggleEditableThinkingOption(option)
+                            } label: {
+                                HStack(spacing: Ink.Space.xs) {
+                                    Image(systemName: selected ? "checkmark" : "plus")
+                                        .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                    Text(option.title)
+                                        .font(.system(size: Ink.Size.small, weight: selected ? .semibold : .regular))
+                                }
+                                .foregroundStyle(selected ? Ink.accent : Ink.inkSoft)
+                                .padding(.horizontal, Ink.Space.m)
+                                .frame(height: 30 * UIScale.factor)
+                                .background(selected ? Ink.accentWash : Ink.mine, in: Capsule(style: .continuous))
+                                .overlay {
+                                    Capsule(style: .continuous)
+                                        .strokeBorder(selected ? Ink.accent.opacity(0.35) : Ink.rule, lineWidth: 0.5)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
             }
         }
         .padding(.horizontal, Ink.Space.l)
         .padding(.vertical, Ink.Space.m)
+    }
+
+    private func toggleEditableThinkingOption(_ option: ThinkingSelection) {
+        guard let endpoint, let key = endpoint.contractKey(for: model) else { return }
+        let current = team.thinkingContract(for: endpoint, model: model)
+        var canDisable = current.canExplicitlyDisable && current.offeredSelections.contains(.explicitOff)
+        var efforts = current.offeredSelections.compactMap(\.effortName)
+        switch option {
+        case .explicitOff:
+            canDisable.toggle()
+        case .effort(let name, _):
+            let normalized = name.lowercased()
+            if let idx = efforts.firstIndex(of: normalized) {
+                efforts.remove(at: idx)
+            } else {
+                efforts.append(normalized)
+            }
+        default:
+            return
+        }
+        let sortedEfforts = efforts.sorted { lhs, rhs in
+            let li = ThinkingSelection.effortOrder.firstIndex(of: lhs) ?? Int.max
+            let ri = ThinkingSelection.effortOrder.firstIndex(of: rhs) ?? Int.max
+            if li != ri { return li < ri }
+            return lhs < rhs
+        }
+        let wireStyle: ThinkingStyle? = endpoint.kind.supportsThinkingStyleSelection ? endpoint.thinkingStyle : nil
+        let rule = ManualThinkingRule(
+            contract: key,
+            canDisable: canDisable,
+            supportedEfforts: sortedEfforts,
+            wireStyle: wireStyle
+        )
+        team.setManualThinkingRule(rule, for: model, in: endpointId)
+        var updated = traits
+        updated.thinks = canDisable || !sortedEfforts.isEmpty
+        updated.levels = nil
+        updated.levelsSource = .catalog
+        persistTraitsChange(updated, markThinksManual: true)
     }
 
     private var displayedThinkingLevels: String {
@@ -1284,9 +1390,10 @@ struct ModelSheet: View {
 
     private var actionsCard: some View {
         VStack(spacing: 0) {
-            if endpoint?.corrected(model) == true {
+            if endpoint?.corrected(model) == true || hasManualThinkingRule {
                 actionRow(L.t("actions.resetModelCapabilities"), symbol: "arrow.uturn.backward", tint: Ink.ink, disabled: false) {
                     Haptics.tick(0.5)
+                    team.setManualThinkingRule(nil, for: model, in: endpointId)
                     team.setTraits(endpointId, model: model, nil)
                     traits = endpoint.map { $0.traits(model, ignoringCorrection: true) } ?? ModelTraits.known(model)
                     hasLegacyConflict = false
@@ -1368,7 +1475,34 @@ struct ModelSheet: View {
             var found = traits
             if let sees = sight.sees { found.sees = sees }
             if let calls = tools.calls { found.tools = calls }
-            if found != traits { persistTraitsChange(found) }
+            let existingContract = team.thinkingContract(for: endpoint, model: model)
+            let isUnconfirmedRelayOrModel = !existingContract.isConfirmedOfficialOrigin || !existingContract.isKnownContract
+            var markThinksManual = false
+            if isUnconfirmedRelayOrModel, thinking.thinks == true {
+                if found.effectiveThinksSource != .userManual || found.thinks {
+                    found.thinks = true
+                    markThinksManual = true
+                }
+                if let probedLevels = thinking.levels,
+                   !probedLevels.isEmpty,
+                   let key = endpoint.contractKey(for: model) {
+                    let canDisable = probedLevels.contains(.off)
+                    let efforts = probedLevels
+                        .filter { $0 != .off && $0 != .auto }
+                        .compactMap { ThinkingSelection.fromLegacy($0).effortName }
+                    let rule = ManualThinkingRule(
+                        contract: key,
+                        canDisable: canDisable,
+                        supportedEfforts: efforts,
+                        wireStyle: endpoint.kind.supportsThinkingStyleSelection ? endpoint.thinkingStyle : nil
+                    )
+                    team.setManualThinkingRule(rule, for: model, in: endpointId)
+                    lines.append("已按实测结果更新本模型可用思考档位。")
+                }
+            }
+            if found != traits || markThinksManual {
+                persistTraitsChange(found, markThinksManual: markThinksManual)
+            }
             note = lines.joined(separator: "\n")
             working = false
         }
@@ -1386,9 +1520,44 @@ struct ModelSheet: View {
 }
 
 extension TeamModel {
-    /// Asks one model once and returns its answer. Uses `preferLowLatency` intent so forced-thinking or
-    /// unconfirmed relays omit questionable thinking parameters cleanly.
-    func quickAsk(_ endpoint: Endpoint, model: String, _ message: Message) async throws -> String {
+    /// Collects visible text and reasoning character count from a single model stream.
+    nonisolated static func collectProbeStream(
+        _ stream: AsyncThrowingStream<StreamEvent, Error>
+    ) async throws -> (text: String, reasoningChars: Int) {
+        var text = ""
+        var reasoningChars = 0
+        for try await event in stream {
+            switch event {
+            case .text(let piece):
+                text += piece
+            case .reasoning(let piece):
+                reasoningChars += piece.count
+            default:
+                break
+            }
+        }
+        return (text.trimmingCharacters(in: .whitespacesAndNewlines), reasoningChars)
+    }
+
+    /// Formats a connectivity probe result; rejects empty or thinking-only streams without visible text.
+    nonisolated static func formatProbeOutcome(
+        model: String,
+        text: String,
+        reasoningChars: Int,
+        elapsed: TimeInterval
+    ) -> (ok: Bool, note: String) {
+        guard !text.isEmpty else {
+            if reasoningChars > 0 {
+                return (false, "不通：\(model) 只返回了思考过程（\(reasoningChars) 字），没有收到正文回复。")
+            }
+            return (false, "不通：\(model) 返回了空内容，未收到正文回复。")
+        }
+        return (true, "通了：\(model)，\(String(format: "%.1f", elapsed)) 秒，回了「\(text.prefix(8))」。")
+    }
+
+    /// Asks one model once and returns both visible text and reasoning length. Uses `preferLowLatency`
+    /// intent so forced-thinking or unconfirmed relays omit questionable thinking parameters cleanly.
+    func quickAskDetailed(_ endpoint: Endpoint, model: String, _ message: Message) async throws -> (text: String, reasoningChars: Int) {
         if let disabledReason = endpoint.disabledProtocolReason {
             throw TeamError(message: disabledReason)
         }
@@ -1396,13 +1565,9 @@ extension TeamModel {
         let provider = endpoint.provider(key: key)
         let contract = thinkingContract(for: endpoint, model: model)
         let initialThinking: Thinking = (contract.isKnownContract && contract.canExplicitlyDisable) ? .off : .auto
-        func once(_ thinking: Thinking) async throws -> String {
+        func once(_ thinking: Thinking) async throws -> (text: String, reasoningChars: Int) {
             let request = ModelRequest(model: model, system: "", messages: [message], outputLimit: 400, thinking: thinking)
-            var text = ""
-            for try await event in provider.stream(request) {
-                if case .text(let piece) = event { text += piece }
-            }
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return try await Self.collectProbeStream(provider.stream(request))
         }
         do {
             return try await once(initialThinking)
@@ -1411,12 +1576,22 @@ extension TeamModel {
         }
     }
 
-    /// Does the key, address and model work: a one-word question.
+    /// Asks one model once and returns its visible answer text.
+    func quickAsk(_ endpoint: Endpoint, model: String, _ message: Message) async throws -> String {
+        try await quickAskDetailed(endpoint, model: model, message).text
+    }
+
+    /// Does the key, address and model work: a one-word question requiring non-empty visible text.
     func probe(_ endpoint: Endpoint, model: String) async -> (ok: Bool, note: String) {
         let started = Date()
         do {
-            let answer = try await quickAsk(endpoint, model: model, .user("回一个字：好"))
-            return (true, "通了：\(model)，\(String(format: "%.1f", Date().timeIntervalSince(started))) 秒，回了「\(answer.prefix(8))」。")
+            let result = try await quickAskDetailed(endpoint, model: model, .user("回一个字：好"))
+            return Self.formatProbeOutcome(
+                model: model,
+                text: result.text,
+                reasoningChars: result.reasoningChars,
+                elapsed: Date().timeIntervalSince(started)
+            )
         } catch {
             let advice = Explain.model(error, service: endpoint.name)
             return (false, "不通：\(advice.displayTitle)\n\(advice.detail)")
@@ -1488,13 +1663,21 @@ extension TeamModel {
             words.append("（仅作参考，目录与手动规则保持不变）。")
             return (false, words.joined(), nil)
         }
+        var observedLevels: [Thinking] = []
+        if off == 0 && deep > 0 {
+            observedLevels.append(.off)
+        }
+        for level in taken where level != .off {
+            if !observedLevels.contains(level) {
+                observedLevels.append(level)
+            }
+        }
         words.append("本次接口接受：" + taken.map(\.title).joined(separator: "、") + "。")
         if !refused.isEmpty { words.append("拒绝：" + refused.map(\.title).joined(separator: "、") + "。") }
         if off == 0 { words.append("「不想」返回了 0 字思考。") }
         else if off > 0 && deep > off * 2 { words.append("「不想」仍有少量思考（\(off) 字，深档 \(deep) 字）。") }
         else if off > 0 { words.append("各档思考字数接近（约 \(deep) 字）。") }
-        words.append("（仅作观察，未改写目录档位）")
-        return (true, "观察到思考。" + words.joined(), nil)
+        return (true, "观察到思考。" + words.joined(), observedLevels.isEmpty ? nil : observedLevels)
     }
 
     /// Shows the model a red square and asks its colour. `sees` is nil when the test itself failed.

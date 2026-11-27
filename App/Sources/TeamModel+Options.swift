@@ -198,11 +198,14 @@ extension TeamModel {
         let activeSnapshot = snapshot ?? ModelsDev.currentSnapshot()
         let resolution = endpoint.traitsResolution(model, snapshot: activeSnapshot)
         var contract = endpoint.thinkingContract(for: model, snapshot: activeSnapshot)
-        // Honor explicit user-manual override (`thinks == false`) while never letting legacy probe suppress confirmed contracts.
+        // Honor explicit user-manual override (`thinks == false` or `thinks == true`) while never letting
+        // legacy probe suppress confirmed contracts.
         if resolution.traits.effectiveThinksSource == .userManual && !resolution.traits.thinks {
             contract.supportsThinking = false
             contract.canExplicitlyDisable = false
             contract.offeredSelections = [.inheritDefault]
+        } else if endpoint.validatedManualThinkingRule(for: model) != nil {
+            // Validated `ManualThinkingRule` already populated `contract` authoritatively above.
         } else if resolution.traits.effectiveLevelsSource == .userManual,
                   let customLevels = resolution.traits.levels {
             let parsed = customLevels.compactMap(Thinking.init(rawValue:)).filter { $0 != .auto }
@@ -212,9 +215,38 @@ extension TeamModel {
                 if !offered.contains(sel) { offered.append(sel) }
             }
             contract.offeredSelections = offered
+            contract.supportsThinking = offered.count > 1
+            if parsed.contains(.off) {
+                contract.canExplicitlyDisable = true
+                contract.isKnownContract = true
+            }
+        } else if resolution.traits.effectiveThinksSource == .userManual && resolution.traits.thinks {
+            contract.supportsThinking = true
+            if contract.offeredSelections.count <= 1 {
+                var seeded: [ThinkingSelection] = [.inheritDefault]
+                if endpoint.kind == .anthropic {
+                    seeded += [.effort("low"), .effort("medium"), .effort("high"), .effort("max")]
+                } else if endpoint.thinkingStyle != .none {
+                    let levels = endpoint.thinkingStyle.levels(thinks: true).filter { $0 != .auto && $0 != .off }
+                    seeded += levels.map { ThinkingSelection.fromLegacy($0) }
+                }
+                contract.offeredSelections = seeded
+            }
         } else if !resolution.traits.thinks && !contract.isKnownContract {
             contract.supportsThinking = false
             contract.offeredSelections = [.inheritDefault]
+        } else if resolution.traits.thinks && !contract.isKnownContract && contract.offeredSelections.count <= 1 {
+            // Name-guessed or catalog-hint thinking model on a custom relay without manual rule:
+            // offer non-off effort levels matching endpoint style (still never claiming verified explicitOff).
+            contract.supportsThinking = true
+            var seeded: [ThinkingSelection] = [.inheritDefault]
+            if endpoint.kind == .anthropic {
+                seeded += [.effort("low"), .effort("medium"), .effort("high"), .effort("max")]
+            } else if endpoint.thinkingStyle != .none {
+                let levels = endpoint.thinkingStyle.levels(thinks: true).filter { $0 != .auto && $0 != .off }
+                seeded += levels.map { ThinkingSelection.fromLegacy($0) }
+            }
+            contract.offeredSelections = seeded
         }
         return contract
     }
