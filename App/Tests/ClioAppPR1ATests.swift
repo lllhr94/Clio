@@ -281,71 +281,74 @@ final class ClioAppPR1ATests: XCTestCase {
         let restoreTeam = dir.appendingPathComponent("Team", isDirectory: true)
         let restoreMirror = dir.appendingPathComponent("Mirrors", isDirectory: true)
         let restoreDB = dir.appendingPathComponent("ClioMemory/restore.db")
-        let restoreBridge = MemoryStoreBridge(databaseURL: restoreDB, teamRoot: restoreTeam, mirrorRoot: restoreMirror)
-        let blockedExpHash = MemorySafety.retractionHash("已撤回的内容")
-        let snap1 = try restoreBridge.revisionStore.commitWithJournal(
-            CanonicalMemoryBook(
-                memories: [CanonicalMemoryItem(id: "m-snap1", text: "快照一保留记忆", at: 100)],
-                suppressedFlushHashes: [blockedExpHash],
-                tombstones: [
-                    MemoryTombstone(
-                        textSHA256: blockedExpHash,
-                        memoryID: "m-ret",
-                        deletedAtMs: 5_000,
-                        reason: "user_delete"
-                    ),
-                ],
-                generation: 1
-            ),
-            snapshotReason: "manual",
-            nowMs: 1_000
-        )
-        let snap1ID = try XCTUnwrap(snap1.snapshot?.id)
-        _ = try restoreBridge.revisionStore.commitWithJournal(
-            CanonicalMemoryBook(
-                memories: [CanonicalMemoryItem(id: "m-snap2", text: "没有该撤回记录的状态", at: 2_000)],
-                generation: 2
-            ),
-            nowMs: 2_000
-        )
-        let preRestoreBoot = restoreBridge.bootstrapOnLaunch()
-        XCTAssertFalse(restoreBridge.tombstoneHashesSnapshot().contains(blockedExpHash))
-        XCTAssertNotNil(preRestoreBoot.book.storeEpoch)
-        var staleMainActorBook = preRestoreBoot.book
-        staleMainActorBook.memories.append(
-            Memory(id: "m-post-restore-stale-book", text: "主线程未应用快照前的旧副本", at: 2_700, by: nil, deep: nil, used: nil)
-        )
-
-        let restored = try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
-        XCTAssertEqual(restored.book.memories.map(\Memory.id), ["m-snap1"])
-        XCTAssertNotEqual(restored.book.storeEpoch, staleMainActorBook.storeEpoch)
-        XCTAssertTrue(restoreBridge.tombstoneHashesSnapshot().contains(blockedExpHash))
-        XCTAssertFalse(restoreBridge.revisionStore.hasPendingProjectionRebuild)
-        XCTAssertThrowsError(
-            try restoreBridge.commitAppBook(staleMainActorBook, suppressedHashes: [], bots: [], mainBotId: nil, secrets: [])
-        ) {
-            XCTAssertTrue(($0 as? TeamError)?.message.contains("过期覆盖写入") == true)
-        }
         do {
-            _ = try await restoreBridge.commitAppBookAsync(
-                staleMainActorBook, suppressedHashes: [], bots: [], mainBotId: nil, secrets: []
+            let restoreBridge = MemoryStoreBridge(databaseURL: restoreDB, teamRoot: restoreTeam, mirrorRoot: restoreMirror)
+            let blockedExpHash = MemorySafety.retractionHash("已撤回的内容")
+            let snap1 = try restoreBridge.revisionStore.commitWithJournal(
+                CanonicalMemoryBook(
+                    memories: [CanonicalMemoryItem(id: "m-snap1", text: "快照一保留记忆", at: 100)],
+                    suppressedFlushHashes: [blockedExpHash],
+                    tombstones: [
+                        MemoryTombstone(
+                            textSHA256: blockedExpHash,
+                            memoryID: "m-ret",
+                            deletedAtMs: 5_000,
+                            reason: "user_delete"
+                        ),
+                    ],
+                    generation: 1
+                ),
+                snapshotReason: "manual",
+                nowMs: 1_000
             )
-            XCTFail("Expected the async commit to reject an old store epoch")
-        } catch {
-            XCTAssertTrue((error as? TeamError)?.message.contains("过期覆盖写入") == true)
-            XCTAssertEqual(try CanonicalMemoryBook.decodeFlexible(
-                from: Data(contentsOf: restoreBridge.revisionStore.memoryFileURL)
-            ).memories.map(\.id), ["m-snap1"])
-        }
+            let snap1ID = try XCTUnwrap(snap1.snapshot?.id)
+            _ = try restoreBridge.revisionStore.commitWithJournal(
+                CanonicalMemoryBook(
+                    memories: [CanonicalMemoryItem(id: "m-snap2", text: "没有该撤回记录的状态", at: 2_000)],
+                    generation: 2
+                ),
+                nowMs: 2_000
+            )
+            let preRestoreBoot = restoreBridge.bootstrapOnLaunch()
+            XCTAssertFalse(restoreBridge.tombstoneHashesSnapshot().contains(blockedExpHash))
+            XCTAssertNotNil(preRestoreBoot.book.storeEpoch)
+            var staleMainActorBook = preRestoreBoot.book
+            staleMainActorBook.memories.append(
+                Memory(id: "m-post-restore-stale-book", text: "主线程未应用快照前的旧副本", at: 2_700, by: nil, deep: nil, used: nil)
+            )
 
-        let retractedPath = restoreTeam.appendingPathComponent("memory-retracted.json")
-        try FileManager.default.removeItem(at: retractedPath)
-        try FileManager.default.createDirectory(at: retractedPath, withIntermediateDirectories: true)
-        do {
-            _ = try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
-            XCTFail("Expected restore to fail when the retraction ledger is a directory")
-        } catch {
-            XCTAssertTrue(restoreBridge.revisionStore.hasPendingProjectionRebuild)
+            let restored = try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
+            XCTAssertEqual(restored.book.memories.map(\Memory.id), ["m-snap1"])
+            XCTAssertNotEqual(restored.book.storeEpoch, staleMainActorBook.storeEpoch)
+            XCTAssertTrue(restoreBridge.tombstoneHashesSnapshot().contains(blockedExpHash))
+            XCTAssertFalse(restoreBridge.revisionStore.hasPendingProjectionRebuild)
+            XCTAssertThrowsError(
+                try restoreBridge.commitAppBook(staleMainActorBook, suppressedHashes: [], bots: [], mainBotId: nil, secrets: [])
+            ) {
+                XCTAssertTrue(($0 as? TeamError)?.message.contains("过期覆盖写入") == true)
+            }
+            do {
+                _ = try await restoreBridge.commitAppBookAsync(
+                    staleMainActorBook, suppressedHashes: [], bots: [], mainBotId: nil, secrets: []
+                )
+                XCTFail("Expected the async commit to reject an old store epoch")
+            } catch {
+                XCTAssertTrue((error as? TeamError)?.message.contains("过期覆盖写入") == true)
+                XCTAssertEqual(try CanonicalMemoryBook.decodeFlexible(
+                    from: Data(contentsOf: restoreBridge.revisionStore.memoryFileURL)
+                ).memories.map(\.id), ["m-snap1"])
+            }
+
+            let retractedPath = restoreTeam.appendingPathComponent("memory-retracted.json")
+            try FileManager.default.removeItem(at: retractedPath)
+            try FileManager.default.createDirectory(at: retractedPath, withIntermediateDirectories: true)
+            do {
+                _ = try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
+                XCTFail("Expected restore to fail when the retraction ledger is a directory")
+            } catch {
+                XCTAssertTrue(restoreBridge.revisionStore.hasPendingProjectionRebuild)
+            }
+            restoreBridge.flushSync()
         }
 
         let relaunch = MemoryStoreBridge(databaseURL: restoreDB, teamRoot: restoreTeam, mirrorRoot: restoreMirror)

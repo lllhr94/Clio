@@ -214,9 +214,15 @@ jobs:
           walk(test_nodes, False)
           required = [
               "testBackupStripsMountsAndUnionsTombstonesIntoMemoryAndExperiences",
-              "testIsolatedMemoryStoreBridgeRecoveryAndProjectionRebuildCrashWindow",
-              "testTeamModelExperienceSourceGatingZeroWriteRecallReadOnlyAndProcessedDedupe",
+              "testBackupBarrierRunsOnExperienceQueueAndPropagatesErrors",
+              "testColdStartRollsBackJournalAndRebuildsMemoryProjection",
+              "testDoubleCorruptMemoryKeepsProjectionAndMarker",
+              "testExperienceBridgeUsesLiveTombstonesAndHonorsPolicyAndFreeze",
               "testLivePromptProviderRedactsSystemAndCachePrefixOnUpstreamRequest",
+              "testReadOnlyTeamDirectoryPreservesCanonicalAndRecoveryMarker",
+              "testRecallMergesWithSameEpochRemember",
+              "testSnapshotRestoreRejectsStaleEpochAndPreservesRecoveryAcrossRelaunch",
+              "testTeamModelExperienceSourceGatingZeroWriteRecallReadOnlyAndProcessedDedupe",
           ]
           missing = [r for r in required if not any(n == r or n.startswith(r + "(") for n in passed_cases)]
           if missing:
