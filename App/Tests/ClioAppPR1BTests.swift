@@ -159,6 +159,8 @@ final class ClioAppPR1BTrashTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let manager = FileManager.default
+        let topIndex = fixture.root.appendingPathComponent(DeskTrash.indexName)
+        try Data("[]".utf8).write(to: topIndex)
         let folder = fixture.root.appendingPathComponent("subfolder")
         let trash = folder.appendingPathComponent(".trash")
         try manager.createDirectory(at: trash, withIntermediateDirectories: true)
@@ -169,6 +171,7 @@ final class ClioAppPR1BTrashTests: XCTestCase {
         try Data("kept".utf8).write(to: kept)
 
         try Backup.stripStagedTrashArtifacts(in: fixture.root)
+        XCTAssertFalse(manager.fileExists(atPath: topIndex.path))
         XCTAssertFalse(manager.fileExists(atPath: trash.path))
         XCTAssertFalse(manager.fileExists(atPath: index.path))
         XCTAssertTrue(manager.fileExists(atPath: kept.path))

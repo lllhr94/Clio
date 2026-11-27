@@ -712,11 +712,18 @@ enum Backup {
     /// Removes device-local trash from staged copies before any restored data can become live.
     static func stripStagedTrashArtifacts(in root: URL) throws {
         let manager = FileManager.default
-        guard let walker = manager.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
+        guard let walker = manager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        ) else { return }
         var artifacts: [URL] = []
         for case let entry as URL in walker {
             if DeskTrash.isReservedName(entry.lastPathComponent) {
-                walker.skipDescendants()
+                if let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                   values.isDirectory == true,
+                   values.isSymbolicLink != true {
+                    walker.skipDescendants()
+                }
                 artifacts.append(entry)
             }
         }
@@ -735,7 +742,7 @@ enum Backup {
         var toDelete: [URL] = []
         if let walker = manager.enumerator(
             at: teamStaging,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
             options: []
         ) {
             for case let entry as URL in walker {
@@ -744,7 +751,11 @@ enum Backup {
                     strippedMounts = true
                     toDelete.append(entry)
                 } else if DeskTrash.isReservedName(name) {
-                    walker.skipDescendants()
+                    if let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                       values.isDirectory == true,
+                       values.isSymbolicLink != true {
+                        walker.skipDescendants()
+                    }
                     toDelete.append(entry)
                 } else if BackupArchivePolicy.isSQLiteOrCacheArtifact(entry.lastPathComponent) {
                     toDelete.append(entry)
