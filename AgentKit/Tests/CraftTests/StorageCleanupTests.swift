@@ -273,8 +273,9 @@ final class StorageCleanupTests: XCTestCase {
         XCTAssertEqual(breakdown.orphanMediaCount, 0)
         let result = StorageCleanup.clean(teamRoot: box.team, graceSeconds: 60, now: now)
         XCTAssertEqual(result.removedMediaCount, 0)
-        XCTAssertEqual(result.removedDocCacheCount, 1)
+        XCTAssertEqual(result.removedDocCacheCount, 0)
         XCTAssertTrue(fm.fileExists(atPath: oldPhoto.path))
+        XCTAssertTrue(fm.fileExists(atPath: box.doccache.appendingPathComponent("cache.txt").path))
     }
 
     func testFailClosedWhenChatFileIsUnreadable() throws {
