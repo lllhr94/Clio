@@ -266,7 +266,7 @@ final class ClioAppPR3ATests: XCTestCase {
         team.bots = [bot]
         let key = TeamModel.key(bot: bot.id)
         team.memories = [
-            Memory(id: "m-deep", text: "用户偏好深色纸墨主题", at: 1000, used: 1000, deep: true),
+            Memory(id: "m-deep", text: "用户偏好深色纸墨主题", at: 1000, deep: true, used: 1000),
         ]
 
         team.setPlanMode(true, in: key)
