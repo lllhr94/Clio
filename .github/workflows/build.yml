@@ -8,6 +8,10 @@ name: Build
 on:
   workflow_dispatch:
     inputs:
+      fast:
+        description: "Fast PR check: run Lint + Chat flow + AgentKit + ClioAppTests (simulator), skip Release iphoneos build and IPA packaging"
+        type: boolean
+        default: false
       runner:
         description: Runner label (macos-latest, or macos-15-intel when the arm64 machines are busy)
         default: macos-latest
@@ -85,7 +89,16 @@ jobs:
           sed -i '' "s/CFBundleVersion: \"[0-9]*\"/CFBundleVersion: \"${{ github.run_number }}\"/" project.yml
           xcodegen generate
 
+      - name: Reuse SwiftPM cache
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('App/project.yml', 'AgentKit/Package.swift') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Build (no code signing)
+        if: ${{ !inputs.fast }}
         run: |
           set -o pipefail
           xcodebuild \
@@ -146,6 +159,7 @@ jobs:
           exit "$status"
 
       - name: Package the IPA
+        if: ${{ !inputs.fast }}
         run: |
           APP="$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)"
           test -n "$APP" || { echo "::error::没有找到 .app"; exit 1; }
@@ -172,6 +186,7 @@ jobs:
           ls -lh Clio-unsigned.ipa
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.fast }}
         with:
           name: Clio-unsigned-ipa
           path: App/Clio-unsigned.ipa
@@ -179,7 +194,7 @@ jobs:
 
       # Pictures of the main screens, to check the look without a phone.
       - name: Publish a probe build
-        if: inputs.publish && github.ref != 'refs/heads/main'
+        if: ${{ !inputs.fast && inputs.publish && github.ref != 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -192,7 +207,7 @@ jobs:
           gh release edit "$TAG" --repo "$REPO" --notes "试签包：分支 ${{ github.ref_name }}，构建 ${{ github.sha }}。只用来试签，不是正式版。"
 
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: ${{ failure() && !inputs.fast }}
         with:
           name: xcodebuild-log
           path: App/xcodebuild.log
@@ -370,7 +385,7 @@ jobs:
 
       # A plain download link on the Releases page, so the IPA can be fetched from a phone.
       - name: Publish the IPA to the latest release
-        if: inputs.publish && github.ref == 'refs/heads/main'
+        if: ${{ !inputs.fast && inputs.publish && github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
