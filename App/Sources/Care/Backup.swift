@@ -53,6 +53,65 @@ enum Backup {
     }
 
     private static let restoreJournalFileName = ".restore-journal.json"
+    private static let startupReconcileLock = NSLock()
+    nonisolated(unsafe) private static var startupReconcileErrorMessage: String?
+
+    static var lastStartupRestoreRecoveryError: String? {
+        startupReconcileLock.withLock { startupReconcileErrorMessage }
+    }
+
+    /// Runs crash recovery BEFORE any storage singleton (`Disk.root`, `SubtaskManager`, `CasualTrackController`)
+    /// can create empty skeleton directories under `Team/`. Returns `false` if recovery failed and writes must stay frozen.
+    @discardableResult
+    static func reconcileInterruptedRestoreBeforeStorageInit(
+        support supportOverride: URL? = nil,
+        workspaceRoot workspaceRootOverride: URL? = nil,
+        fileOps: RestoreFileOps = .live,
+        discardCredentials: (([Endpoint], [Endpoint]) -> Void)? = nil
+    ) -> Bool {
+        let wsRoot = workspaceRootOverride
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        do {
+            _ = try reconcileInterruptedRestoreIfNeeded(
+                support: supportOverride,
+                workspaceRoot: wsRoot,
+                fileOps: fileOps,
+                discardCredentials: discardCredentials
+            )
+            startupReconcileLock.withLock { startupReconcileErrorMessage = nil }
+            return true
+        } catch {
+            startupReconcileLock.withLock { startupReconcileErrorMessage = error.localizedDescription }
+            return false
+        }
+    }
+
+    /// Returns `true` ONLY when `directory` contains at least one real regular file (not just empty skeleton folders
+    /// such as `Team/chats`, `Team/media`, `Team/diary`, `Team/subtasks`, `Team/pending-questions`).
+    /// Throws if directory enumeration fails so callers never treat an unreadable directory as empty or valid.
+    private static func directoryHasSubstantiveFiles(_ directory: URL) throws -> Bool {
+        let manager = FileManager.default
+        guard lstatExists(directory) else { return false }
+        guard isRealDirectory(directory) else { return true }
+        let items = try manager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+            options: []
+        )
+        for item in items {
+            var st = stat()
+            guard lstat(item.path, &st) == 0 else { continue }
+            let kind = st.st_mode & S_IFMT
+            if kind == S_IFDIR {
+                if try directoryHasSubstantiveFiles(item) {
+                    return true
+                }
+            } else {
+                return true
+            }
+        }
+        return false
+    }
 
     private static func writeRestoreJournal(_ journal: RestoreJournal, to url: URL) throws {
         let data = try JSONEncoder().encode(journal)
@@ -60,7 +119,8 @@ enum Backup {
     }
 
     /// Cold-start and pre-restore crash reconciliation for interrupted directory swaps.
-    /// Guarantees `.restore-old` is NEVER deleted if it is the sole surviving valid copy of user data.
+    /// Guarantees `.restore-old` is NEVER deleted if it is the sole surviving valid copy of user data,
+    /// if `.restore-journal.json` is corrupt/unreadable, or if `live` only holds freshly created empty skeleton dirs.
     @discardableResult
     static func reconcileInterruptedRestoreIfNeeded(
         support supportOverride: URL? = nil,
@@ -78,9 +138,17 @@ enum Backup {
             TeamModel.discardCredentials(from: discarded, keeping: active)
         }
 
-        if manager.fileExists(atPath: journalURL.path),
-           let data = try? Data(contentsOf: journalURL),
-           let journal = try? JSONDecoder().decode(RestoreJournal.self, from: data) {
+        if manager.fileExists(atPath: journalURL.path) {
+            let data: Data
+            let journal: RestoreJournal
+            do {
+                data = try Data(contentsOf: journalURL)
+                journal = try JSONDecoder().decode(RestoreJournal.self, from: data)
+            } catch {
+                // Corrupt or unreadable journal: NEVER fall through to delete `.restore-old`!
+                throw TeamError(message: "上次恢复的状态日志损坏或无法读取，已保留原始备份目录以防丢失数据（\(error.localizedDescription)）。")
+            }
+
             switch journal.phase {
             case .committed:
                 if lstatExists(old) {
@@ -150,9 +218,11 @@ enum Backup {
                     throw firstError
                 }
                 if lstatExists(old) {
-                    let remaining = (try? manager.contentsOfDirectory(atPath: old.path)) ?? []
+                    let remaining = try manager.contentsOfDirectory(atPath: old.path)
                     if remaining.isEmpty {
-                        try? fileOps.removeItem(old)
+                        try fileOps.removeItem(old)
+                    } else {
+                        throw TeamError(message: "恢复目录回滚后仍有未还原文件，已保留原目录以保护数据。")
                     }
                 }
                 try? manager.removeItem(at: journalURL)
@@ -167,40 +237,50 @@ enum Backup {
             return false
         }
 
-        // Legacy interrupted restore without a readable journal: recover any missing live folder from `.restore-old`.
+        // Legacy interrupted restore without a journal:
+        // Recover any folder where `live` is missing OR only contains empty skeleton directories while `.restore-old` holds real files.
         var recoveredAny = false
         for folder in folders {
             let live = base.appendingPathComponent(folder, isDirectory: true)
             let backup = old.appendingPathComponent(folder, isDirectory: true)
-            if !lstatExists(live) && lstatExists(backup) {
+            guard lstatExists(backup) else { continue }
+            let liveHasFiles = try directoryHasSubstantiveFiles(live)
+            let backupHasFiles = try directoryHasSubstantiveFiles(backup)
+            if !liveHasFiles && backupHasFiles {
+                if lstatExists(live) {
+                    try fileOps.removeItem(live)
+                }
                 try fileOps.moveItem(backup, live)
                 recoveredAny = true
             }
         }
         let liveSkills = wsRoot.appendingPathComponent("技能", isDirectory: true)
         let backupSkills = old.appendingPathComponent("Skills", isDirectory: true)
-        if !lstatExists(liveSkills) && lstatExists(backupSkills) {
-            try fileOps.moveItem(backupSkills, liveSkills)
-            recoveredAny = true
+        if lstatExists(backupSkills) {
+            let liveSkillsHasFiles = try directoryHasSubstantiveFiles(liveSkills)
+            let backupSkillsHasFiles = try directoryHasSubstantiveFiles(backupSkills)
+            if !liveSkillsHasFiles && backupSkillsHasFiles {
+                if lstatExists(liveSkills) {
+                    try fileOps.removeItem(liveSkills)
+                }
+                try fileOps.moveItem(backupSkills, liveSkills)
+                recoveredAny = true
+            }
         }
 
-        // Only delete `.restore-old` once every folder inside it is confirmed to have a live counterpart.
-        let remainingItems = (try? manager.contentsOfDirectory(atPath: old.path)) ?? []
-        var safeToDeleteOld = true
+        // Only remove `.restore-old` when confirmed empty (all real backup dirs moved back or verified empty).
+        // If non-empty folders remain without a committed journal, keep `.restore-old` intact!
+        let remainingItems = try manager.contentsOfDirectory(atPath: old.path)
+        var allRemainingAreEmpty = true
         for name in remainingItems {
-            if name == "Skills" {
-                if !lstatExists(liveSkills) { safeToDeleteOld = false }
-            } else if folders.contains(name) {
-                if !lstatExists(base.appendingPathComponent(name, isDirectory: true)) { safeToDeleteOld = false }
-            } else {
-                safeToDeleteOld = false
+            let itemURL = old.appendingPathComponent(name)
+            if try directoryHasSubstantiveFiles(itemURL) {
+                allRemainingAreEmpty = false
+                break
             }
         }
-        if safeToDeleteOld {
+        if allRemainingAreEmpty {
             try fileOps.removeItem(old)
-            if manager.fileExists(atPath: journalURL.path) {
-                try? manager.removeItem(at: journalURL)
-            }
         }
         if lstatExists(staging) {
             try? fileOps.removeItem(staging)
@@ -632,35 +712,23 @@ enum Backup {
             restoredKeys = nil
         }
 
-        // 2. Reconcile any interrupted prior restore FIRST so we never destroy a sole surviving `.restore-old` copy.
+        // 2. Freeze and drain ALL live writers BEFORE reconciling prior interrupted restores,
+        // copying live folders, or swapping directories.
         let baseSupport = supportOverride ?? Self.support
         let workspaceRoot = workspaceRootOverride ?? Workspace.root
         let manager = FileManager.default
         let staging = baseSupport.appendingPathComponent(".restore-staging", isDirectory: true)
         let old = baseSupport.appendingPathComponent(".restore-old", isDirectory: true)
         let journalURL = baseSupport.appendingPathComponent(restoreJournalFileName)
-        do {
-            _ = try reconcileInterruptedRestoreIfNeeded(
-                support: baseSupport,
-                workspaceRoot: workspaceRoot,
-                fileOps: fileOps,
-                discardCredentials: skipGlobalBridges ? { _, _ in } : nil
-            )
-        } catch {
-            throw TeamError(message: "上次中断的恢复尚未完成还原（\(error.localizedDescription)），已中止本次恢复以保护原数据。")
-        }
-        if lstatExists(old) {
-            throw TeamError(message: "检测到未清理的旧恢复目录，无法确认它是否仍是唯一数据副本，已中止本次恢复以保护原数据。")
-        }
 
-        // Freeze and drain ALL live writers BEFORE copying live directories to staging or swapping them.
         let wasFrozen = Disk.frozen
         if !skipGlobalBridges {
             Disk.frozen = true
         }
         var committed = false
+        var keepFrozenOnExit = false
         defer {
-            if !skipGlobalBridges && !committed {
+            if !skipGlobalBridges && !committed && !keepFrozenOnExit {
                 Disk.frozen = wasFrozen
             }
         }
@@ -669,6 +737,24 @@ enum Backup {
             Disk.forgetPhotos()
             SubtaskManager.sharedCanonicalStore.withWriteBarrier {}
             CasualTrackController.sharedStore.withWriteBarrier {}
+            SubConversationStore.withBackupBarrier {}
+            try? MemoryStoreBridge.shared.withBackupBarrier {}
+        }
+
+        do {
+            _ = try reconcileInterruptedRestoreIfNeeded(
+                support: baseSupport,
+                workspaceRoot: workspaceRoot,
+                fileOps: fileOps,
+                discardCredentials: skipGlobalBridges ? { _, _ in } : nil
+            )
+        } catch {
+            keepFrozenOnExit = true
+            throw TeamError(message: "上次中断的恢复尚未完成还原（\(error.localizedDescription)），已中止本次恢复并冻结写入以保护原数据。")
+        }
+        if lstatExists(old) {
+            keepFrozenOnExit = true
+            throw TeamError(message: "检测到未清理的旧恢复目录，无法确认它是否仍是唯一数据副本，已中止本次恢复并冻结写入以保护原数据。")
         }
 
         try? fileOps.removeItem(staging)
@@ -890,8 +976,12 @@ enum Backup {
                 }
                 throw TeamError(message: "恢复没成功（\(error.localizedDescription)），本地数据已经还原成原样。")
             } else {
-                // Keep `.restore-journal.json` and `.restore-old` intact so cold launch completes rollback safely.
-                throw TeamError(message: "恢复中断且自动回滚未能完整完成（\(error.localizedDescription)）。原有数据仍保留在恢复目录中，请重新打开 Clio 自动还原。")
+                // Rollback incomplete: keep writes frozen AND keep `.restore-journal.json` + `.restore-old` intact!
+                keepFrozenOnExit = true
+                if !skipGlobalBridges {
+                    Disk.frozen = true
+                }
+                throw TeamError(message: "恢复中断且自动回滚未能完整完成（\(error.localizedDescription)）。已冻结写入并保留原数据目录，请重新打开 Clio 自动还原。")
             }
         }
 

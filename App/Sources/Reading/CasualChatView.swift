@@ -403,6 +403,7 @@ final class CasualTrackController: ObservableObject {
     let botID: String
     let store: CasualTrackStore
     let queue: CasualSendQueue
+    private let coldStartCoordinator: CasualColdStartCoordinator?
     @Published private(set) var entries: [CasualEntry] = []
     @Published private(set) var pendingBurstSegments: [String] = []
     @Published private(set) var reconcileBatches: [CasualOutboxBatch] = []
@@ -413,21 +414,28 @@ final class CasualTrackController: ObservableObject {
         CasualTrackPolicy.allowsSticker(usedInCurrentTurn: stickersUsedInCurrentTurn, isCasualTrack: true)
     }
 
-    init(botID: String, store: CasualTrackStore? = nil, mergeWindowSeconds: TimeInterval = CasualTrackPolicy.mergeWindowSeconds) {
+    init(
+        botID: String,
+        store: CasualTrackStore? = nil,
+        coordinator: CasualColdStartCoordinator? = nil,
+        mergeWindowSeconds: TimeInterval = CasualTrackPolicy.mergeWindowSeconds
+    ) {
         self.botID = botID
         let resolvedStore = store ?? Self.sharedStore
         self.store = resolvedStore
+        self.coldStartCoordinator = coordinator ?? (resolvedStore === Self.sharedStore ? CasualColdStartCoordinator.shared : nil)
         self.queue = CasualSendQueue(botID: botID, store: resolvedStore, mergeWindowSeconds: mergeWindowSeconds)
         reload()
     }
 
     func reload() {
         entries = store.entries(for: botID)
-        if store === Self.sharedStore {
-            CasualColdStartCoordinator.shared.reconcileOnceOnLaunch(store: store)
-            let newlyClaimed = CasualColdStartCoordinator.shared.takeRecoveredInitialBatches(for: botID)
+        if let coordinator = coldStartCoordinator {
+            coordinator.reconcileOnceOnLaunch(store: store)
+            let newlyClaimed = coordinator.takeRecoveredInitialBatches(for: botID)
             if !newlyClaimed.isEmpty {
-                recoveredInitialBatches.append(contentsOf: newlyClaimed)
+                let existingIDs = Set(recoveredInitialBatches.map(\.batchID))
+                recoveredInitialBatches.append(contentsOf: newlyClaimed.filter { !existingIDs.contains($0.batchID) })
             }
         } else {
             let queued = store.outboxBatches(for: botID).filter { $0.state == .queuedBeforeSend }
@@ -515,21 +523,22 @@ final class CasualTrackController: ObservableObject {
             casualSessionID: queue.casualSessionID,
             segments: batch.segments,
             state: .queuedBeforeSend,
-            trackEpoch: queue.currentTrackEpoch
+            trackEpoch: queue.currentTrackEpoch,
+            supersedesBatchID: batch.batchID
         )
-        // Must confirm the new batch is durably persisted BEFORE completing/closing the reconciled batch.
+        // Atomically persist `fresh` AND close `batch` BEFORE dispatching; if closing fails, `fresh` is rolled back.
+        let replacement: CasualOutboxBatch
         do {
-            try store.saveOutboxBatch(fresh)
+            replacement = try store.replaceReconciledBatch(oldBatchID: batch.batchID, with: fresh)
         } catch {
-            Diag.note("没能保存重发的闲谈批次（\(error.localizedDescription)），已保留原待核对记录。")
+            Diag.note("没能安全替换重发的闲谈批次（\(error.localizedDescription)），已保留原待核对记录。")
             return false
         }
-        _ = try? store.markOutboxCompleted(batchID: batch.batchID)
         reconcileBatches.removeAll { $0.batchID == batch.batchID }
         if dispatchNow {
             Task { @MainActor [weak self, weak team] in
                 guard let self, let team else { return }
-                if let inFlight = try? self.store.commitStep2MarkInFlight(batchID: fresh.batchID) {
+                if let inFlight = try? self.store.commitStep2MarkInFlight(batchID: replacement.batchID) {
                     await self.dispatchBatch(inFlight, team: team, bot: bot, onSuggestHandoff: { _ in })
                 }
             }

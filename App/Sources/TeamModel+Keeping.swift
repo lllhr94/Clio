@@ -17,15 +17,27 @@ extension TeamModel {
         let laters: [Later]
         let routines: [Routine]
         let queued: [String: [StoredQueuedMessage]]
+        let restoreRecoveryError: String?
 
         nonisolated static func read() -> Self {
-            do {
-                _ = try Backup.reconcileInterruptedRestoreIfNeeded()
-            } catch {
-                let reason = error.localizedDescription
+            if !Backup.reconcileInterruptedRestoreBeforeStorageInit() {
+                Disk.frozen = true
+                let reason = Backup.lastStartupRestoreRecoveryError ?? "上次恢复目录回滚未完成"
                 DispatchQueue.main.async {
-                    Diag.note("上次中断的备份恢复尚未完成自动还原：\(reason)")
+                    Diag.note("启动恢复自愈失败，已冻结写入以防破坏原数据：\(reason)")
                 }
+                return Self(
+                    settings: TeamSettings(),
+                    bots: [],
+                    rooms: [],
+                    memory: MemoryBook(),
+                    suppressedMemoryHashes: [],
+                    pinnedMemoryIDs: [],
+                    laters: [],
+                    routines: [],
+                    queued: [:],
+                    restoreRecoveryError: reason
+                )
             }
             CasualColdStartCoordinator.shared.reconcileOnceOnLaunch()
             let barrierBlocked = QueuedStore.reconcilePreRestoreBarrier(teamRoot: Disk.root)
@@ -63,7 +75,8 @@ extension TeamModel {
                 pinnedMemoryIDs: memoryBoot.pinnedIDs,
                 laters: laters,
                 routines: routines,
-                queued: queued
+                queued: queued,
+                restoreRecoveryError: nil
             )
         }
 
@@ -292,6 +305,14 @@ extension TeamModel {
     }
 
     func load(_ data: InitialData) {
+        if let recoveryError = data.restoreRecoveryError {
+            Disk.frozen = true
+            queueDispatchSuspended = true
+            entries = [:]
+            approvals = []
+            Diag.note("已中止常规加载并保持只读冻结状态，待恢复目录还原后重启：\(recoveryError)")
+            return
+        }
         settings = data.settings
         if Self.settle(&settings) { saveSettings() }
         bots = data.bots

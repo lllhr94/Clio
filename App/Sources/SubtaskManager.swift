@@ -1,6 +1,7 @@
 import AgentKit
 import Combine
 import Craft
+import CryptoKit
 import Foundation
 import SwiftUI
 import UIKit
@@ -23,6 +24,8 @@ final class SubtaskManager: ObservableObject {
     /// Keyed by `threadID`, storing the active `(attemptID, task)` so stale cleanup never clobbers a newer retry.
     private var runningTasks: [String: (attemptID: String, task: Task<Void, Never>)] = [:]
     private var liveQuestionWaiters: [String: (formID: UUID, fieldKey: String)] = [:]
+    /// Subtask deliveries that arrived while `openLeafNow` was in flight for `parentChat`; replayed once flip settles.
+    private var deferredDeliveriesWhileOpening: [String: [(threadID: String, attemptID: String, eventID: String)]] = [:]
     private var unlockObserver: AnyCancellable?
     private weak var boundTeam: TeamModel?
 
@@ -356,7 +359,11 @@ final class SubtaskManager: ObservableObject {
             approve: { [weak team] ask, tool in
                 guard let team else { return false }
                 let target = await MainActor.run {
-                    team.resolveConversationTarget(slotKey: parentChat, conversationID: thread.parentConversationID)
+                    team.resolveConversationTarget(
+                        slotKey: parentChat,
+                        conversationID: thread.parentConversationID,
+                        threadCreatedAtMs: thread.createdAtMs
+                    )
                 }
                 switch target {
                 case .active(let slot):
@@ -365,6 +372,10 @@ final class SubtaskManager: ObservableObject {
                     var labeled = ask
                     labeled.reason = "【来自已收起对话「\(leaf.title)」的后台任务】\n" + ask.reason
                     return await team.ask(labeled, tool: tool, bot: helper.id, chat: slot, executionChat: executionKey, workplace: workplace)
+                case .ambiguous:
+                    var labeled = ask
+                    labeled.reason = "【来自更早对话的后台任务】\n" + ask.reason
+                    return await team.ask(labeled, tool: tool, bot: helper.id, chat: parentChat, executionChat: executionKey, workplace: workplace)
                 case .gone:
                     return false
                 }
@@ -537,6 +548,17 @@ final class SubtaskManager: ObservableObject {
             return false
         }
         let parentChat = thread.stableParentChatID
+        // Never write into a leaf or active slot while `openLeafNow` is swapping files for `parentChat`:
+        // defer until the leaf flip commits/rolls back and then re-resolve target cleanly.
+        if team.openingLeaves.contains(parentChat) {
+            var queue = deferredDeliveriesWhileOpening[parentChat] ?? []
+            if !queue.contains(where: { $0.eventID == eventID }) {
+                queue.append((threadID: thread.threadID, attemptID: attemptID, eventID: eventID))
+                deferredDeliveriesWhileOpening[parentChat] = queue
+            }
+            return false
+        }
+
         let attempt = thread.attempts.first { $0.attemptID == attemptID } ?? thread.latestAttempt
         let isTainted = attempt?.isTaintedForParent ?? false
 
@@ -556,7 +578,8 @@ final class SubtaskManager: ObservableObject {
 
         let target = team.resolveConversationTarget(
             slotKey: parentChat,
-            conversationID: thread.parentConversationID
+            conversationID: thread.parentConversationID,
+            threadCreatedAtMs: thread.createdAtMs
         )
 
         final class SavedReceiptBox: @unchecked Sendable {
@@ -567,6 +590,13 @@ final class SubtaskManager: ObservableObject {
         }
 
         switch target {
+        case .ambiguous:
+            // Legacy thread lacking `parentConversationID` after a newer leaf was shelved:
+            // keep undelivered rather than risking cross-conversation bleed into a different chat.
+            Diag.note("旧版后台子任务 \(thread.threadID) 缺少父会话身份且期间已换页，暂保留待核对以避免串投。")
+            refresh()
+            return false
+
         case .gone:
             // Parent conversation was deleted or cleared: never inject into a new conversation reusing `parentChat`.
             let recorded = (try? store.recordParentDelivery(
@@ -662,6 +692,22 @@ final class SubtaskManager: ObservableObject {
             )) ?? false
             refresh()
             return recorded
+        }
+    }
+
+    /// Replays any subtask deliveries deferred while `openLeafNow` was in flight for `parentChat`.
+    func drainDeferredDeliveries(for parentChat: String, team: TeamModel) {
+        guard !team.openingLeaves.contains(parentChat),
+              let pending = deferredDeliveriesWhileOpening.removeValue(forKey: parentChat),
+              !pending.isEmpty else { return }
+        for item in pending {
+            guard let latest = store.thread(id: item.threadID) else { continue }
+            _ = deliverIdempotentlyToParent(
+                thread: latest,
+                attemptID: item.attemptID,
+                eventID: item.eventID,
+                team: team
+            )
         }
     }
 
@@ -862,9 +908,24 @@ final class SubtaskManager: ObservableObject {
         return true
     }
 
+    private static func deterministicUUID(from seed: String) -> UUID {
+        let digest = Array(SHA256.hash(data: Data(seed.utf8)))
+        var bytes: uuid_t = (
+            digest[0], digest[1], digest[2], digest[3],
+            digest[4], digest[5], digest[6], digest[7],
+            digest[8], digest[9], digest[10], digest[11],
+            digest[12], digest[13], digest[14], digest[15]
+        )
+        // RFC 4122 version 5 / variant bits
+        bytes.6 = (bytes.6 & 0x0F) | 0x50
+        bytes.8 = (bytes.8 & 0x3F) | 0x80
+        return UUID(uuid: bytes)
+    }
+
     /// Phase 2: Drains all `.answered` questions once App Lock is unlocked.
-    /// Dispatches ONLY when `resumeAttemptID` is not already in Canonical manifest AND delivery succeeds;
-    /// if `team.send` returns `false`, leaves `.answered` unconsumed so a later foreground resume can retry cleanly.
+    /// Persists the reply under a deterministic `resumeAttemptID`-derived entry/queued ID and confirms disk save
+    /// BEFORE claiming the resume manifest & marking `.consumed` so crashes before or after write neither swallow
+    /// nor duplicate the reply.
     func drainPendingQuestionResumes(team: TeamModel) {
         bind(to: team)
         guard AppLock.isCurrentlyUnlocked else { return }
@@ -877,26 +938,24 @@ final class SubtaskManager: ObservableObject {
                 _ = try? store.markQuestionConsumed(questionID: item.questionID)
                 continue
             }
-            guard let claimed = try? store.claimQuestionResume(questionID: item.questionID) else {
-                continue
-            }
-            guard claimed.shouldDispatch else {
-                _ = try? store.markQuestionConsumed(questionID: item.questionID)
-                continue
-            }
             let text = item.answerText ?? ""
-            let dispatched: Bool
+            let persistedAndDispatched: Bool
             if let live = liveQuestionWaiters.removeValue(forKey: item.questionID) {
                 Asker.shared.answer([live.fieldKey: text], to: live.formID)
-                dispatched = true
+                persistedAndDispatched = true
             } else {
                 let replyPrompt = "【关于「\(item.title)」的回答】\(text)"
-                dispatched = team.send(replyPrompt, photos: [], to: item.chatKey, userInitiated: true)
+                let deterministicEntryID = "qresume-\(resumeID)"
+                let deterministicQueuedID = Self.deterministicUUID(from: "qresume-\(resumeID)")
+                persistedAndDispatched = team.sendConfirmedForQuestionResume(
+                    replyPrompt,
+                    to: item.chatKey,
+                    deterministicEntryID: deterministicEntryID,
+                    deterministicQueuedID: deterministicQueuedID
+                )
             }
-            guard dispatched else {
-                store.releaseQuestionResumeClaim(resumeAttemptID: claimed.resumeAttemptID)
-                continue
-            }
+            guard persistedAndDispatched else { continue }
+            _ = try? store.claimQuestionResume(questionID: item.questionID)
             _ = try? store.markQuestionConsumed(questionID: item.questionID)
         }
         refresh()

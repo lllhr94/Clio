@@ -148,6 +148,8 @@ public struct CasualOutboxBatch: Codable, Equatable, Hashable, Identifiable, Sen
     public var combinedText: String
     public var state: State
     public var trackEpoch: UInt64
+    /// Optional ID of an earlier `.needsReconcile` batch explicitly replaced by this resend batch.
+    public var supersedesBatchID: String?
     public var createdAtMs: Double
     public var updatedAtMs: Double
 
@@ -160,6 +162,7 @@ public struct CasualOutboxBatch: Codable, Equatable, Hashable, Identifiable, Sen
         segments: [String],
         state: State = .queuedBeforeSend,
         trackEpoch: UInt64,
+        supersedesBatchID: String? = nil,
         createdAtMs: Double = Date().timeIntervalSince1970 * 1000,
         updatedAtMs: Double? = nil
     ) {
@@ -170,6 +173,7 @@ public struct CasualOutboxBatch: Codable, Equatable, Hashable, Identifiable, Sen
         self.combinedText = segments.joined(separator: "\n")
         self.state = state
         self.trackEpoch = trackEpoch
+        self.supersedesBatchID = supersedesBatchID
         self.createdAtMs = createdAtMs
         self.updatedAtMs = updatedAtMs ?? createdAtMs
     }
@@ -267,6 +271,69 @@ public final class CasualTrackStore: @unchecked Sendable {
         }
     }
 
+    private static func isFileMissingError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain && ns.code == NSFileReadNoSuchFileError {
+            return true
+        }
+        if ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOENT) {
+            return true
+        }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isFileMissingError(underlying)
+        }
+        return false
+    }
+
+    /// Reads existing entry IDs from `botID.jsonl` while distinguishing genuine absence (`ENOENT`) from
+    /// transient read errors (which MUST rethrow so write paths never clobber existing history).
+    private func inspectExistingJSONLLocked(botID: String) throws -> (exists: Bool, endsWithNewline: Bool, existingIDs: Set<String>) {
+        let url = entriesURL(botID: botID)
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            if Self.isFileMissingError(error) {
+                return (false, true, [])
+            }
+            throw error
+        }
+        let endsWithNewline = data.isEmpty || data.last == 0x0A
+        var ids: Set<String> = []
+        if let raw = String(data: data, encoding: .utf8) {
+            for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
+                if let decoded = try? decoder.decode(CasualEntry.self, from: Data(line.utf8)) {
+                    ids.insert(decoded.id)
+                }
+            }
+        }
+        return (true, endsWithNewline, ids)
+    }
+
+    /// Strictly append-only write to `botID.jsonl` preserving all pre-existing bytes (including any unreadable/legacy lines).
+    private func appendLinesOnlyLocked(_ entries: [CasualEntry], botID: String, exists: Bool, endsWithNewline: Bool) throws {
+        guard !entries.isEmpty else { return }
+        ensureDirectoriesLocked()
+        var payload = Data()
+        if exists && !endsWithNewline {
+            payload.append(0x0A)
+        }
+        for entry in entries {
+            payload.append(try encoder.encode(entry))
+            payload.append(0x0A)
+        }
+        let jsonlURL = entriesURL(botID: botID)
+        if exists {
+            let handle = try FileHandle(forWritingTo: jsonlURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: payload)
+            try handle.synchronize()
+        } else {
+            try payload.write(to: jsonlURL, options: .atomic)
+        }
+    }
+
     @discardableResult
     private func appendEntryLocked(_ entry: CasualEntry) throws -> Bool {
         guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
@@ -276,23 +343,11 @@ public final class CasualTrackStore: @unchecked Sendable {
         if tombstones[entry.id] != nil {
             return false
         }
-        let existing = loadRawEntriesLocked(botID: entry.botID)
-        if existing.contains(where: { $0.id == entry.id }) {
+        let existing = try inspectExistingJSONLLocked(botID: entry.botID)
+        if existing.existingIDs.contains(entry.id) {
             return false
         }
-        ensureDirectoriesLocked()
-        let jsonlURL = entriesURL(botID: entry.botID)
-        let data = try encoder.encode(entry)
-        var line = data
-        line.append(0x0A)
-        if FileManager.default.fileExists(atPath: jsonlURL.path) {
-            let handle = try FileHandle(forWritingTo: jsonlURL)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: line)
-        } else {
-            try line.write(to: jsonlURL, options: .atomic)
-        }
+        try appendLinesOnlyLocked([entry], botID: entry.botID, exists: existing.exists, endsWithNewline: existing.endsWithNewline)
         insertProjectionEntryLocked(entry)
         return true
     }
@@ -490,8 +545,8 @@ public final class CasualTrackStore: @unchecked Sendable {
         }
     }
 
-    /// Persists all reply entries atomically to `botID.jsonl` (idempotent by `entry.id`) BEFORE marking
-    /// the outbox batch `.completed`. If any entry write fails, the outbox batch stays open and is never dropped.
+    /// Persists all reply entries strictly append-only to `botID.jsonl` (preserving pre-existing bytes and
+    /// rethrowing read errors rather than rewriting from empty) BEFORE marking the outbox batch `.completed`.
     @discardableResult
     public func appendEntriesAndCompleteOutbox(
         entries: [CasualEntry],
@@ -511,15 +566,19 @@ public final class CasualTrackStore: @unchecked Sendable {
                         if let err = simulateEntryWriteFailure?(entry) { throw err }
                     }
                     let tombstones = loadTombstonesLocked(botID: botID)
-                    var merged = loadRawEntriesLocked(botID: botID)
-                    var existingIDs = Set(merged.map(\.id))
+                    let inspected = try inspectExistingJSONLLocked(botID: botID)
+                    var existingIDs = inspected.existingIDs
                     var newlyAdded: [CasualEntry] = []
                     for entry in botEntries where tombstones[entry.id] == nil && existingIDs.insert(entry.id).inserted {
-                        merged.append(entry)
                         newlyAdded.append(entry)
                     }
                     if !newlyAdded.isEmpty {
-                        try rewriteEntriesLocked(merged, botID: botID)
+                        try appendLinesOnlyLocked(
+                            newlyAdded,
+                            botID: botID,
+                            exists: inspected.exists,
+                            endsWithNewline: inspected.endsWithNewline
+                        )
                         for entry in newlyAdded {
                             insertProjectionEntryLocked(entry)
                         }
@@ -530,6 +589,37 @@ public final class CasualTrackStore: @unchecked Sendable {
             batch.updatedAtMs = nowMs
             try persistOutboxBatchLocked(batch)
             return batch
+        }
+    }
+
+    /// Atomically replaces a `.needsReconcile` batch with a fresh resend batch carrying `supersedesBatchID`.
+    /// Both persisting `fresh` AND closing `oldBatchID` MUST succeed before returning; if closing `oldBatchID`
+    /// fails, `fresh` is removed and the error is rethrown so two sendable copies never coexist.
+    @discardableResult
+    public func replaceReconciledBatch(
+        oldBatchID: String,
+        with fresh: CasualOutboxBatch,
+        nowMs: Double = Date().timeIntervalSince1970 * 1000
+    ) throws -> CasualOutboxBatch {
+        try lock.withLock {
+            guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
+            guard var oldBatch = loadOutboxBatchLocked(batchID: oldBatchID) else {
+                throw CasualTrackError.batchNotFound(oldBatchID)
+            }
+            var replacement = fresh
+            replacement.supersedesBatchID = oldBatchID
+            replacement.updatedAtMs = nowMs
+            try persistOutboxBatchLocked(replacement)
+
+            oldBatch.state = .completed
+            oldBatch.updatedAtMs = nowMs
+            do {
+                try persistOutboxBatchLocked(oldBatch)
+            } catch {
+                try? FileManager.default.removeItem(at: outboxURL(batchID: replacement.batchID))
+                throw error
+            }
+            return replacement
         }
     }
 
@@ -585,9 +675,22 @@ public final class CasualTrackStore: @unchecked Sendable {
     ) -> CasualColdStartRecovery {
         lock.withLock {
             let drafts = loadAllDraftsLocked()
+            let allBatches = loadAllOutboxBatchesLocked()
+            // Heal any crash between writing a replacement resend batch (`supersedesBatchID`) and closing the old batch.
+            let supersededIDs = Set(
+                allBatches
+                    .filter { $0.state != .cancelled }
+                    .compactMap(\.supersedesBatchID)
+            )
             var readyToSend: [CasualOutboxBatch] = []
             var needsReconcile: [CasualOutboxBatch] = []
-            for var batch in loadAllOutboxBatchesLocked() {
+            for var batch in allBatches {
+                if supersededIDs.contains(batch.batchID), batch.state != .completed, batch.state != .cancelled {
+                    batch.state = .completed
+                    batch.updatedAtMs = nowMs
+                    try? persistOutboxBatchLocked(batch)
+                    continue
+                }
                 switch batch.state {
                 case .queuedBeforeSend:
                     readyToSend.append(batch)
@@ -763,15 +866,23 @@ public final class CasualTrackStore: @unchecked Sendable {
 
 /// Independent debounce & two-step commit queue uniquely owned per `(botID, casualSessionID)`.
 /// Keyboard and focus callbacks NEVER own or mutate this queue.
+/// All segment enqueue, draft persistence, track-switch cancellation, and Step-1 outbox claims are strictly
+/// serialized via `serialLock` and consumed by stable segment IDs so concurrent flushes can never double-send or drop text.
 public final class CasualSendQueue: @unchecked Sendable {
+    private struct BufferedSegment: Sendable {
+        let id: UUID
+        let text: String
+    }
+
     public let botID: String
     public let casualSessionID: String
     public let store: CasualTrackStore
     public let mergeWindowNanoseconds: UInt64
 
-    private let lock = NSLock()
+    /// Always acquired BEFORE any `store` method (strict lock hierarchy: `serialLock -> store.lock`).
+    private let serialLock = NSLock()
     private var trackEpoch: UInt64 = 0
-    private var pendingSegments: [String] = []
+    private var pendingSegments: [BufferedSegment] = []
     private var debounceTask: Task<Void, Never>?
 
     public init(
@@ -787,11 +898,11 @@ public final class CasualSendQueue: @unchecked Sendable {
     }
 
     public var currentTrackEpoch: UInt64 {
-        lock.withLock { trackEpoch }
+        serialLock.withLock { trackEpoch }
     }
 
     public var bufferedSegments: [String] {
-        lock.withLock { pendingSegments }
+        serialLock.withLock { pendingSegments.map(\.text) }
     }
 
     /// Enqueues a rapid burst message, persisting to Canonical draft immediately and resetting the 2.5s timer.
@@ -802,35 +913,36 @@ public final class CasualSendQueue: @unchecked Sendable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let (epoch, snapshot) = lock.withLock { () -> (UInt64, [String]) in
-            pendingSegments.append(trimmed)
-            debounceTask?.cancel()
-            return (trackEpoch, pendingSegments)
-        }
-
-        // Persist draft BEFORE timer completes so a pre-Step-1 crash keeps text quietly in composer.
-        try store.saveDraft(CasualDraft(
-            botID: botID,
-            casualSessionID: casualSessionID,
-            segments: snapshot
-        ))
-
         let delay = mergeWindowNanoseconds
-        let task = Task { [weak self] in
+        try serialLock.withLock {
+            let entry = BufferedSegment(id: UUID(), text: trimmed)
+            pendingSegments.append(entry)
+            debounceTask?.cancel()
+            let epoch = trackEpoch
+            let snapshotTexts = pendingSegments.map(\.text)
+
+            // Persist draft atomically inside `serialLock` so concurrent `flushNow` cannot clear or overwrite it.
             do {
-                try await Task.sleep(nanoseconds: delay)
+                try store.saveDraft(CasualDraft(
+                    botID: botID,
+                    casualSessionID: casualSessionID,
+                    segments: snapshotTexts
+                ))
             } catch {
-                return
+                pendingSegments.removeAll { $0.id == entry.id }
+                throw error
             }
-            guard let self else { return }
-            await self.flushNow(expectedEpoch: epoch, onReadyToDispatch: onReadyToDispatch)
-        }
-        lock.withLock {
-            if trackEpoch == epoch {
-                debounceTask = task
-            } else {
-                task.cancel()
+
+            let task = Task { [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                await self.flushNow(expectedEpoch: epoch, onReadyToDispatch: onReadyToDispatch)
             }
+            debounceTask = task
         }
     }
 
@@ -838,67 +950,50 @@ public final class CasualSendQueue: @unchecked Sendable {
     /// and preserving uncommitted text safely inside the Canonical draft (never auto-sent on switch-back).
     @discardableResult
     public func cancelForTrackSwitch() -> CasualDraft? {
-        let snapshot: [String] = lock.withLock {
+        serialLock.withLock {
             trackEpoch &+= 1
             debounceTask?.cancel()
             debounceTask = nil
-            let copy = pendingSegments
+            let snapshotTexts = pendingSegments.map(\.text)
             pendingSegments.removeAll()
-            return copy
+            guard !snapshotTexts.isEmpty else { return store.loadDraft(botID: botID) }
+            let draft = CasualDraft(botID: botID, casualSessionID: casualSessionID, segments: snapshotTexts)
+            try? store.saveDraft(draft)
+            return draft
         }
-        guard !snapshot.isEmpty else { return store.loadDraft(botID: botID) }
-        let draft = CasualDraft(botID: botID, casualSessionID: casualSessionID, segments: snapshot)
-        try? store.saveDraft(draft)
-        return draft
     }
 
-    /// Executes the exact two-step pre-write sequence under `trackEpoch` arbitration:
-    /// 1) Step 1 commit (`queued_before_send` + draft consumed)
+    /// Executes the exact two-step pre-write sequence under serialized `trackEpoch` arbitration:
+    /// 1) Step 1 commit (`queued_before_send` + draft consumed) atomically under `serialLock` (consumed by segment ID)
     /// 2) Step 2 commit (`in_flight` on disk) -> ONLY AFTER Step 2 succeeds is `onReadyToDispatch` invoked!
     @discardableResult
     public func flushNow(
         expectedEpoch: UInt64? = nil,
         onReadyToDispatch: @escaping @Sendable (CasualOutboxBatch) async -> Void
     ) async -> CasualOutboxBatch? {
-        let targetEpoch = expectedEpoch ?? currentTrackEpoch
-        let snapshot: [String] = lock.withLock {
-            guard trackEpoch == targetEpoch, !pendingSegments.isEmpty else { return [] }
+        let step1: CasualOutboxBatch? = serialLock.withLock {
+            let targetEpoch = expectedEpoch ?? trackEpoch
+            guard trackEpoch == targetEpoch, !pendingSegments.isEmpty else { return nil }
             debounceTask?.cancel()
             debounceTask = nil
-            return pendingSegments
-        }
-        guard !snapshot.isEmpty else { return nil }
+            let claimed = pendingSegments
+            let claimedTexts = claimed.map(\.text)
+            let claimedIDs = Set(claimed.map(\.id))
 
-        // Step 1: Canonical outbox `queued_before_send` + consume draft, arbitrated by `trackEpoch`.
-        guard let step1 = try? store.commitStep1QueuedBeforeSend(
-            botID: botID,
-            casualSessionID: casualSessionID,
-            segments: snapshot,
-            trackEpoch: targetEpoch,
-            isEpochCurrent: { self.currentTrackEpoch == targetEpoch }
-        ) else {
-            return nil
-        }
-
-        let remainingAfterFlush: [String] = lock.withLock {
-            if trackEpoch == targetEpoch {
-                if pendingSegments.starts(with: snapshot) {
-                    pendingSegments.removeFirst(snapshot.count)
-                } else {
-                    let drop = min(snapshot.count, pendingSegments.count)
-                    pendingSegments.removeFirst(drop)
-                }
-                return pendingSegments
-            }
-            return []
-        }
-        if !remainingAfterFlush.isEmpty {
-            try? store.saveDraft(CasualDraft(
+            guard let committed = try? store.commitStep1QueuedBeforeSend(
                 botID: botID,
                 casualSessionID: casualSessionID,
-                segments: remainingAfterFlush
-            ))
+                segments: claimedTexts,
+                trackEpoch: targetEpoch,
+                isEpochCurrent: { self.trackEpoch == targetEpoch }
+            ) else {
+                return nil
+            }
+            pendingSegments.removeAll { claimedIDs.contains($0.id) }
+            return committed
         }
+
+        guard let step1 else { return nil }
 
         // Step 2: Advance the SAME `batchID` to `in_flight` on disk STRICTLY BEFORE calling `onReadyToDispatch`.
         guard let step2 = try? store.commitStep2MarkInFlight(batchID: step1.batchID) else {

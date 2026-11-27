@@ -121,7 +121,7 @@ final class R1ADataIntegrityAppTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: support.appendingPathComponent(".restore-journal.json").path))
     }
 
-    func testBackupRestoreRecoversLegacySoleSurvivingRestoreOldBeforeStarting() throws {
+    func testBackupRestoreRecoversLegacySoleSurvivingRestoreOldEvenWhenEmptySkeletonDirsExist() throws {
         let root = try makeTempDir("backup-legacy-old")
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -132,8 +132,15 @@ final class R1ADataIntegrityAppTests: XCTestCase {
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         try Data("SOLE-SURVIVING-OLD".utf8).write(to: oldTeam.appendingPathComponent("keep.txt"))
 
-        // Live `Team/` is missing — `.restore-old/Team` is the ONLY surviving copy.
-        let recovered = try Backup.reconcileInterruptedRestoreIfNeeded(
+        // Simulate startup skeleton directories created under `Team/` before recovery (empty dirs, 0 real files).
+        for sub in ["chats", "media", "diary", "subtasks", "pending-questions"] {
+            try FileManager.default.createDirectory(
+                at: support.appendingPathComponent("Team/\(sub)", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+        }
+
+        let recovered = Backup.reconcileInterruptedRestoreBeforeStorageInit(
             support: support,
             workspaceRoot: workspace,
             fileOps: .live,
@@ -145,6 +152,30 @@ final class R1ADataIntegrityAppTests: XCTestCase {
             "SOLE-SURVIVING-OLD"
         )
         XCTAssertFalse(FileManager.default.fileExists(atPath: support.appendingPathComponent(".restore-old").path))
+    }
+
+    func testBackupCorruptRestoreJournalNeverDeletesRestoreOld() throws {
+        let root = try makeTempDir("backup-corrupt-journal")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let support = root.appendingPathComponent("Support", isDirectory: true)
+        let workspace = root.appendingPathComponent("Workspace", isDirectory: true)
+        let oldTeam = support.appendingPathComponent(".restore-old/Team", isDirectory: true)
+        try FileManager.default.createDirectory(at: oldTeam, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try Data("KEEP-ME".utf8).write(to: oldTeam.appendingPathComponent("keep.txt"))
+        try Data("{corrupt-journal".utf8).write(to: support.appendingPathComponent(".restore-journal.json"))
+
+        XCTAssertFalse(
+            Backup.reconcileInterruptedRestoreBeforeStorageInit(
+                support: support,
+                workspaceRoot: workspace,
+                fileOps: .live,
+                discardCredentials: { _, _ in }
+            ),
+            "Corrupt restore journal MUST fail closed and preserve `.restore-old`"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: oldTeam.appendingPathComponent("keep.txt").path))
     }
 
     func testBackupRestoreDemotesRestoredCasualOutboxToNeedsReconcile() throws {
@@ -226,6 +257,8 @@ final class R1ADataIntegrityAppTests: XCTestCase {
         }
         ChatDisk.finishWrites()
         XCTAssertEqual(savedResult.get(), false, "Append on unreadable chat MUST refuse overwrite")
+        XCTAssertFalse(team.turnLeaf(key), "Shelving/turning leaf on unreadable chat MUST refuse to overwrite original history")
+        XCTAssertFalse(team.send("被拦截的发送", photos: [], to: key), "Sending on unreadable chat MUST return false")
 
         // Restore readability: original 2 messages MUST still be intact on disk!
         Disk.readChatDataOverride = nil
@@ -396,9 +429,72 @@ final class R1ADataIntegrityAppTests: XCTestCase {
         let leafEntries = team.entries(in: shelvedLeaf, of: parentKey)
         XCTAssertEqual(leafEntries.filter { $0.id == eventID }.count, 1)
         XCTAssertEqual(leafEntries.last?.tainted, true)
+
+        // Delivery arriving while `openingLeaves` is active MUST defer and NOT drop or prematurely mark delivered.
+        let (thread2, attempt2) = try store.createThread(
+            stableParentChatID: parentKey,
+            parentConversationID: team.activeConversationID(for: parentKey),
+            askerBotID: botID,
+            helperBotID: helperID,
+            helperBotName: "副旅伴",
+            taskPrompt: "翻页期并发回信",
+            inheritedPlanMode: false,
+            taintedIn: false
+        )
+        let (finished2, eventID2) = try store.finishAttempt(
+            threadID: thread2.threadID,
+            attemptID: attempt2.attemptID,
+            status: .succeeded,
+            resultText: "翻页后补投成功",
+            taintedOut: false
+        )
+        team.openingLeaves.insert(parentKey)
+        XCTAssertFalse(manager.deliverIdempotentlyToParent(thread: finished2, attemptID: attempt2.attemptID, eventID: eventID2, team: team))
+        XCTAssertFalse(store.thread(id: thread2.threadID)?.deliveredEventIDs.contains(eventID2) ?? true)
+
+        team.openingLeaves.remove(parentKey)
+        manager.drainDeferredDeliveries(for: parentKey, team: team)
+        XCTAssertTrue(store.thread(id: thread2.threadID)?.deliveredEventIDs.contains(eventID2) ?? false)
+        XCTAssertTrue(team.entries[parentKey]?.contains(where: { $0.id == eventID2 }) ?? false)
     }
 
-    // MARK: - CX-07: Casual Controller Multi-Bot Isolation & Safe Resend/Reply Persistence
+    func testApprovalFromShelvedConversationCannotGrantTrustToNewConversationAndGoneApprovalDenies() async throws {
+        let team = TeamModel()
+        team.phase = .demo
+        let botID = "r1a-appr-\(UUID().uuidString.lowercased())"
+        let key = TeamModel.key(bot: botID)
+        team.bots = [BotInfo(id: botID, name: "主旅伴")]
+        team.append(Entry(id: "u-appr-1", at: 100, message: .user("旧对话")), to: key)
+        let oldConvID = team.activeConversationID(for: key)
+
+        // Shelve old conversation so `key` now hosts a brand-new conversation.
+        XCTAssertTrue(team.turnLeaf(key))
+        XCTAssertFalse(team.trusted.contains(key))
+
+        let shelvedApproval = Approval(
+            id: "appr-shelved-1",
+            botId: botID,
+            roomId: nil,
+            chat: key,
+            executionChat: "attempt-old-1",
+            parentConversationID: oldConvID,
+            hostID: nil,
+            boundGrant: .web,
+            tool: "抓取网页",
+            toolName: "web_fetch",
+            reason: "旧任务审批",
+            detail: Approval.Detail(text: Taint.reason + "外部网页", code: nil),
+            at: Now.ms,
+            answerable: true,
+            forced: false
+        )
+        team.approvals = [shelvedApproval]
+        try await team.answer(shelvedApproval, allow: true, trustChat: true, throughWeb: true)
+        XCTAssertFalse(team.trusted.contains(key), "Approving a shelved conversation's task MUST NOT trust the new active conversation")
+        XCTAssertFalse(team.taint.isAllowedThrough(key), "Approving a shelved conversation's task MUST NOT grant throughWeb to the new active conversation")
+    }
+
+    // MARK: - CX-07: Casual Controller Multi-Bot Isolation via Coordinator & Safe Resend/Reply Persistence
 
     func testCasualControllerOpeningBotBDoesNotTouchBotAInFlightAndGuardsFailures() throws {
         let dir = try makeTempDir("casual-multibot")
@@ -408,6 +504,11 @@ final class R1ADataIntegrityAppTests: XCTestCase {
             canonicalTeamDirectory: dir,
             projectionDatabaseURL: dir.appendingPathComponent("casual.db")
         )
+        let coordinator = CasualColdStartCoordinator()
+        // Run launch-time cold-start reconciliation ONCE (as happens in `InitialData.read()`).
+        coordinator.reconcileOnceOnLaunch(store: store)
+
+        // After launch, Bot A begins an active `.inFlight` request.
         let botAStep1 = try store.commitStep1QueuedBeforeSend(
             botID: "bot-a",
             casualSessionID: "sess-a",
@@ -418,28 +519,29 @@ final class R1ADataIntegrityAppTests: XCTestCase {
         )
         _ = try store.commitStep2MarkInFlight(batchID: botAStep1.batchID)
 
-        // Opening Bot B's controller MUST NOT flip Bot A's live `.inFlight` batch to `.needsReconcile`.
-        _ = CasualTrackController(botID: "bot-b", store: store)
+        // Opening Bot B's controller sharing the SAME launch coordinator MUST NOT flip Bot A's `.inFlight` batch!
+        _ = CasualTrackController(botID: "bot-b", store: store, coordinator: coordinator)
         XCTAssertEqual(store.loadOutboxBatch(batchID: "live-a-1")?.state, .inFlight)
 
         // Reply persistence failure leaves Bot A's batch open.
-        let ctrlA = CasualTrackController(botID: "bot-a", store: store)
+        let ctrlA = CasualTrackController(botID: "bot-a", store: store, coordinator: coordinator)
         store.simulateEntryWriteFailure = { _ in InjectedIOError(message: "reply-disk-full") }
         XCTAssertFalse(ctrlA.persistReplyAndComplete(batchID: "live-a-1", reply: "回复内容"))
         XCTAssertEqual(store.loadOutboxBatch(batchID: "live-a-1")?.state, .inFlight)
         store.simulateEntryWriteFailure = nil
 
-        // Manual resend failure when persisting the replacement batch MUST NOT close the old reconciled batch.
+        // Manual resend failure (either saving new OR closing old) MUST NOT leave two sendable copies or close old batch.
         _ = store.reconcileOnColdStart()
         ctrlA.reload()
         let reconciled = try XCTUnwrap(ctrlA.reconcileBatches.first { $0.batchID == "live-a-1" })
         store.simulateOutboxWriteFailure = { batch in
-            batch.state == .queuedBeforeSend ? InjectedIOError(message: "resend-save-failed") : nil
+            batch.batchID == "live-a-1" && batch.state == .completed ? InjectedIOError(message: "close-old-failed") : nil
         }
         let team = TeamModel()
         let botA = BotInfo(id: "bot-a", name: "甲")
         XCTAssertFalse(ctrlA.explicitlyResendReconciledBatch(reconciled, team: team, bot: botA, dispatchNow: false))
         XCTAssertEqual(store.loadOutboxBatch(batchID: "live-a-1")?.state, .needsReconcile)
+        XCTAssertEqual(store.outboxBatches(for: "bot-a").count, 1, "Failed close of old batch must roll back new batch")
         XCTAssertEqual(ctrlA.reconcileBatches.count, 1)
     }
 

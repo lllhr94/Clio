@@ -779,9 +779,15 @@ private struct OutboundConsent: Codable, Hashable, Sendable {
 /// Everything the app keeps, as small JSON files in Application Support.
 enum Disk {
     static let root: URL = {
+        // Reconcile any interrupted backup swap BEFORE creating empty skeleton subdirectories under `Team/`.
+        if !Backup.reconcileInterruptedRestoreBeforeStorageInit() {
+            frozen = true
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Team", isDirectory: true)
-        for folder in ["", "chats", "media", "diary"] {
-            try? FileManager.default.createDirectory(at: base.appendingPathComponent(folder, isDirectory: true), withIntermediateDirectories: true)
+        if !frozen {
+            for folder in ["", "chats", "media", "diary"] {
+                try? FileManager.default.createDirectory(at: base.appendingPathComponent(folder, isDirectory: true), withIntermediateDirectories: true)
+            }
         }
         return base
     }()

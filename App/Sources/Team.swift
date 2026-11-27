@@ -41,6 +41,9 @@ struct Approval: Identifiable, Equatable {
     var chat: String?
     /// Execution conversation that owns workspace grants & single-shot approval receipts (differs from display `chat` during delegation).
     var executionChat: String? = nil
+    /// Non-reusable conversation identity captured when the approval was requested so answering after
+    /// shelving/clearing can never grant standing trust or web-taint overrides to a newer conversation.
+    var parentConversationID: String? = nil
     /// Stable host/workplace identity bound when a workspace tool call was created (nil for non-workspace tools).
     var hostID: String? = nil
     /// Permission grant frozen at tool binding time so mid-turn workplace switches cannot re-evaluate under a different host's grant.
@@ -419,6 +422,7 @@ final class TeamModel: ObservableObject {
     enum ConversationTarget: Equatable, Sendable {
         case active(String)
         case leaf(chatKey: String, leaf: Leaf)
+        case ambiguous
         case gone
     }
 
@@ -436,18 +440,28 @@ final class TeamModel: ObservableObject {
         return fresh
     }
 
-    /// Locates where `conversationID` currently resides (the active slot, a shelved leaf, or deleted/cleared).
-    func resolveConversationTarget(slotKey: String, conversationID: String?) -> ConversationTarget {
-        guard let conversationID, !conversationID.isEmpty else {
-            return .active(slotKey)
+    /// Locates where `conversationID` currently resides (the active slot, a shelved leaf, ambiguous legacy slot, or gone).
+    func resolveConversationTarget(
+        slotKey: String,
+        conversationID: String?,
+        threadCreatedAtMs: Double? = nil
+    ) -> ConversationTarget {
+        if let conversationID, !conversationID.isEmpty {
+            if options(slotKey).conversationID == conversationID {
+                return .active(slotKey)
+            }
+            if let found = leaves(slotKey).first(where: { $0.conversationID == conversationID }) {
+                return .leaf(chatKey: slotKey, leaf: found)
+            }
+            return .gone
         }
-        if options(slotKey).conversationID == conversationID {
-            return .active(slotKey)
+        // Legacy record with `nil` conversationID: if a non-fold leaf was shelved after the thread was created,
+        // we cannot prove the active slot still belongs to the original conversation.
+        if let createdAtMs = threadCreatedAtMs,
+           leaves(slotKey).contains(where: { $0.marker == nil && $0.at >= createdAtMs }) {
+            return .ambiguous
         }
-        if let found = leaves(slotKey).first(where: { $0.conversationID == conversationID }) {
-            return .leaf(chatKey: slotKey, leaf: found)
-        }
-        return .gone
+        return .active(slotKey)
     }
 
     /// Idempotently appends an entry directly into a shelved leaf file on disk and confirms write success,
@@ -672,11 +686,23 @@ final class TeamModel: ObservableObject {
 
     private func shelveCurrent(_ key: String) -> Bool {
         guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return false }
+        guard ensureChatReadableForWrite(key) else {
+            let reason = "当前对话历史暂时无法读取，已中止收起/翻页以防止覆盖原记录。"
+            Diag.note(reason)
+            notify(key, .failed(reason))
+            return false
+        }
         stop(key)
         restoreUnemittedInterjects(for: key)
         epochs[key, default: 0] += 1
         browser.release(key)
         let current = history(key)
+        guard !keeping || !unreadableChats.contains(key) else {
+            let reason = "当前对话历史暂时无法读取，已中止收起/翻页以防止覆盖原记录。"
+            Diag.note(reason)
+            notify(key, .failed(reason))
+            return false
+        }
         guard current.contains(where: { $0.note != true }) else {
             // Leave unsent queued messages and thread labels untouched when there is no conversation to shelve,
             // while cleaning any leftover note-only lines or state.
@@ -698,7 +724,8 @@ final class TeamModel: ObservableObject {
             return true
         }
         let first = current.first { $0.message.role == .user && !$0.message.text.isEmpty }?.message.text ?? Words.t("一段絮语")
-        let named = options(key).title
+        let priorOptions = options(key)
+        let named = priorOptions.title
         let title = named ?? String(first.replacingOccurrences(of: "\n", with: " ").prefix(28))
         let shelvedConversationID = activeConversationID(for: key)
         let leaf = Leaf(
@@ -712,9 +739,13 @@ final class TeamModel: ObservableObject {
         let waiting = queued[key] ?? []
         let nextLeaves = [leaf] + leaves(key)
         let leafAnchor = ConversationAnchor.from(entryIds: current.map(\.id))
+        var rotatedOptions = options(key)
+        rotatedOptions.title = nil
+        rotatedOptions.conversationID = UUID().uuidString.lowercased()
         if keeping {
-            // The page is emptied below: only once its copy, queued messages, and leaf index are all surely on disk.
-            // Any failure rolls back the new leaf files and leaves the current conversation and active queue intact.
+            // The page is emptied below: only once its copy, queued messages, leaf index, AND rotated conversationID
+            // options are all surely on disk. Any failure rolls back the new leaf files and restores prior options.
+            let priorPersistedOptions = options(key)
             do {
                 try Disk.write(current, Self.leafFile(key, leaf.id))
                 if let old = summaryRecord(key) {
@@ -722,18 +753,18 @@ final class TeamModel: ObservableObject {
                 }
                 if !waiting.isEmpty { try QueuedStore.saveAndWait(waiting, for: leafKey, anchor: leafAnchor) }
                 try Disk.write(nextLeaves, Self.leafList(key))
+                try ChatDisk.writeValueAndWait(rotatedOptions, file: Self.optionsFile(key))
             } catch {
                 Disk.remove(Self.leafFile(key, leaf.id))
                 Disk.remove(Self.leafSummary(key, leaf.id))
                 if !waiting.isEmpty { try? QueuedStore.saveAndWait([], for: leafKey) }
+                try? Disk.write(leaves(key), Self.leafList(key))
+                try? ChatDisk.writeValueAndWait(priorPersistedOptions, file: Self.optionsFile(key))
                 fail(key, "没能把这段收起来：存不进手机（\(error.localizedDescription)）。对话原样留着，腾出空间后再试。")
                 return false
             }
         }
-        var value = options(key)
-        value.title = nil
-        value.conversationID = UUID().uuidString.lowercased()
-        setOptions(key, value)
+        setOptions(key, rotatedOptions)
         setSummary(key, nil)
         clearPlan(key)
         trusted.remove(key)
@@ -840,6 +871,9 @@ final class TeamModel: ObservableObject {
             await self?.openLeafNow(key, leaf)
             self?.openingLeaves.remove(key)
             self?.openingLeafTasks[key] = nil
+            if let self {
+                self.subtasks.drainDeferredDeliveries(for: key, team: self)
+            }
         }
         openingLeafTasks[key] = task
     }
@@ -880,6 +914,12 @@ final class TeamModel: ObservableObject {
             keptSummary = read.summary
         }
         guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return }
+        guard ensureChatReadableForWrite(key) else {
+            let reason = "当前对话历史暂时无法读取，已中止翻页以防止覆盖原记录。"
+            Diag.note(reason)
+            notify(key, .failed(reason))
+            return
+        }
         guard let leaf = leaves(key).first(where: { $0.id == leaf.id }) else { return }
         guard shelveCurrent(key) else { return }
         let leafKey = Self.threadKey(key, leaf: leaf.id)
@@ -890,12 +930,21 @@ final class TeamModel: ObservableObject {
         let persistSnapshot = allPersistableQueued(key, extra: leafQueued)
         let remainingLeaves = leaves(key).filter { $0.id != leaf.id }
         let targetAnchor = ConversationAnchor.from(entryIds: kept.map(\.id))
+        let priorOptions = options(key)
+        var reopenedOptions = priorOptions
+        reopenedOptions.conversationID = leaf.conversationID ?? UUID().uuidString.lowercased()
+        if leaf.marker == nil {
+            reopenedOptions.title = leaf.title
+        }
         if keeping {
-            // The leaf's own files (and its queued messages) go only once the restored page, queue, and leaf index are surely saved.
-            // A PendingLeafOpen marker guards against crashes between writes; any failure rolls back active writes immediately.
+            // The leaf's own files (and its queued messages) go only once the restored page, queue, options (`conversationID`),
+            // and leaf index are surely saved. A PendingLeafOpen marker guards against crashes between writes;
+            // any failure rolls back active writes immediately.
             let toSave = kept
             let saveQueue = !persistSnapshot.isEmpty
             let listPath = Self.leafList(key)
+            let optionsPath = Self.optionsFile(key)
+            let targetOptions = reopenedOptions
             let chatsDirURL = Disk.root.appendingPathComponent("chats", isDirectory: true)
             let activeChatURL = Disk.url(Disk.chatFile(key))
             let leafChatURL = Disk.url(Self.leafFile(key, leaf.id))
@@ -913,6 +962,7 @@ final class TeamModel: ObservableObject {
             let saved: (error: Error?, unresolvedRollback: Bool) = await Task.detached(priority: .userInitiated) {
                 var wroteChat = false
                 var wroteQueue = false
+                var wroteOptions = false
                 var tx = initialTx
                 do {
                     try QueuedStore.savePendingLeafOpen(tx)
@@ -924,10 +974,19 @@ final class TeamModel: ObservableObject {
                         try QueuedStore.saveAndWait(persistSnapshot, for: key, anchor: targetAnchor)
                         wroteQueue = true
                     }
+                    try ChatDisk.writeValueAndWait(targetOptions, file: optionsPath)
+                    wroteOptions = true
                     try Disk.write(remainingLeaves, listPath)
                     return (nil, false)
                 } catch {
                     var rollbackClean = true
+                    if wroteOptions {
+                        do {
+                            try ChatDisk.writeValueAndWait(priorOptions, file: optionsPath)
+                        } catch {
+                            rollbackClean = false
+                        }
+                    }
                     if wroteQueue {
                         do {
                             try QueuedStore.saveAndWait(priorQueued, for: key, anchor: priorAnchor)
@@ -996,10 +1055,7 @@ final class TeamModel: ObservableObject {
         leafBook[key] = remainingLeaves
         if leaf.marker == nil {
             moveThread(leafKey, to: key)
-            rename(key, to: leaf.title)
         }
-        var reopenedOptions = options(key)
-        reopenedOptions.conversationID = leaf.conversationID ?? UUID().uuidString.lowercased()
         setOptions(key, reopenedOptions)
         unreadableChats.remove(key)
         scheduleIndexDeleteChat(key, includingLeaves: false, leafID: leaf.id)
@@ -1287,9 +1343,20 @@ final class TeamModel: ObservableObject {
         if keeping { QueuedStore.clear(key) }
     }
 
+    /// Verifies that `key`'s on-disk history is readable before allowing any write/shelve/openLeaf replacement.
+    func ensureChatReadableForWrite(_ key: String) -> Bool {
+        guard keeping else { return true }
+        if unreadableChats.contains(key) {
+            _ = applyChatLoadOutcome(Disk.loadChatChecked(key), for: key)
+        } else if entries[key] == nil {
+            _ = history(key)
+        }
+        return !unreadableChats.contains(key)
+    }
+
     @discardableResult
     func send(_ text: String, photos: [Data], to key: String, userInitiated: Bool = true, experienceSource: ExperienceWriteSource? = nil) -> Bool {
-        guard phase != .demo, canAcceptInput(for: key) else { return false }
+        guard phase != .demo, canAcceptInput(for: key), ensureChatReadableForWrite(key) else { return false }
         let resolvedSource = experienceSource ?? (userInitiated ? .mainChat : .routine)
         MemoryNight.recordActivity()
         if archived.contains(key) { archive(key, false) }
@@ -1309,6 +1376,86 @@ final class TeamModel: ObservableObject {
         append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names, experienceSource: resolvedSource.rawValue), to: key)
         touch(key, preview: nil)
         start(key, userInitiated: userInitiated, experienceSource: resolvedSource)
+        return true
+    }
+
+    /// Crash-safe, idempotent delivery for resumed notification question replies:
+    /// checks on-disk history / queued store for the deterministic ID first, confirms synchronous disk persistence
+    /// BEFORE returning `true`, and never starts or marks consumed when history is unreadable or disk save fails.
+    @discardableResult
+    func sendConfirmedForQuestionResume(
+        _ text: String,
+        to key: String,
+        deterministicEntryID: String,
+        deterministicQueuedID: UUID
+    ) -> Bool {
+        guard phase != .demo, canAcceptInput(for: key), ensureChatReadableForWrite(key) else { return false }
+        if keeping {
+            switch Disk.loadChatChecked(key) {
+            case .loaded(let existing):
+                if existing.contains(where: { $0.id == deterministicEntryID }) { return true }
+            case .corrupt(let recovered, let quarantined, _):
+                guard quarantined else { return false }
+                if recovered.contains(where: { $0.id == deterministicEntryID }) { return true }
+            case .missing:
+                break
+            case .unreadable:
+                return false
+            }
+        } else if entries[key]?.contains(where: { $0.id == deterministicEntryID }) == true {
+            return true
+        }
+        if allPersistableQueued(key).contains(where: { $0.id == deterministicQueuedID }) {
+            return true
+        }
+
+        MemoryNight.recordActivity()
+        if archived.contains(key) { archive(key, false) }
+        if runs[key] != nil || helping.contains(key) {
+            let item = Queued(id: deterministicQueuedID, text: text, photos: [], userInitiated: true, experienceSource: .mainChat)
+            let combined = allPersistableQueued(key, extra: [item])
+            let anchor = ConversationAnchor.from(entryIds: history(key).map(\.id))
+            if keeping {
+                do {
+                    try QueuedStore.saveAndWait(combined, for: key, anchor: anchor)
+                } catch {
+                    return false
+                }
+            }
+            withAnimation(.smooth) {
+                queued[key, default: []].append(item)
+            }
+            return true
+        }
+
+        pausedExperienceSource.removeValue(forKey: key)
+        pausedAway.removeValue(forKey: key)
+        if let plan = plans[key], plan.allSatisfy({ $0.state == "done" }) { clearPlan(key) }
+
+        final class ResumeSavedBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var ok = false
+            func set(_ v: Bool) { lock.withLock { ok = v } }
+            func get() -> Bool { lock.withLock { ok } }
+        }
+        let receipt = ResumeSavedBox()
+        let entry = Entry(id: deterministicEntryID, at: Now.ms, message: .user(text), photos: [], experienceSource: ExperienceWriteSource.mainChat.rawValue)
+        append(entry, to: key) { ok in
+            receipt.set(ok)
+        }
+        if keeping {
+            ChatDisk.finishWrites()
+        }
+        guard receipt.get() else {
+            if keeping, var mem = entries[key] {
+                mem.removeAll { $0.id == deterministicEntryID }
+                entries[key] = mem
+                notify(key, .changed)
+            }
+            return false
+        }
+        touch(key, preview: nil)
+        start(key, userInitiated: true, experienceSource: .mainChat)
         return true
     }
 
@@ -3112,10 +3259,11 @@ final class TeamModel: ObservableObject {
     func ask(_ ask: ApprovalAsk, tool: String, bot: String, chat: String, executionChat: String? = nil, workplace: WorkPlace? = nil) async -> Bool {
         var effectiveAsk = ask
         var targetIsShelvedLeaf = false
+        let resolvedParentConvID: String?
         if let executionChat,
-           let thread = subtasks.threads.first(where: { $0.attempts.contains(where: { $0.attemptID == executionChat }) }),
-           let parentConvID = thread.parentConversationID {
-            switch resolveConversationTarget(slotKey: chat, conversationID: parentConvID) {
+           let thread = subtasks.threads.first(where: { $0.attempts.contains(where: { $0.attemptID == executionChat }) }) {
+            resolvedParentConvID = thread.parentConversationID
+            switch resolveConversationTarget(slotKey: chat, conversationID: thread.parentConversationID, threadCreatedAtMs: thread.createdAtMs) {
             case .active:
                 break
             case .leaf(_, let leaf):
@@ -3124,9 +3272,17 @@ final class TeamModel: ObservableObject {
                 if !effectiveAsk.reason.hasPrefix(prefix) {
                     effectiveAsk.reason = prefix + effectiveAsk.reason
                 }
+            case .ambiguous:
+                targetIsShelvedLeaf = true
+                let prefix = "【来自更早对话的后台任务】\n"
+                if !effectiveAsk.reason.hasPrefix(prefix) {
+                    effectiveAsk.reason = prefix + effectiveAsk.reason
+                }
             case .gone:
                 return false
             }
+        } else {
+            resolvedParentConvID = activeConversationID(for: chat)
         }
         let id = UUID().uuidString
         let authChat = executionChat ?? chat
@@ -3145,6 +3301,7 @@ final class TeamModel: ObservableObject {
         let approval = Approval(
             id: id, botId: bot, roomId: chat.hasPrefix("room-") ? String(chat.dropFirst(5)) : nil, chat: chat,
             executionChat: executionChat,
+            parentConversationID: resolvedParentConvID,
             hostID: isWorkspaceTool ? boundHostID : nil,
             boundGrant: boundGrant,
             tool: effectiveAsk.title, toolName: tool, reason: effectiveAsk.reason, detail: detail,
@@ -3249,10 +3406,34 @@ final class TeamModel: ObservableObject {
     /// Answers an approval: lets the Bot go ahead once, or turns it down.
     /// Standing permission side effects are committed ONLY after atomically claiming an active pending approval.
     func answer(_ approval: Approval, allow: Bool, always: Bool = false, trustChat: Bool = false, throughWeb: Bool = false) async throws {
+        // Re-resolve the parent conversation identity at answer time:
+        // - `.gone` (original conversation deleted/cleared): force deny and grant nothing.
+        // - `.leaf` / `.ambiguous` (shelved behind a newer conversation reusing `chat`): allow one-shot ONLY;
+        //   NEVER grant standing `trustChat` or `throughWeb` to the newer conversation occupying `chat`.
+        let resolvedTarget: ConversationTarget?
+        if let chat = approval.chat, let convID = approval.parentConversationID, !convID.isEmpty {
+            resolvedTarget = resolveConversationTarget(slotKey: chat, conversationID: convID)
+        } else {
+            resolvedTarget = nil
+        }
+        let effectiveAllow: Bool
+        let allowsChatWideStandingGrant: Bool
+        switch resolvedTarget {
+        case .gone:
+            effectiveAllow = false
+            allowsChatWideStandingGrant = false
+        case .leaf, .ambiguous:
+            effectiveAllow = allow
+            allowsChatWideStandingGrant = false
+        case .active, nil:
+            effectiveAllow = allow
+            allowsChatWideStandingGrant = true
+        }
+
         // A step that must be asked every time can be allowed once, never for good.
         let lasting = approval.forced != true
         let commitGrants: () -> Bool = {
-            guard allow else { return false }
+            guard effectiveAllow else { return false }
             if let boundHost = approval.hostID, !boundHost.isEmpty,
                let authChat = approval.authChat,
                self.place(of: authChat).hostID != boundHost {
@@ -3263,15 +3444,15 @@ final class TeamModel: ObservableObject {
                 return false
             }
             var changed = false
-            if always, lasting, let name = approval.toolName {
+            if always, lasting, allowsChatWideStandingGrant, let name = approval.toolName {
                 self.allowAlways(name)
                 changed = true
             }
-            if trustChat, lasting, let chat = approval.chat {
+            if trustChat, lasting, allowsChatWideStandingGrant, let chat = approval.chat {
                 self.trust(chat, true)
                 changed = true
             }
-            if throughWeb, let chat = approval.chat, let tool = approval.toolName,
+            if throughWeb, allowsChatWideStandingGrant, let chat = approval.chat, let tool = approval.toolName,
                approval.detail?.text?.hasPrefix(Taint.reason) == true,
                !Taint.hardExits.contains(tool) {
                 self.taint.allowThrough(chat)
@@ -3292,7 +3473,7 @@ final class TeamModel: ObservableObject {
         }
         Notify.clear(approval.id)
         var grantsChanged = false
-        let resolved = approvalQueue.resolveByUser(id: approval.id, allow: allow) {
+        let resolved = approvalQueue.resolveByUser(id: approval.id, allow: effectiveAllow) {
             grantsChanged = commitGrants()
         }
         approvals.removeAll { $0.id == approval.id }

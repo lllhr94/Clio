@@ -215,7 +215,94 @@ final class R1ADataIntegrityTests: XCTestCase {
         XCTAssertThrowsError(try store.saveDraft(CasualDraft(botID: "bot-a", casualSessionID: "s", segments: ["hi"])))
     }
 
-    func testCasualSendQueueFlushNowPreservesConcurrentlyEnqueuedSegment() async throws {
+    func testCasualAppendEntriesPreservesPreExistingBytesAndRejectsUnreadableFile() throws {
+        let dir = try makeTempDir("casual-append-only")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = CasualTrackStore(
+            canonicalTeamDirectory: dir,
+            projectionDatabaseURL: dir.appendingPathComponent("casual.db")
+        )
+        let jsonlURL = dir.appendingPathComponent("casual/bot-a.jsonl")
+        try FileManager.default.createDirectory(at: jsonlURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let corruptPrefix = "{not-valid-json-must-be-preserved}\n"
+        try Data(corruptPrefix.utf8).write(to: jsonlURL, options: .atomic)
+
+        let step1 = try store.commitStep1QueuedBeforeSend(
+            botID: "bot-a",
+            casualSessionID: "sess-a",
+            segments: ["hello"],
+            trackEpoch: 0,
+            batchID: "batch-append-only",
+            isEpochCurrent: { true }
+        )
+        _ = try store.commitStep2MarkInFlight(batchID: step1.batchID)
+
+        let reply = CasualEntry(id: "a-batch-append-only-0", botID: "bot-a", role: .assistant, text: "hi", batchID: step1.batchID)
+        _ = try store.appendEntriesAndCompleteOutbox(entries: [reply], batchID: step1.batchID)
+
+        let rawAfter = try String(contentsOf: jsonlURL, encoding: .utf8)
+        XCTAssertTrue(rawAfter.hasPrefix(corruptPrefix), "Append-only reply write MUST preserve existing raw lines untouched")
+        XCTAssertEqual(store.entries(for: "bot-a").map(\.id), ["a-batch-append-only-0"])
+    }
+
+    func testCasualReplaceReconciledBatchRollsBackOnCloseFailureAndHealsSupersedeOnColdStart() throws {
+        let dir = try makeTempDir("casual-replace-reconciled")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = CasualTrackStore(
+            canonicalTeamDirectory: dir,
+            projectionDatabaseURL: dir.appendingPathComponent("casual.db")
+        )
+        let oldStep1 = try store.commitStep1QueuedBeforeSend(
+            botID: "bot-a",
+            casualSessionID: "sess-a",
+            segments: ["重发测试"],
+            trackEpoch: 0,
+            batchID: "old-batch",
+            isEpochCurrent: { true }
+        )
+        _ = try store.commitStep2MarkInFlight(batchID: oldStep1.batchID)
+        _ = store.reconcileOnColdStart()
+        XCTAssertEqual(store.loadOutboxBatch(batchID: "old-batch")?.state, .needsReconcile)
+
+        // Inject failure ONLY when closing the old batch -> replacement MUST be rolled back so two batches never coexist.
+        store.simulateOutboxWriteFailure = { batch in
+            batch.batchID == "old-batch" && batch.state == .completed ? SimulatedDiskError() : nil
+        }
+        let freshFail = CasualOutboxBatch(
+            batchID: "fresh-rollback",
+            botID: "bot-a",
+            casualSessionID: "sess-a",
+            segments: ["重发测试"],
+            state: .queuedBeforeSend,
+            trackEpoch: 0
+        )
+        XCTAssertThrowsError(try store.replaceReconciledBatch(oldBatchID: "old-batch", with: freshFail))
+        XCTAssertNil(store.loadOutboxBatch(batchID: "fresh-rollback"), "Replacement batch must be removed when closing old batch fails")
+        XCTAssertEqual(store.loadOutboxBatch(batchID: "old-batch")?.state, .needsReconcile)
+
+        // Simulate crash between saving `fresh-healed` (with supersedesBatchID) and closing `old-batch`.
+        store.simulateOutboxWriteFailure = nil
+        let crashedFresh = CasualOutboxBatch(
+            batchID: "fresh-healed",
+            botID: "bot-a",
+            casualSessionID: "sess-a",
+            segments: ["重发测试"],
+            state: .queuedBeforeSend,
+            trackEpoch: 0,
+            supersedesBatchID: "old-batch"
+        )
+        try store.saveOutboxBatch(crashedFresh)
+
+        // Cold-start reconciliation MUST auto-close `old-batch` so only `fresh-healed` remains sendable.
+        let recovery = store.reconcileOnColdStart()
+        XCTAssertEqual(store.loadOutboxBatch(batchID: "old-batch")?.state, .completed)
+        XCTAssertTrue(recovery.batchesNeedingReconcile.isEmpty)
+        XCTAssertEqual(recovery.batchesReadyForInitialSend.map(\.batchID), ["fresh-healed"])
+    }
+
+    func testCasualSendQueueConcurrentFlushesAndEnqueueNeverDuplicateOrDropSegments() async throws {
         let dir = try makeTempDir("casual-flush-concurrent")
         defer { try? FileManager.default.removeItem(at: dir) }
 
@@ -226,19 +313,30 @@ final class R1ADataIntegrityTests: XCTestCase {
         let queue = CasualSendQueue(botID: "bot-a", casualSessionID: "sess-1", store: store, mergeWindowSeconds: 5.0)
         try queue.enqueue("第一句") { _ in }
 
-        let injectedConcurrent = FreezeBox()
-        // Intercept Step 1 write to simulate a concurrent user message arriving while Step 1 is committing on disk.
-        store.simulateOutboxWriteFailure = { [weak queue] batch in
-            if batch.state == .queuedBeforeSend && !injectedConcurrent.get() {
-                injectedConcurrent.set(true)
-                try? queue?.enqueue("并发补发第二句") { _ in }
-            }
-            return nil
+        final class DispatchedCollector: @unchecked Sendable {
+            private let lock = NSLock()
+            private var batches: [CasualOutboxBatch] = []
+            func record(_ batch: CasualOutboxBatch) { lock.withLock { batches.append(batch) } }
+            func all() -> [CasualOutboxBatch] { lock.withLock { batches } }
         }
+        let collector = DispatchedCollector()
 
-        let dispatched = await queue.flushNow { _ in }
-        XCTAssertEqual(dispatched?.segments, ["第一句"])
-        XCTAssertEqual(queue.bufferedSegments, ["并发补发第二句"], "Concurrent segment enqueued during Step 1 MUST NOT be dropped")
-        XCTAssertEqual(store.loadDraft(botID: "bot-a")?.segments, ["并发补发第二句"])
+        // Race two concurrent `flushNow` calls + one concurrent `enqueue` on separate tasks (NO re-entrant store lock!).
+        async let flush1 = queue.flushNow { collector.record($0) }
+        async let flush2 = queue.flushNow { collector.record($0) }
+        let enqueueTask = Task.detached {
+            try? queue.enqueue("并发第二句") { _ in }
+        }
+        let (r1, r2) = await (flush1, flush2)
+        await enqueueTask.value
+
+        // Flush any remaining buffered segment after concurrent race settles.
+        _ = await queue.flushNow { collector.record($0) }
+
+        let allSegments = collector.all().flatMap(\.segments)
+        XCTAssertEqual(allSegments.filter { $0 == "第一句" }.count, 1, "Segment 1 MUST be dispatched exactly once across concurrent flushes")
+        XCTAssertEqual(allSegments.filter { $0 == "并发第二句" }.count, 1, "Concurrently enqueued segment MUST never be dropped")
+        XCTAssertTrue(r1 != nil || r2 != nil)
+        XCTAssertTrue(queue.bufferedSegments.isEmpty)
     }
 }
