@@ -225,6 +225,7 @@ public struct Agent: Sendable {
         let specs = tools.map { Self.titled($0.spec) }
         let mutatingTools = Set(tools.filter(\.hasSideEffects).map { $0.spec.name })
         var thinking = self.thinking
+        var thinkingBodyFields = self.thinkingBodyFields
         var uncertain: Set<ToolLoopDetector.CallKey> = []
         var loopDetector = ToolLoopDetector()
         var nudge: String?
