@@ -32,78 +32,88 @@ final class TaskStoreCanonicalTests: XCTestCase {
         let root = try makeTempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let dbURL = root.appendingPathComponent("clio-tasks.db")
-        let store = TaskStore(canonicalTeamDirectory: root, projectionDatabaseURL: dbURL)
-
-        // Thread A: strictly read-only, crashes mid-run -> `.interrupted` (safe one-tap retry).
-        let (cleanThread, cleanAttempt) = try store.createThread(
-            stableParentChatID: "bot-main",
-            askerBotID: "main",
-            helperBotID: "researcher",
-            helperBotName: "研究员",
-            taskPrompt: "查天气",
-            inheritedPlanMode: true,
-            taintedIn: false
-        )
-        XCTAssertTrue(cleanThread.threadID.hasPrefix("subtask-"))
-        XCTAssertNotEqual(cleanThread.threadID, "bot-researcher")
-        let readTool = SideEffectRecordingTool(
-            inner: TaskMockTool(name: "read_file", isReadOnlySafe: true, hasSideEffects: false) { _ in ToolOutput("ok") },
-            threadID: cleanThread.threadID,
-            attemptID: cleanAttempt.attemptID,
-            store: store
-        )
-        _ = try await readTool.run(.object(["path": .string("notes.md")]))
-
-        // Thread B: invokes side-effecting tool that throws/crashes mid-execution -> unclosed `pending_side_effect`.
-        let (dirtyThread, dirtyAttempt) = try store.createThread(
-            stableParentChatID: "bot-main",
-            askerBotID: "main",
-            helperBotID: "builder",
-            helperBotName: "工匠",
-            taskPrompt: "修改文件",
-            inheritedPlanMode: false,
-            taintedIn: true
-        )
-        struct SimulatedCrash: Error {}
-        let writeTool = SideEffectRecordingTool(
-            inner: TaskMockTool(name: "write_file", isReadOnlySafe: false, hasSideEffects: true) { _ in throw SimulatedCrash() },
-            threadID: dirtyThread.threadID,
-            attemptID: dirtyAttempt.attemptID,
-            store: store
-        )
+        let cleanThreadID: String
+        let cleanAttemptID: String
+        let dirtyThreadID: String
         do {
-            _ = try await writeTool.run(.object(["path": .string("app.swift")]))
-            XCTFail("Expected simulated crash")
-        } catch is SimulatedCrash {}
+            let activeStore = TaskStore(canonicalTeamDirectory: root, projectionDatabaseURL: dbURL)
 
-        // Delete SQLite projection to prove Canonical JSON is sole source of truth and DB rebuilds automatically.
+            // Thread A: strictly read-only, crashes mid-run -> `.interrupted` (safe one-tap retry).
+            let (cleanThread, cleanAttempt) = try activeStore.createThread(
+                stableParentChatID: "bot-main",
+                askerBotID: "main",
+                helperBotID: "researcher",
+                helperBotName: "研究员",
+                taskPrompt: "查天气",
+                inheritedPlanMode: true,
+                taintedIn: false
+            )
+            cleanThreadID = cleanThread.threadID
+            cleanAttemptID = cleanAttempt.attemptID
+            XCTAssertTrue(cleanThread.threadID.hasPrefix("subtask-"))
+            XCTAssertNotEqual(cleanThread.threadID, "bot-researcher")
+            let readTool = SideEffectRecordingTool(
+                inner: TaskMockTool(name: "read_file", isReadOnlySafe: true, hasSideEffects: false) { _ in ToolOutput("ok") },
+                threadID: cleanThread.threadID,
+                attemptID: cleanAttempt.attemptID,
+                store: activeStore
+            )
+            _ = try await readTool.run(.object(["path": .string("notes.md")]))
+
+            // Thread B: invokes side-effecting tool that throws/crashes mid-execution -> unclosed `pending_side_effect`.
+            let (dirtyThread, dirtyAttempt) = try activeStore.createThread(
+                stableParentChatID: "bot-main",
+                askerBotID: "main",
+                helperBotID: "builder",
+                helperBotName: "工匠",
+                taskPrompt: "修改文件",
+                inheritedPlanMode: false,
+                taintedIn: true
+            )
+            dirtyThreadID = dirtyThread.threadID
+            struct SimulatedCrash: Error {}
+            let writeTool = SideEffectRecordingTool(
+                inner: TaskMockTool(name: "write_file", isReadOnlySafe: false, hasSideEffects: true) { _ in throw SimulatedCrash() },
+                threadID: dirtyThread.threadID,
+                attemptID: dirtyAttempt.attemptID,
+                store: activeStore
+            )
+            do {
+                _ = try await writeTool.run(.object(["path": .string("app.swift")]))
+                XCTFail("Expected simulated crash")
+            } catch is SimulatedCrash {}
+        }
+
+        // Initial store is now deallocated (simulating real process exit); delete SQLite projection & WAL/SHM.
         try? FileManager.default.removeItem(at: dbURL)
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-wal")
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-shm")
         let restarted = TaskStore(canonicalTeamDirectory: root, projectionDatabaseURL: dbURL)
         let report = restarted.reconcileOnColdStart()
 
-        XCTAssertEqual(report.interruptedThreads.map(\.threadID), [cleanThread.threadID])
-        XCTAssertEqual(report.reconcileRequiredThreads.map(\.threadID), [dirtyThread.threadID])
+        XCTAssertEqual(report.interruptedThreads.map(\.threadID), [cleanThreadID])
+        XCTAssertEqual(report.reconcileRequiredThreads.map(\.threadID), [dirtyThreadID])
         XCTAssertEqual(restarted.projectedThreadCount(), 2)
 
-        let reloadedDirty = try XCTUnwrap(restarted.thread(id: dirtyThread.threadID))
+        let reloadedDirty = try XCTUnwrap(restarted.thread(id: dirtyThreadID))
         XCTAssertEqual(reloadedDirty.status, .interruptedNeedsReconcile)
         XCTAssertEqual(reloadedDirty.latestAttempt?.hasUnclosedSideEffect, true)
 
         // Blind one-tap retry on `interrupted_needs_reconcile` MUST be rejected.
-        XCTAssertThrowsError(try restarted.retryInterruptedThread(threadID: dirtyThread.threadID, explicitUserReconciled: false)) { err in
+        XCTAssertThrowsError(try restarted.retryInterruptedThread(threadID: dirtyThreadID, explicitUserReconciled: false)) { err in
             XCTAssertEqual(err as? TaskStoreError, .reconcileRequiredBeforeRetry)
         }
         // Explicit user reconciliation allows creating a fresh retry attempt while preserving taint.
-        let (_, retriedDirty) = try restarted.retryInterruptedThread(threadID: dirtyThread.threadID, explicitUserReconciled: true)
+        let (_, retriedDirty) = try restarted.retryInterruptedThread(threadID: dirtyThreadID, explicitUserReconciled: true)
         XCTAssertEqual(retriedDirty.status, .running)
         XCTAssertTrue(retriedDirty.taintedIn)
 
         // Clean `.interrupted` thread allows direct one-tap retry, and active thread rejects duplicate retry.
-        let (_, retriedClean) = try restarted.retryInterruptedThread(threadID: cleanThread.threadID, explicitUserReconciled: false)
+        let (_, retriedClean) = try restarted.retryInterruptedThread(threadID: cleanThreadID, explicitUserReconciled: false)
         XCTAssertEqual(retriedClean.status, .running)
-        XCTAssertNotEqual(retriedClean.attemptID, cleanAttempt.attemptID)
-        XCTAssertThrowsError(try restarted.retryInterruptedThread(threadID: cleanThread.threadID, explicitUserReconciled: true)) { err in
-            XCTAssertEqual(err as? TaskStoreError, .threadAlreadyActive(cleanThread.threadID))
+        XCTAssertNotEqual(retriedClean.attemptID, cleanAttemptID)
+        XCTAssertThrowsError(try restarted.retryInterruptedThread(threadID: cleanThreadID, explicitUserReconciled: true)) { err in
+            XCTAssertEqual(err as? TaskStoreError, .threadAlreadyActive(cleanThreadID))
         }
     }
 

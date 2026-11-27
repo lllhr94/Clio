@@ -1003,19 +1003,18 @@ public final class TaskStore: @unchecked Sendable {
 
     // MARK: - Rebuildable SQLite Projection (`clio-tasks.db`)
 
+    private func removeProjectionFilesLocked() {
+        let fm = FileManager.default
+        try? fm.removeItem(at: sqliteURL)
+        try? fm.removeItem(atPath: sqliteURL.path + "-wal")
+        try? fm.removeItem(atPath: sqliteURL.path + "-shm")
+    }
+
     private func openOrRebuildProjectionLocked() {
         if let existing = db {
             sqlite3_close_v2(existing)
             db = nil
         }
-        var handle: OpaquePointer?
-        let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
-        if sqlite3_open_v2(sqliteURL.path, &handle, flags, nil) != SQLITE_OK {
-            if let handle { sqlite3_close_v2(handle) }
-            try? FileManager.default.removeItem(at: sqliteURL)
-            guard sqlite3_open_v2(sqliteURL.path, &handle, flags, nil) == SQLITE_OK else { return }
-        }
-        db = handle
         let ddl = """
         PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS subtask_threads (
@@ -1035,7 +1034,20 @@ public final class TaskStore: @unchecked Sendable {
             updated_at_ms REAL NOT NULL
         );
         """
-        sqlite3_exec(db, ddl, nil, nil, nil)
+        let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        for attempt in 0..<2 {
+            var handle: OpaquePointer?
+            if sqlite3_open_v2(sqliteURL.path, &handle, flags, nil) == SQLITE_OK,
+               let opened = handle,
+               sqlite3_exec(opened, ddl, nil, nil, nil) == SQLITE_OK {
+                db = opened
+                return
+            }
+            if let handle { sqlite3_close_v2(handle) }
+            if attempt == 0 {
+                removeProjectionFilesLocked()
+            }
+        }
     }
 
     private func upsertThreadProjectionLocked(_ thread: SubtaskThread) {
@@ -1086,8 +1098,13 @@ public final class TaskStore: @unchecked Sendable {
     }
 
     private func rebuildSQLiteProjectionLocked(threads: [SubtaskThread], questions: [PendingQuestion]) {
+        if db == nil { openOrRebuildProjectionLocked() }
         guard let db else { return }
-        sqlite3_exec(db, "DELETE FROM subtask_threads; DELETE FROM pending_questions;", nil, nil, nil)
+        if sqlite3_exec(db, "DELETE FROM subtask_threads; DELETE FROM pending_questions;", nil, nil, nil) != SQLITE_OK {
+            removeProjectionFilesLocked()
+            openOrRebuildProjectionLocked()
+        }
+        guard self.db != nil else { return }
         for thread in threads { upsertThreadProjectionLocked(thread) }
         for question in questions { upsertQuestionProjectionLocked(question) }
     }
