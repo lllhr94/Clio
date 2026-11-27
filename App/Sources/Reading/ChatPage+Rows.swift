@@ -15,7 +15,7 @@ extension ChatPage {
         let state: String
         if waiting != nil { state = "notification" }
         else if chat.hasStreaming || doing == "正在回复" { state = "working" }
-        else if isWorking || typing || isListening { state = "thinking" }
+        else if isWorking || isComposerFocused || isListening { state = "thinking" }
         else if idleMood.cheering { state = "attention" }
         else if idleMood.dozing { state = "sleeping" }
         else { state = "idle" }
@@ -33,7 +33,7 @@ extension ChatPage {
                     Button {
                         Haptics.light()
                         draft = item.1
-                        typing = true
+                        setComposerFocused(true)
                     } label: {
                         HStack(spacing: Ink.Space.m) {
                             Image(systemName: item.2).font(.system(size: Ink.Size.sub)).foregroundStyle(Ink.accent).frame(width: 22)
@@ -272,7 +272,7 @@ extension ChatPage {
                                     editing = line.id
                                     draft = line.text
                                 }
-                                typing = true
+                                setComposerFocused(true)
                             }
                         }
                 }
@@ -304,7 +304,7 @@ extension ChatPage {
                 }
                 if let meta, !found.isEmpty {
                     SourcesRow(urls: found, titles: meta.titles) { url in
-                        typing = false
+                        setComposerFocused(false)
                         Task { await team.browser.open(url) }
                         roaming = true
                     }
@@ -322,7 +322,7 @@ extension ChatPage {
             }
         case .steps:
             Trace(line: line, visit: { url in
-                typing = false
+                setComposerFocused(false)
                 Task { await team.browser.open(url) }
                 roaming = true
             }, openFile: { url, mount in
@@ -403,10 +403,21 @@ extension ChatPage {
             bridge: bridge,
             sourcesMemo: sourcesMemo,
             listProxy: listProxy,
-            topBarSignature: "\(chat.key)|\(bot.id)|\(bot.name)|\(bot.avatar ?? "")|\(bot.model)|\(Int(chatViewport.width.rounded()))|\(largeText)|\(Int((textScale * 100).rounded()))|\(historyPage != nil)|\(typing)|\(Int((UIScale.factor * 100).rounded()))",
+            focusBridge: composerFocusBridge,
+            topBarSignature: "\(chat.key)|\(bot.id)|\(bot.name)|\(bot.avatar ?? "")|\(bot.model)|\(Int(chatViewport.width.rounded()))|\(largeText)|\(Int((textScale * 100).rounded()))|\(historyPage != nil)|\(isComposerFocused)|\(Int((UIScale.factor * 100).rounded()))",
+            bottomDockSignature: "\(chat.key)|\(bot.id)|\(bot.name)|\(finding)|\(historyPage != nil)|\(largeText)|\(confirmStop)|\(calmPetMotion)|\(editing ?? "")|\(quote ?? "")|\(photos.count)|\(files.count)|\(dockOpen)|\(usageOpen)|\(attaching)|\(roaming)|\(approving != nil)|\(petSettingsOpen)|\(side.choosingFresh)|\(tuningOpen)|\(scanning)|\(takingPhoto)|\(abilities)|\(outlining)|\(quoting != nil)|\(savingNote != nil)|\(Int((UIScale.factor * 100).rounded()))",
             onTopBarGeometry: { h, bottomY in
                 if abs(headerHeight - h) > 0.5 { headerHeight = h }
                 if abs((headerBottomY ?? 0) - bottomY) > 0.5 { headerBottomY = bottomY }
+            },
+            onEffectiveBottomGeometry: { result in
+                if abs(effectiveBottomOcclusion - result.effectiveBottomOcclusion) > 0.5 {
+                    effectiveBottomOcclusion = result.effectiveBottomOcclusion
+                }
+                let nextTopY = result.composerFrameInHost.minY.rounded(.down)
+                if nextTopY > 0, abs((dockTopY ?? 0) - nextTopY) > 0.5 {
+                    dockTopY = nextTopY
+                }
             },
             typing: $typing,
             touchScrolling: Binding(
@@ -426,7 +437,7 @@ extension ChatPage {
             },
             onPickStarter: { text in
                 draft = text
-                typing = true
+                setComposerFocused(true)
             },
             onStir: stir,
             onDragStarted: {
@@ -448,8 +459,17 @@ extension ChatPage {
             endsTurn: { line in endsTurn(line) },
             timeGap: { line in timeGap(before: line) },
             topBar: { headerView(reportsHeight: false) },
+            bottomDock: { focusBinding, occlusion, hostHeight, topH in
+                hostedBottomStack(
+                    typing: focusBinding,
+                    effectiveBottomOcclusion: occlusion,
+                    hostViewportHeight: hostHeight,
+                    topBarHeight: topH
+                )
+            },
             minimap: { minimap }
         )
+        .ignoresSafeArea(.keyboard)
         .onAppear { scroller = ChatScroller(listProxy: listProxy) }
         .task { await playShot() }
     }

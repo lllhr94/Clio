@@ -1,6 +1,7 @@
 import AgentKit
 import CoreText
 import Craft
+import Observation
 import SwiftUI
 import UIKit
 
@@ -453,6 +454,7 @@ struct ChatListStyle: Equatable, Sendable {
     let readingWidth: Double
     let uiDensity: Pref.UIDensity
     let fade: Bool
+    let revealPace: Pref.RevealPace
     let reduceMotion: Bool
     let uiScale: Double
     let themeKey: String
@@ -480,6 +482,7 @@ struct ChatListStyle: Equatable, Sendable {
         readingWidth: Double,
         uiDensity: Pref.UIDensity,
         fade: Bool,
+        revealPace: Pref.RevealPace = .balanced,
         reduceMotion: Bool,
         uiScale: Double,
         themeKey: String,
@@ -504,6 +507,7 @@ struct ChatListStyle: Equatable, Sendable {
         self.readingWidth = readingWidth
         self.uiDensity = uiDensity
         self.fade = fade
+        self.revealPace = revealPace
         self.reduceMotion = reduceMotion
         self.uiScale = uiScale
         self.themeKey = themeKey
@@ -561,6 +565,7 @@ struct ChatListStyle: Equatable, Sendable {
         let readingWidth = theme.readingWidth
         let uiDensity = theme.uiDensity
         let fade = theme.fade
+        let revealPace = theme.revealPace
         let uiScale = UIScale.shared.value
         let isDark = traits.userInterfaceStyle == .dark
         let resolvedTraits = isDark ? darkTraitCollection : lightTraitCollection
@@ -588,6 +593,7 @@ struct ChatListStyle: Equatable, Sendable {
             readingWidth: readingWidth,
             uiDensity: uiDensity,
             fade: fade,
+            revealPace: revealPace,
             reduceMotion: reduceMotion,
             uiScale: uiScale,
             themeKey: theme.key,
@@ -910,6 +916,8 @@ final class ChatListActions {
     var canRestoreImmersiveChrome: () -> Bool = { false }
     var onImmersiveBackgroundTap: () -> Void = {}
     var onKeyboardVisibilityChanged: (Bool) -> Void = { _ in }
+    var onKeyboardTransitionChanged: (Bool) -> Void = { _ in }
+    var onEffectiveBottomGeometryChanged: (ChatEffectiveOcclusionResult) -> Void = { _ in }
     var onProgrammaticScroll: () -> Void = {}
     var onDragStarted: () -> Void = {}
     var onScrollEnded: () -> Void = {}
@@ -944,6 +952,10 @@ final class ChatListControllerProxy {
         controller?.isCurrentlyNearBottom ?? true
     }
 
+    var currentInteractionEpoch: UInt64 {
+        controller?.currentInteractionEpoch ?? 0
+    }
+
     func scrollTo(id: String, anchor: UnitPoint, animated: Bool) {
         if id == ChatPage.end {
             controller?.scrollToBottomFromHost(animated: animated)
@@ -956,9 +968,48 @@ final class ChatListControllerProxy {
         controller?.scrollToBottomFromHost(animated: animated)
     }
 
+    func requestApprovalCardSettle(capturedEpoch: UInt64) {
+        controller?.handleApprovalCardSettle(capturedEpoch: capturedEpoch)
+    }
+
     func prewarmAround(id: String) {
         controller?.prewarmAroundRow(id: id)
     }
+}
+
+/// Focus bridge connecting `ChatPage` to the composer hosted inside `ChatListViewController`'s same-host `UIHostingController`.
+/// Keeps SwiftUI `@FocusState` native to the hosted view graph while allowing `ChatPage` to observe and drive focus cleanly.
+@MainActor @Observable
+final class ChatComposerFocusBridge {
+    var isFocused: Bool = false
+    private(set) var requestNonce: UInt64 = 0
+    private(set) var requestedFocus: Bool?
+    /// True during interactive drag-dismiss or rotation so focus re-anchor never double-fires focus haptics.
+    @ObservationIgnored var suppressFocusHaptic: Bool = false
+    @ObservationIgnored var lastFocusHapticTime: CFTimeInterval = 0
+
+    func requestFocus(_ focused: Bool) {
+        requestedFocus = focused
+        requestNonce &+= 1
+    }
+
+    func shouldPlayUserFocusHaptic(now: CFTimeInterval = CACurrentMediaTime()) -> Bool {
+        guard !suppressFocusHaptic else { return false }
+        guard now - lastFocusHapticTime >= 0.30 else { return false }
+        lastFocusHapticTime = now
+        return true
+    }
+}
+
+/// Top-level observable model feeding the same-host SwiftUI bottom dock inside `ChatListViewController`
+/// without replacing `UIHostingController.rootView` (keeping `TextField` identity and Chinese IME composition intact).
+@MainActor @Observable
+final class ChatBottomDockHostModel {
+    var revision: UInt64 = 0
+    var effectiveBottomOcclusion: CGFloat = 0
+    var hostViewportHeight: CGFloat = 0
+    var topBarHeight: CGFloat = 0
+    @ObservationIgnored var buildDock: ((FocusState<Bool>.Binding, CGFloat, CGFloat, CGFloat) -> AnyView)?
 }
 
 /// Shared layout constants matching Clio's SwiftUI chat rows.

@@ -195,6 +195,7 @@ final class Theme {
     private(set) var uiDensity: Pref.UIDensity = Pref.UIDensity(rawValue: UserDefaults.standard.string(forKey: "look.uiDensity") ?? "") ?? .standard
     private(set) var reduceVisualEffects: Bool = UserDefaults.standard.bool(forKey: "look.reduceVisualEffects")
     private(set) var fade: Bool = UserDefaults.standard.object(forKey: "look.fade") as? Bool ?? true
+    private(set) var revealPace: Pref.RevealPace = Pref.RevealPace(rawValue: UserDefaults.standard.string(forKey: Pref.revealPaceKey) ?? "") ?? .balanced
     private(set) var scheme: String = UserDefaults.standard.string(forKey: "look.scheme") ?? "system"
     @ObservationIgnored private var watching: NSObjectProtocol?
     @ObservationIgnored private var isWritingDefaults = false
@@ -272,6 +273,8 @@ final class Theme {
         if nextCode != code { code = nextCode }
         let nextFade = defaults.object(forKey: "look.fade") as? Bool ?? true
         if nextFade != fade { fade = nextFade }
+        let nextRevealPace = Pref.RevealPace(rawValue: defaults.string(forKey: Pref.revealPaceKey) ?? "") ?? .balanced
+        if nextRevealPace != revealPace { revealPace = nextRevealPace }
         let scheme = defaults.string(forKey: "look.scheme") ?? "system"
         if scheme != self.scheme {
             self.scheme = scheme

@@ -27,6 +27,68 @@ private final class PassThroughTopEdgeContainerView: UIView {
     }
 }
 
+/// Pass-through container hosting the same-host SwiftUI bottom composer above `UICollectionView`.
+/// Transparent areas fall through straight to the full-screen `UICollectionView` below.
+private final class PassThroughBottomDockContainerView: UIView {
+    var onMeasuredHeightChanged: ((CGFloat) -> Void)?
+    private var lastReportedHeight: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let h = bounds.height.rounded(.up)
+        if abs(h - lastReportedHeight) > 0.5 {
+            lastReportedHeight = h
+            onMeasuredHeightChanged?(h)
+        }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard let hit, hit !== self else { return nil }
+        return hit
+    }
+}
+
+/// Concrete SwiftUI root view installed once inside `ChatListViewController`'s bottom-dock `UIHostingController`.
+/// Owns native `@FocusState` synced bidirectionally with `ChatComposerFocusBridge` so `TextField` identity
+/// and Chinese IME composition stay rock-solid across updates.
+private struct ChatHostedBottomDockRoot: View {
+    let model: ChatBottomDockHostModel
+    let focusBridge: ChatComposerFocusBridge
+    @FocusState private var localTyping: Bool
+
+    var body: some View {
+        let _ = model.revision
+        Group {
+            if let build = model.buildDock {
+                build($localTyping, model.effectiveBottomOcclusion, model.hostViewportHeight, model.topBarHeight)
+            } else {
+                EmptyView()
+            }
+        }
+        .onChange(of: localTyping) { old, now in
+            if focusBridge.isFocused != now {
+                focusBridge.isFocused = now
+            }
+            if !old && now && focusBridge.shouldPlayUserFocusHaptic() {
+                Haptics.tick(0.35)
+            }
+        }
+        .onChange(of: focusBridge.requestNonce) { _, _ in
+            if let req = focusBridge.requestedFocus, localTyping != req {
+                localTyping = req
+            }
+        }
+        .onAppear {
+            if let req = focusBridge.requestedFocus, localTyping != req {
+                localTyping = req
+            } else if focusBridge.isFocused != localTyping {
+                focusBridge.isFocused = localTyping
+            }
+        }
+    }
+}
+
 /// Production `UICollectionView` chat stream controller implementing:
 /// - Deterministic pre-measured heights + hosted SwiftUI cells for `Trace` / empty / tool-tail
 /// - Zero-flicker in-place streaming updates & live-to-settled selection transfer
@@ -50,6 +112,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var topEdgeHeightConstraint: NSLayoutConstraint?
     private var topBarTopConstraint: NSLayoutConstraint?
     private var topBarHeightConstraint: NSLayoutConstraint?
+    private var bottomDockContainerView: PassThroughBottomDockContainerView?
+    private var bottomDockHostingController: UIHostingController<ChatHostedBottomDockRoot>?
+    private var bottomDockDockedConstraint: NSLayoutConstraint?
+    private var bottomDockManualBottomConstraint: NSLayoutConstraint?
+    private var bottomDockHostModel: ChatBottomDockHostModel?
+    private var bottomDockFocusBridge: ChatComposerFocusBridge?
+    private var measuredBottomDockHeight: CGFloat = 0
     private var measuredTopBarHeight: CGFloat = 0
     private var lastMeasuredTopBarWidth: CGFloat = -1
     private var topBarNeedsRemeasure = true
@@ -92,7 +161,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private var selectingOwnerIDs: Set<UUID> = []
     private var hasPerformedInitialScroll = false
-    private(set) var isPinnedToBottom = true
+    private var scrollArbiter = ChatScrollArbiterCore(isPinnedToBottom: true)
+    var isPinnedToBottom: Bool {
+        get { scrollArbiter.isPinnedToBottom }
+        set { scrollArbiter.setPinnedFromHost(newValue) }
+    }
+    var currentInteractionEpoch: UInt64 { scrollArbiter.interactionEpoch }
     private var isProgrammaticScroll = false
     private var isLoadingEarlierRequest = false
     private var loadEarlierGeneration: UInt64 = 0
@@ -152,6 +226,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var activeKeyboardEndOverlap: CGFloat = 0
     private var activeKeyboardDuration: TimeInterval = 0
     private var activeKeyboardDeadline: CFTimeInterval = 0
+    private var lastKeyboardFrameInHost: CGRect?
+    private var lastKeyboardBelongsToHostScreen = true
+    private var lastEffectiveOcclusion = ChatKeyboardGeometrySolver.resolve(
+        ChatKeyboardGeometryInput(hostBounds: .zero, safeAreaBottom: 0, restingComposerHeight: 0, keyboardFrameInHost: nil)
+    )
+    private var lastReportedKeyboardTransitioning = false
+    private var lastReportedBottomOcclusion: CGFloat = -1
+    private var lastReportedComposerMinY: CGFloat = -1
 
     private var isTrackingUserScroll = false
     private var isSettlingUserScrollEnd = false
@@ -240,6 +322,23 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             topHost.removeFromParent()
             topBarHostingController = nil
         }
+        if let bottomHost = bottomDockHostingController {
+            if let presented = bottomHost.presentedViewController, presented.presentingViewController === bottomHost {
+                presented.dismiss(animated: false)
+            }
+            bottomHost.willMove(toParent: nil)
+            bottomHost.view.removeFromSuperview()
+            bottomHost.removeFromParent()
+            bottomDockHostingController = nil
+        }
+        bottomDockContainerView?.onMeasuredHeightChanged = nil
+        bottomDockContainerView?.removeFromSuperview()
+        bottomDockContainerView = nil
+        bottomDockDockedConstraint = nil
+        bottomDockManualBottomConstraint = nil
+        bottomDockHostModel = nil
+        bottomDockFocusBridge = nil
+        actions.petPerch.directHostTracking = false
         topEdgeContainerView?.hostView = nil
         topEdgeContainerView?.interactiveRects.removeAll()
         topEdgeContainerView?.removeFromSuperview()
@@ -307,6 +406,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if let pendingTopBarRootView {
             self.pendingTopBarRootView = nil
             installOrUpdateTopBarHost(rootView: pendingTopBarRootView)
+        }
+        if let model = bottomDockHostModel, let bridge = bottomDockFocusBridge {
+            installBottomDockHostIfNeeded(model: model, focusBridge: bridge)
         }
 
         registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]) { (controller: ChatListViewController, _) in
@@ -384,6 +486,84 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         super.viewSafeAreaInsetsDidChange()
         updateTopEdgeContainerLayout(animated: false)
         updateCollectionInsetsIfNeeded()
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        bottomDockFocusBridge?.suppressFocusHaptic = true
+        if let collectionView {
+            for cell in collectionView.visibleCells {
+                (cell as? ChatAssistantCell)?.revealAll()
+            }
+        }
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+            guard let self else { return }
+            self.bottomDockFocusBridge?.suppressFocusHaptic = false
+            self.updateCollectionInsetsIfNeeded()
+        }
+    }
+
+    /// Installs the same-host SwiftUI bottom dock inside `ChatListViewController.view` anchored to
+    /// `view.keyboardLayoutGuide.topAnchor` (docked) or unified `effectiveBottomOcclusion` (floating/split).
+    func configureBottomDockHost(model: ChatBottomDockHostModel, focusBridge: ChatComposerFocusBridge) {
+        guard !isDismantled else { return }
+        bottomDockHostModel = model
+        bottomDockFocusBridge = focusBridge
+        actions.petPerch.directHostTracking = true
+        guard isViewLoaded, collectionView != nil else { return }
+        installBottomDockHostIfNeeded(model: model, focusBridge: focusBridge)
+    }
+
+    private func installBottomDockHostIfNeeded(model: ChatBottomDockHostModel, focusBridge: ChatComposerFocusBridge) {
+        guard bottomDockHostingController == nil else { return }
+
+        let container = PassThroughBottomDockContainerView()
+        container.backgroundColor = .clear
+        container.clipsToBounds = false
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.onMeasuredHeightChanged = { [weak self] height in
+            guard let self, !self.isDismantled else { return }
+            if abs(self.measuredBottomDockHeight - height) > 0.5 {
+                self.measuredBottomDockHeight = height
+                self.updateCollectionInsetsIfNeeded()
+            }
+        }
+        view.addSubview(container)
+
+        let docked = container.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
+        let manual = container.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: 0)
+        manual.isActive = false
+        NSLayoutConstraint.activate([
+            container.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            container.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            docked,
+        ])
+
+        let host = UIHostingController(rootView: ChatHostedBottomDockRoot(model: model, focusBridge: focusBridge))
+        host.view.backgroundColor = .clear
+        host.view.clipsToBounds = false
+        host.safeAreaRegions = []
+        host.sizingOptions = [.intrinsicContentSize]
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+
+        addChild(host)
+        container.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.topAnchor.constraint(equalTo: container.topAnchor),
+            host.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            host.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        host.didMove(toParent: self)
+
+        if let topEdge = topEdgeContainerView {
+            view.bringSubviewToFront(topEdge)
+        }
+
+        bottomDockContainerView = container
+        bottomDockHostingController = host
+        bottomDockDockedConstraint = docked
+        bottomDockManualBottomConstraint = manual
     }
 
     func updateTopBarHitRect(_ slot: Int, rect: CGRect) {
@@ -1183,10 +1363,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         loadEarlierGeneration &+= 1
         let generation = loadEarlierGeneration
 
-        if isPinnedToBottom {
-            isPinnedToBottom = false
-            actions.onFollowingChanged(false)
-        }
+        _ = scrollArbiter.beginHistoryPagination()
+        actions.onFollowingChanged(false)
 
         loadEarlierResetTask?.cancel()
         loadEarlierResetTask = Task { @MainActor [weak self] in
@@ -1734,12 +1912,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             } else if shouldPinToBottom {
                 scrollToBottom(animated: false, layoutIfNeeded: false, publishMetrics: false)
                 snapped = true
-            } else if let anchor,
-                      let newIdx = itemIndexByID[anchor.id],
-                      let afterAttrs = resolvedLayoutAttributes(at: IndexPath(item: 0, section: newIdx)) {
-                let targetY = afterAttrs.frame.minY - anchor.visualY
-                collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: targetY)
-                collectionView.layoutIfNeeded()
+            } else if let anchor {
+                _ = commitContentOffset(
+                    source: prependedCount > 0 ? .historyPagination : .userAnchorPreserve,
+                    anchor: anchor,
+                    animated: false,
+                    layoutIfNeeded: true,
+                    publishMetrics: false
+                )
                 snapped = true
             }
 
@@ -2097,7 +2277,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         keyboardSpacerView.isAccessibilityElement = false
         keyboardSpacerView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(keyboardSpacerView)
-        view.keyboardLayoutGuide.followsUndockedKeyboard = true
+        // Explicit iPhone docked posture: undocked/floating keyboards are handled via screen-filtered
+        // intersection in `ChatKeyboardGeometrySolver` instead of letting UIKit drag the dock mid-screen.
+        view.keyboardLayoutGuide.followsUndockedKeyboard = false
         NSLayoutConstraint.activate([
             keyboardSpacerView.topAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
             keyboardSpacerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -2131,13 +2313,79 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func keyboardOverlap(forScreenRect screenRect: CGRect) -> CGFloat {
-        guard let screen = view.window?.windowScene?.screen else { return 0 }
-        let local = view.convert(screenRect, from: screen.coordinateSpace)
+        let converted = ChatKeyboardGeometrySolver.convertKeyboardScreenRect(screenRect, in: view)
+        guard converted.belongsToScreen, let local = converted.frameInHost else { return 0 }
         return max(0, view.bounds.maxY - local.minY)
     }
 
     private func currentKeyboardLayoutOverlap() -> CGFloat {
         max(0, view.bounds.maxY - view.keyboardLayoutGuide.layoutFrame.minY)
+    }
+
+    private func resolvedEffectiveOcclusion(interactiveProbeTopY: CGFloat? = nil) -> ChatEffectiveOcclusionResult {
+        let hostBounds = view.bounds
+        let safeBottom = view.safeAreaInsets.bottom
+        let restingComposerH: CGFloat
+        if bottomDockContainerView != nil {
+            restingComposerH = measuredBottomDockHeight > 0 ? measuredBottomDockHeight : max(0, hostBottomInset - safeBottom)
+        } else {
+            restingComposerH = max(0, hostBottomInset - safeBottom)
+        }
+        return ChatKeyboardGeometrySolver.resolve(ChatKeyboardGeometryInput(
+            hostBounds: hostBounds,
+            safeAreaBottom: safeBottom,
+            restingComposerHeight: restingComposerH,
+            keyboardFrameInHost: lastKeyboardFrameInHost,
+            keyboardBelongsToHostScreen: lastKeyboardBelongsToHostScreen,
+            interactivePresentationTopY: interactiveProbeTopY,
+            extraBottomPadding: Ink.Space.m
+        ))
+    }
+
+    private func syncBottomDockConstraints(for result: ChatEffectiveOcclusionResult) {
+        guard let docked = bottomDockDockedConstraint, let manual = bottomDockManualBottomConstraint else { return }
+        switch result.mode {
+        case .docked, .hardwareOrNone:
+            // Keep `view.keyboardLayoutGuide.topAnchor` active for docked open, docked dismiss, and closed rest
+            // so UIKit drives the dock smoothly in CoreAnimation with zero snap on dismiss.
+            if manual.isActive { manual.isActive = false }
+            if !docked.isActive { docked.isActive = true }
+        case .floatingOrSplit:
+            if docked.isActive { docked.isActive = false }
+            let targetConstant = -result.effectiveBottomOcclusion
+            if abs(manual.constant - targetConstant) > 0.25 {
+                manual.constant = targetConstant
+            }
+            if !manual.isActive { manual.isActive = true }
+        }
+    }
+
+    private func publishEffectiveBottomGeometryIfNeeded(_ result: ChatEffectiveOcclusionResult) {
+        lastEffectiveOcclusion = result
+        if let model = bottomDockHostModel {
+            if abs(model.effectiveBottomOcclusion - result.effectiveBottomOcclusion) > 0.5 {
+                model.effectiveBottomOcclusion = result.effectiveBottomOcclusion
+            }
+            if abs(model.hostViewportHeight - view.bounds.height) > 0.5 {
+                model.hostViewportHeight = view.bounds.height
+            }
+            let topH = max(measuredTopBarHeight, currentState?.headerHeight ?? 0)
+            if abs(model.topBarHeight - topH) > 0.5 {
+                model.topBarHeight = topH
+            }
+        }
+        if abs(lastReportedBottomOcclusion - result.effectiveBottomOcclusion) > 0.5
+            || abs(lastReportedComposerMinY - result.composerFrameInHost.minY) > 0.5 {
+            lastReportedBottomOcclusion = result.effectiveBottomOcclusion
+            lastReportedComposerMinY = result.composerFrameInHost.minY
+            actions.onEffectiveBottomGeometryChanged(result)
+        }
+    }
+
+    private func setKeyboardTransitioning(_ active: Bool) {
+        guard lastReportedKeyboardTransitioning != active else { return }
+        lastReportedKeyboardTransitioning = active
+        actions.onKeyboardTransitionChanged(active)
     }
 
     private func handleKeyboardWillChangeFrame(beginScreen: CGRect?, endScreen: CGRect?, duration: TimeInterval) {
@@ -2146,6 +2394,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             pendingKeyboardSync = true
             return
         }
+        let converted = ChatKeyboardGeometrySolver.convertKeyboardScreenRect(endScreen, in: view)
+        lastKeyboardFrameInHost = converted.frameInHost
+        lastKeyboardBelongsToHostScreen = converted.belongsToScreen
+
         let beginOverlap = beginScreen.map { keyboardOverlap(forScreenRect: $0) } ?? currentKeyboardLayoutOverlap()
         let endOverlap = endScreen.map { keyboardOverlap(forScreenRect: $0) } ?? currentKeyboardLayoutOverlap()
 
@@ -2154,18 +2406,38 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         activeKeyboardDuration = duration
         if duration > 0.01 {
             activeKeyboardDeadline = CACurrentMediaTime() + duration + 0.12
+            setKeyboardTransitioning(true)
         } else {
             activeKeyboardDeadline = 0
+            setKeyboardTransitioning(false)
         }
 
         if insetDisplayLink != nil && abs(insetCatchUpToBottom - insetCatchUpFromBottom) > 0.5 && duration > 0.01 {
             insetCatchUpDuration = max(0.08, duration)
         }
-        let kbOpen = endOverlap > 10
+
+        let resolved = resolvedEffectiveOcclusion()
+        syncBottomDockConstraints(for: resolved)
+        publishEffectiveBottomGeometryIfNeeded(resolved)
+
+        if hasPerformedInitialScroll, collectionView != nil, collectionView.bounds.width > 0 {
+            let currentMetrics = makeScrollFrameMetrics(
+                topInset: collectionView.contentInset.top,
+                bottomInset: collectionView.contentInset.bottom,
+                anchor: nil
+            )
+            scrollArbiter.beginKeyboardTransition(
+                metrics: currentMetrics,
+                targetBottomInset: resolved.collectionBottomInset
+            )
+        }
+
+        let kbOpen = resolved.isKeyboardVisiblyOccluding || endOverlap > 10
         if lastReportedKeyboardOpen != kbOpen {
             lastReportedKeyboardOpen = kbOpen
             actions.onKeyboardVisibilityChanged(kbOpen)
         }
+        updateCollectionInsetsIfNeeded()
     }
 
     private func handleKeyboardDidChangeFrame(endScreen: CGRect?) {
@@ -2173,14 +2445,25 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         guard isViewVisible else {
             pendingKeyboardSync = true
             activeKeyboardDeadline = 0
+            setKeyboardTransitioning(false)
             stopInsetDisplayLink()
             return
         }
         if let endScreen {
+            let converted = ChatKeyboardGeometrySolver.convertKeyboardScreenRect(endScreen, in: view)
+            lastKeyboardFrameInHost = converted.frameInHost
+            lastKeyboardBelongsToHostScreen = converted.belongsToScreen
             activeKeyboardEndOverlap = keyboardOverlap(forScreenRect: endScreen)
             activeKeyboardStartOverlap = activeKeyboardEndOverlap
         }
-        let kbOpen = activeKeyboardEndOverlap > 10
+        let resolved = resolvedEffectiveOcclusion()
+        syncBottomDockConstraints(for: resolved)
+        publishEffectiveBottomGeometryIfNeeded(resolved)
+        setKeyboardTransitioning(false)
+        bottomDockFocusBridge?.suppressFocusHaptic = false
+        scrollArbiter.finishKeyboardTransition()
+
+        let kbOpen = resolved.isKeyboardVisiblyOccluding || activeKeyboardEndOverlap > 10
         if lastReportedKeyboardOpen != kbOpen {
             lastReportedKeyboardOpen = kbOpen
             actions.onKeyboardVisibilityChanged(kbOpen)
@@ -2188,19 +2471,31 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         activeKeyboardDeadline = 0
         if insetDisplayLink != nil {
             stopInsetDisplayLink()
-            applyInsetsNow(top: targetTopInset, bottom: targetBottomInset)
+            applyInsetsNow(top: targetTopInset, bottom: resolved.collectionBottomInset)
+        } else {
+            updateCollectionInsetsIfNeeded()
         }
+    }
+
+    private func currentKeyboardPresentationTopY() -> CGFloat? {
+        guard let presentation = keyboardSpacerView.layer.presentation(),
+              view.bounds.height > 0 else {
+            return nil
+        }
+        let topY = presentation.frame.minY
+        guard topY.isFinite else { return nil }
+        return topY
     }
 
     private func currentKeyboardAnimationProgress() -> CGFloat? {
         let kbDelta = activeKeyboardEndOverlap - activeKeyboardStartOverlap
         guard abs(kbDelta) > 1,
               keyboardSpacerView.layer.animationKeys()?.isEmpty == false,
-              let presentation = keyboardSpacerView.layer.presentation(),
+              let presentationTopY = currentKeyboardPresentationTopY(),
               view.bounds.height > 0 else {
             return nil
         }
-        let currentOverlap = max(0, view.bounds.maxY - presentation.frame.minY)
+        let currentOverlap = max(0, view.bounds.maxY - presentationTopY)
         let raw = (currentOverlap - activeKeyboardStartOverlap) / kbDelta
         return min(1, max(0, raw))
     }
@@ -2232,6 +2527,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return
         }
         let now = link.timestamp
+        if collectionView.isDragging, let probeTopY = currentKeyboardPresentationTopY() {
+            // Interactive keyboard drag-dismiss: sample presentation geometry directly.
+            let liveResult = resolvedEffectiveOcclusion(interactiveProbeTopY: probeTopY)
+            publishEffectiveBottomGeometryIfNeeded(liveResult)
+            applyInsetsNow(top: targetTopInset, bottom: liveResult.collectionBottomInset, publishMetrics: false)
+            return
+        }
+
         let progress: CGFloat
         if now <= activeKeyboardDeadline,
            let kbProgress = currentKeyboardAnimationProgress() {
@@ -2278,9 +2581,17 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             hostTopInset,
             embeddedTop > 0 ? embeddedTop : max(view.safeAreaInsets.top, windowTop + (currentState?.headerHeight ?? 0))
         )
-        let resolvedBottom = hostBottomInset > 0 ? hostBottomInset : view.safeAreaInsets.bottom
         let desiredTop = resolvedTop + Ink.Space.s
-        let desiredBottom = resolvedBottom + Ink.Space.m
+        let desiredBottom: CGFloat
+        if bottomDockContainerView != nil {
+            let occlusion = resolvedEffectiveOcclusion()
+            syncBottomDockConstraints(for: occlusion)
+            publishEffectiveBottomGeometryIfNeeded(occlusion)
+            desiredBottom = occlusion.collectionBottomInset
+        } else {
+            let resolvedBottom = hostBottomInset > 0 ? hostBottomInset : view.safeAreaInsets.bottom
+            desiredBottom = resolvedBottom + Ink.Space.m
+        }
 
         let comparedTop = insetDisplayLink != nil ? targetTopInset : collectionView.contentInset.top
         let comparedBottom = insetDisplayLink != nil ? targetBottomInset : collectionView.contentInset.bottom
@@ -2318,13 +2629,103 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
     }
 
+    private func makeScrollFrameMetrics(
+        topInset: CGFloat,
+        bottomInset: CGFloat,
+        anchor: (id: ChatListItemID, visualY: CGFloat)?
+    ) -> ChatScrollArbiterCore.FrameMetrics {
+        let anchorTargetY: CGFloat?
+        if let anchor,
+           let newIdx = itemIndexByID[anchor.id],
+           let afterAttrs = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: newIdx)) {
+            anchorTargetY = afterAttrs.frame.minY - anchor.visualY
+        } else {
+            anchorTargetY = nil
+        }
+        let revealedTargetY: CGFloat? = (revealFollowItem != nil) ? bottomOffsetFollowingReveal() : nil
+        return ChatScrollArbiterCore.FrameMetrics(
+            currentOffsetY: collectionView.contentOffset.y,
+            contentHeight: collectionView.contentSize.height,
+            boundsHeight: collectionView.bounds.height,
+            topInset: topInset,
+            bottomInset: bottomInset,
+            revealedBottomOffsetY: revealedTargetY,
+            anchorTargetOffsetY: anchorTargetY
+        )
+    }
+
+    /// Single per-frame `contentOffset` write-point enforcing strict 3-tier competition arbitration.
+    @discardableResult
+    private func commitContentOffset(
+        source: ChatScrollArbiterCore.WriteSource,
+        anchor: (id: ChatListItemID, visualY: CGFloat)? = nil,
+        explicitTargetY: CGFloat? = nil,
+        animated: Bool = false,
+        layoutIfNeeded: Bool = false,
+        publishMetrics: Bool = false
+    ) -> Bool {
+        guard collectionView != nil, collectionView.bounds.width > 0 else { return false }
+        let metrics = makeScrollFrameMetrics(
+            topInset: collectionView.contentInset.top,
+            bottomInset: collectionView.contentInset.bottom,
+            anchor: anchor
+        )
+        let decision = scrollArbiter.resolveWrite(source: source, metrics: metrics, explicitTargetY: explicitTargetY)
+        guard decision.wroteOffset, let targetY = decision.targetOffsetY else { return false }
+
+        if animated {
+            if abs(collectionView.contentOffset.y - targetY) < 0.5 {
+                isProgrammaticScroll = false
+                lastScrollOffsetY = collectionView.contentOffset.y
+                if publishMetrics { publishVisibleAndFooterMetrics() }
+                return false
+            }
+            isProgrammaticScroll = true
+            animatedScrollID &+= 1
+            let currentID = animatedScrollID
+            collectionView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in
+                guard let self, self.animatedScrollID == currentID, self.isProgrammaticScroll else { return }
+                self.isProgrammaticScroll = false
+                self.lastScrollOffsetY = self.collectionView.contentOffset.y
+                self.publishVisibleAndFooterMetrics()
+            }
+            return true
+        }
+
+        let wasProgrammatic = isProgrammaticScroll
+        isProgrammaticScroll = true
+        if abs(collectionView.contentOffset.y - targetY) > 0.25 {
+            collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: targetY)
+        }
+        if layoutIfNeeded {
+            collectionView.layoutIfNeeded()
+        }
+        lastScrollOffsetY = collectionView.contentOffset.y
+        isProgrammaticScroll = wasProgrammatic
+        if publishMetrics {
+            publishVisibleAndFooterMetrics()
+        }
+        return true
+    }
+
+    func handleApprovalCardSettle(capturedEpoch: UInt64) {
+        guard !isDismantled, isViewLoaded, hasPerformedInitialScroll,
+              !(currentState?.historyInView ?? false) else { return }
+        _ = commitContentOffset(
+            source: .approvalCardSettle(epoch: capturedEpoch),
+            animated: false,
+            layoutIfNeeded: false,
+            publishMetrics: true
+        )
+    }
+
     private func applyInsetsNow(top: CGFloat, bottom: CGFloat, publishMetrics: Bool = true) {
         guard collectionView != nil, collectionView.bounds.width > 0 else { return }
         let current = collectionView.contentInset
         guard abs(current.top - top) > 0.25 || abs(current.bottom - bottom) > 0.25 else { return }
 
-        let shouldPinToBottom = canAutoPinToBottom
-        let anchor: (id: ChatListItemID, visualY: CGFloat)? = (!shouldPinToBottom && hasPerformedInitialScroll && !isUserTouchScrolling)
+        let anchor: (id: ChatListItemID, visualY: CGFloat)? = (!canAutoPinToBottom && hasPerformedInitialScroll && !isUserTouchScrolling)
             ? topVisibleAnchor()
             : nil
 
@@ -2338,27 +2739,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.verticalScrollIndicatorInsets = nextInset
 
         if hasPerformedInitialScroll {
-            if shouldPinToBottom {
-                scrollToBottom(animated: false, layoutIfNeeded: true, publishMetrics: false)
-            } else if !isUserTouchScrolling,
-                      let anchor,
-                      let newIdx = itemIndexByID[anchor.id],
-                      let afterAttrs = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: newIdx)) {
-                let minY = -nextInset.top
-                let maxY = bottomOffsetY(for: collectionView)
-                let desiredY = afterAttrs.frame.minY - anchor.visualY
-                let clampedY = min(maxY, max(minY, desiredY))
-                if abs(collectionView.contentOffset.y - clampedY) > 0.25 {
-                    collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: clampedY)
-                }
-            } else if !isUserTouchScrolling {
-                let minY = -nextInset.top
-                let maxY = bottomOffsetY(for: collectionView)
-                let clampedY = min(maxY, max(minY, collectionView.contentOffset.y))
-                if abs(collectionView.contentOffset.y - clampedY) > 0.25 {
-                    collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: clampedY)
-                }
-            }
+            _ = commitContentOffset(
+                source: .insetOrKeyboardSynthesis(epoch: scrollArbiter.interactionEpoch),
+                anchor: anchor,
+                animated: false,
+                layoutIfNeeded: canAutoPinToBottom,
+                publishMetrics: false
+            )
         }
 
         lastScrollOffsetY = collectionView.contentOffset.y
@@ -2433,13 +2820,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             work()
             if wasPinned {
                 scrollToBottom(animated: false)
-            } else if !isUserTouchScrolling,
-                      let anchor,
-                      let newIdx = itemIndexByID[anchor.id],
-                      let afterAttrs = resolvedLayoutAttributes(at: IndexPath(item: 0, section: newIdx)) {
-                let targetY = afterAttrs.frame.minY - anchor.visualY
-                collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: targetY)
-                collectionView.layoutIfNeeded()
+            } else if let anchor {
+                _ = commitContentOffset(
+                    source: .userAnchorPreserve,
+                    anchor: anchor,
+                    animated: false,
+                    layoutIfNeeded: true,
+                    publishMetrics: false
+                )
             }
             isProgrammaticScroll = wasProgrammatic
             CATransaction.commit()
@@ -2448,8 +2836,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func applyStreamingResizePreservingScroll() {
         needsDeferredStreamingResize = false
-        let savedOffsetY = collectionView.contentOffset.y
-        let pinned = canAutoPinToBottom
+        let epoch = scrollArbiter.interactionEpoch
         let wasProgrammatic = isProgrammaticScroll
 
         UIView.performWithoutAnimation {
@@ -2460,16 +2847,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             collectionView.collectionViewLayout.invalidateLayout()
             collectionView.layoutIfNeeded()
 
-            if pinned {
-                scrollToBottom(animated: false, layoutIfNeeded: false, publishMetrics: false)
-            } else if !wasProgrammatic && !isUserTouchScrolling {
-                let minY = -collectionView.contentInset.top
-                let maxY = bottomOffsetY(for: collectionView)
-                let clampedY = min(maxY, max(minY, savedOffsetY))
-                if abs(collectionView.contentOffset.y - clampedY) > 0.25 {
-                    collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: clampedY)
-                }
-                lastScrollOffsetY = collectionView.contentOffset.y
+            if !wasProgrammatic {
+                _ = commitContentOffset(
+                    source: .streamingResize(epoch: epoch),
+                    animated: false,
+                    layoutIfNeeded: false,
+                    publishMetrics: false
+                )
             }
 
             isProgrammaticScroll = wasProgrammatic
@@ -2510,7 +2894,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     func scrollToRow(id: String, anchor: UnitPoint, animated: Bool) {
-        isPinnedToBottom = false
+        _ = scrollArbiter.beginExplicitJump()
         guard isViewLoaded,
               collectionView.bounds.width > 0,
               let section = itemIndexByID[.line(id)] else {
@@ -2529,8 +2913,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.layoutIfNeeded()
         guard let attrs = resolvedLayoutAttributes(at: indexPath) else { return }
 
-        let minY = -collectionView.contentInset.top
-        let maxY = bottomOffsetY(for: collectionView)
         let visibleH = max(40, collectionView.bounds.height - collectionView.contentInset.top - collectionView.contentInset.bottom)
 
         let rawTargetY: CGFloat
@@ -2544,34 +2926,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         default:
             rawTargetY = attrs.frame.minY - collectionView.contentInset.top
         }
-        let targetY = min(maxY, max(minY, rawTargetY))
 
-        if animated {
-            if abs(collectionView.contentOffset.y - targetY) < 0.5 {
-                isProgrammaticScroll = false
-                lastScrollOffsetY = collectionView.contentOffset.y
-                publishVisibleAndFooterMetrics()
-                return
-            }
-            isProgrammaticScroll = true
-            animatedScrollID &+= 1
-            let currentID = animatedScrollID
-            collectionView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in
-                guard let self, self.animatedScrollID == currentID, self.isProgrammaticScroll else { return }
-                self.isProgrammaticScroll = false
-                self.lastScrollOffsetY = self.collectionView.contentOffset.y
-                self.publishVisibleAndFooterMetrics()
-            }
-        } else {
-            let wasProgrammatic = isProgrammaticScroll
-            isProgrammaticScroll = true
-            collectionView.contentOffset = CGPoint(x: 0, y: targetY)
-            collectionView.layoutIfNeeded()
-            lastScrollOffsetY = collectionView.contentOffset.y
-            isProgrammaticScroll = wasProgrammatic
-            publishVisibleAndFooterMetrics()
-        }
+        _ = commitContentOffset(
+            source: .explicitJump,
+            explicitTargetY: rawTargetY,
+            animated: animated,
+            layoutIfNeeded: !animated,
+            publishMetrics: true
+        )
     }
 
     private func bottomOffsetY(for scrollView: UIScrollView) -> CGFloat {
@@ -2618,7 +2980,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
             let canReveal = entry.slices.contains {
                 guard case .richText(let prose) = $0.slice else { return false }
-                if case .liveProse = item.id, prose.liveTailIndex == nil { return false }
                 return ChatRevealPolicy.isEligible(
                     fade: currentStyle.fade, reduceMotion: currentStyle.reduceMotion,
                     attributedLength: prose.attributed.length
@@ -2639,55 +3000,33 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         guard hasPerformedInitialScroll, canAutoPinToBottom, !isProgrammaticScroll,
               !isInHostUpdate, !isDismantled, isViewVisible else { return }
-        let target = bottomOffsetFollowingReveal()
-        let current = collectionView.contentOffset.y
-        let distance = target - current
-        guard distance > 0.5 else { return }
+        let epoch = scrollArbiter.interactionEpoch
         if completed {
-            scrollToBottom(animated: true, layoutIfNeeded: false)
+            _ = commitContentOffset(
+                source: .finalizedSettle(epoch: epoch),
+                animated: true,
+                layoutIfNeeded: false,
+                publishMetrics: true
+            )
         } else {
-            // Move a fraction of the distance per reveal frame, without restarting a scroll animation.
-            isProgrammaticScroll = true
-            collectionView.contentOffset.y = current + min(distance, max(0.5, distance * 0.22))
-            lastScrollOffsetY = collectionView.contentOffset.y
-            isProgrammaticScroll = false
+            _ = commitContentOffset(
+                source: .revealTick(epoch: epoch),
+                animated: false,
+                layoutIfNeeded: false,
+                publishMetrics: false
+            )
         }
     }
 
     private func scrollToBottom(animated: Bool, layoutIfNeeded: Bool = true, publishMetrics: Bool = true) {
         actions.onProgrammaticScroll()
-        let targetY = bottomOffsetFollowingReveal()
         isPinnedToBottom = true
-        if animated {
-            if abs(collectionView.contentOffset.y - targetY) < 0.5 {
-                isProgrammaticScroll = false
-                lastScrollOffsetY = collectionView.contentOffset.y
-                if publishMetrics { publishVisibleAndFooterMetrics() }
-                return
-            }
-            isProgrammaticScroll = true
-            animatedScrollID &+= 1
-            let currentID = animatedScrollID
-            collectionView.setContentOffset(CGPoint(x: 0, y: targetY), animated: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in
-                guard let self, self.animatedScrollID == currentID, self.isProgrammaticScroll else { return }
-                self.isProgrammaticScroll = false
-                self.lastScrollOffsetY = self.collectionView.contentOffset.y
-                self.publishVisibleAndFooterMetrics()
-            }
-        } else {
-            let wasProgrammatic = isProgrammaticScroll
-            isProgrammaticScroll = true
-            collectionView.contentOffset = CGPoint(x: 0, y: targetY)
-            if layoutIfNeeded {
-                collectionView.layoutIfNeeded()
-            }
-            lastScrollOffsetY = collectionView.contentOffset.y
-            isProgrammaticScroll = wasProgrammatic
-            if publishMetrics {
-                publishVisibleAndFooterMetrics()
-            }
-        }
+        _ = commitContentOffset(
+            source: .insetOrKeyboardSynthesis(epoch: scrollArbiter.interactionEpoch),
+            animated: animated,
+            layoutIfNeeded: layoutIfNeeded,
+            publishMetrics: publishMetrics
+        )
     }
 
     private func clearAllSelections() {
@@ -2722,6 +3061,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         } else {
             selectingOwnerIDs.remove(uuid)
         }
+        scrollArbiter.setTextSelectionActive(!selectingOwnerIDs.isEmpty)
         if isInHostUpdate {
             Task { @MainActor [weak self] in
                 guard let self, !self.isDismantled else { return }
@@ -2739,6 +3079,12 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         isTrackingUserScroll = true
         wasPinnedAtDragStart = isPinnedToBottom
         userMovedAwayFromBottomDuringDrag = false
+        let interactiveKeyboardDismiss = lastEffectiveOcclusion.isKeyboardVisiblyOccluding
+        scrollArbiter.beginUserTouchScroll(interactiveKeyboardDismiss: interactiveKeyboardDismiss)
+        if interactiveKeyboardDismiss {
+            bottomDockFocusBridge?.suppressFocusHaptic = true
+            startInsetCatchUp(toBottom: targetBottomInset, duration: 0.25)
+        }
         if isProgrammaticScroll {
             animatedScrollID &+= 1
             isProgrammaticScroll = false
@@ -2805,11 +3151,17 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let withinFollowThreshold = distanceFromBottom < 80
             || (wasPinnedAtDragStart && !userMovedAwayFromBottomDuringDrag && distanceFromBottom < 120)
         let shouldFollow = !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty && withinFollowThreshold
-        if isPinnedToBottom != shouldFollow {
-            isPinnedToBottom = shouldFollow
-            actions.onFollowingChanged(shouldFollow)
+        let prevPinned = isPinnedToBottom
+        scrollArbiter.endUserTouchScroll(shouldPinToBottom: shouldFollow)
+        bottomDockFocusBridge?.suppressFocusHaptic = false
+        if insetDisplayLink != nil && CACurrentMediaTime() > activeKeyboardDeadline {
+            stopInsetDisplayLink()
+            updateCollectionInsetsIfNeeded()
         }
-        if shouldFollow && distanceFromBottom > 2 && insetDisplayLink == nil && CACurrentMediaTime() > activeKeyboardDeadline {
+        if prevPinned != isPinnedToBottom {
+            actions.onFollowingChanged(isPinnedToBottom)
+        }
+        if isPinnedToBottom && distanceFromBottom > 2 && insetDisplayLink == nil && CACurrentMediaTime() > activeKeyboardDeadline {
             scrollToBottom(animated: distanceFromBottom > 12)
         }
         actions.onScrollEnded()
@@ -2836,7 +3188,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             if userMoving && movedUp && currentY < bottomY - 4 {
                 userMovedAwayFromBottomDuringDrag = true
                 if isPinnedToBottom {
-                    isPinnedToBottom = false
+                    scrollArbiter.userScrolledAwayFromBottom()
                     actions.onFollowingChanged(false)
                     actions.onDragStarted()
                 }

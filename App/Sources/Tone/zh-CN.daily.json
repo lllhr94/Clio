@@ -453,6 +453,10 @@
     "hapticStandard": "标准",
     "hapticCrisp": "清脆",
     "fadeReply": "回复逐字淡入",
+    "revealPace": "浮现节奏",
+    "revealPaceGentle": "舒缓",
+    "revealPaceBalanced": "均衡",
+    "revealPaceFast": "极速",
     "immersiveChrome": "滚动时沉浸阅读",
     "showReplyStats": "回复下显示耗时和用量",
     "expandSteps": "默认展开步骤",
@@ -932,6 +936,7 @@
   },
   "ask": {
     "questionHeader": "%@问：%@",
+    "expandDetails": "展开详情",
     "multiHint": "可多选",
     "selectedCount": "已选 %lld 项",
     "rangeHint": "选 %lld–%lld 项",

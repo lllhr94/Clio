@@ -6,6 +6,7 @@ import ImageIO
 import PhotosUI
 import Observation
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 import VisionKit
 
@@ -254,7 +255,7 @@ extension ChatPage {
         settleEnd?.cancel()
         settleJump?.cancel()
         viewport.advanceNavigation()
-        typing = false
+        setComposerFocused(false)
         approving = approval
     }
 
@@ -262,11 +263,16 @@ extension ChatPage {
         followPending?.cancel()
         settleEnd?.cancel()
         approvalInsetTask?.cancel()
+        let capturedEpoch = listProxy.currentInteractionEpoch
         approvalInsetTask = Task { @MainActor in
             // The system anchor follows the animated dock. Recheck only after it settles.
             do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
             approvalInsetTask = nil
-            followToEnd(settle: false)
+            if useUIKitChatList {
+                listProxy.requestApprovalCardSettle(capturedEpoch: capturedEpoch)
+            } else {
+                followToEnd(settle: false)
+            }
         }
     }
 
@@ -327,7 +333,7 @@ extension ChatPage {
     var composing: Bool {
         let listening = dictationSlot.instance?.listening == true
         let transcribing = dictationSlot.instance?.transcribing == true
-        return typing || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || listening || transcribing
+        return isComposerFocused || draftState.hasText || !photos.isEmpty || !files.isEmpty || editing != nil || quote != nil || listening || transcribing
     }
 
     var sendingBlocked: Bool {
@@ -383,6 +389,9 @@ struct ChatBottomStackView<FindBar: View>: View {
     let confirmStop: Bool
     let calmPetMotion: Bool
     let viewportMetrics: ChatViewportMetrics
+    var effectiveBottomOcclusion: CGFloat = 0
+    var hostViewportHeight: CGFloat = 0
+    var topBarHeight: CGFloat = 0
     let coveredByPage: Bool
     let baseSheetOpen: Bool
     let typing: FocusState<Bool>.Binding
@@ -403,6 +412,7 @@ struct ChatBottomStackView<FindBar: View>: View {
     @Binding var files: [String]
 
     let onPresentApproval: (Approval) -> Void
+    var onResignFocusForSheet: (() -> Void)? = nil
     let onToEnd: () -> Void
     let onReturnToLatest: () -> Void
     let onClearComposer: () -> Void
@@ -419,9 +429,48 @@ struct ChatBottomStackView<FindBar: View>: View {
         calmPetMotion ? .easeInOut(duration: 0.22) : Ink.Motion.unfold
     }
 
+    private var estimatedComposerHeight: CGFloat {
+        var h = ChatBarMetrics.height + 16 * UIScale.factor
+        if !photos.isEmpty { h += 64 }
+        if !files.isEmpty { h += 38 }
+        if quote != nil || editing != nil { h += 34 }
+        return h
+    }
+
+    private var sharedCardBudget: ChatDockCardBudget.Allocation {
+        let viewportH = hostViewportHeight > 0 ? hostViewportHeight : viewportMetrics.size.height
+        let waiting = team.approvals.first { $0.chat == chat.key }
+        let canInlineApproval = waiting.map {
+            InlineApprovalPolicy.canAnswer(
+                answerable: $0.answerable != false,
+                forced: $0.forced == true,
+                tool: $0.toolName,
+                hasCode: $0.detail?.code?.isEmpty == false
+            )
+        } ?? false
+        let hasInlineAsk: Bool = {
+            guard let current = asker.current, current.inline,
+                  current.chat == nil || current.chat == chat.key else { return false }
+            return team.isWorking(chat.key)
+        }()
+        let hasPlan = team.plans[chat.key] != nil
+        return ChatDockCardBudget.allocate(ChatDockCardBudget.Input(
+            viewportHeight: viewportH,
+            effectiveBottomOcclusion: effectiveBottomOcclusion,
+            topBarHeight: max(topBarHeight, ChatBarMetrics.height),
+            composerHeight: estimatedComposerHeight,
+            minProseReadableHeight: 120,
+            hasPendingApproval: waiting != nil,
+            canInlineApproval: canInlineApproval,
+            hasInlineAsk: hasInlineAsk,
+            hasPlanCard: hasPlan
+        ))
+    }
+
     var body: some View {
         let p = chromeCoordinator.visualProgress
         let fabAlpha = max(0, min(1, (Double(p) - 0.45) / 0.55))
+        let budget = sharedCardBudget
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
                 PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: viewportMetrics.size)
@@ -430,6 +479,11 @@ struct ChatBottomStackView<FindBar: View>: View {
                         chatKey: chat.key,
                         viewportMetrics: viewportMetrics,
                         calmPetMotion: calmPetMotion,
+                        askLayout: budget.inlineAsk,
+                        onResignFocusForSheet: {
+                            typing.wrappedValue = false
+                            onResignFocusForSheet?()
+                        },
                         team: team,
                         asker: asker
                     )
@@ -454,6 +508,7 @@ struct ChatBottomStackView<FindBar: View>: View {
                             confirmStop: confirmStop,
                             calmPetMotion: calmPetMotion,
                             viewportMetrics: viewportMetrics,
+                            cardBudget: budget,
                             typing: typing,
                             usageOpen: $usageOpen,
                             pickerShown: $pickerShown,
@@ -550,6 +605,8 @@ private struct ChatDockedFormSlot: View {
     let chatKey: String
     let viewportMetrics: ChatViewportMetrics
     let calmPetMotion: Bool
+    var askLayout: ChatDockCardBudget.InlineAskLayout = .none
+    var onResignFocusForSheet: (() -> Void)? = nil
     @ObservedObject var team: TeamModel
     @ObservedObject var asker: Asker
 
@@ -564,13 +621,45 @@ private struct ChatDockedFormSlot: View {
         calmPetMotion ? .easeInOut(duration: 0.22) : Ink.Motion.unfold
     }
 
+    private func expandToDetailSheet(_ form: Asker.Form) {
+        onResignFocusForSheet?()
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        Asker.shared.requestDetailSheet(form.id)
+    }
+
     var body: some View {
         Group {
             if let form {
-                PetDockSlip(availableHeight: viewportMetrics.size.height) { InlineAsk(form: form).id(form.id) }
+                switch askLayout {
+                case .compactSummaryWithSheetFallback:
+                    InlineAskCompactSummaryBar(form: form) {
+                        expandToDetailSheet(form)
+                    }
+                    .id(form.id)
                     .padding(.horizontal, Ink.Bar.edge)
                     .padding(.bottom, Ink.Space.s)
                     .transition(.opacity)
+                case .inline(let maxHeight):
+                    PetDockSlip(availableHeight: viewportMetrics.size.height, explicitMaxHeight: maxHeight) {
+                        InlineAsk(form: form) {
+                            expandToDetailSheet(form)
+                        }
+                        .id(form.id)
+                    }
+                    .padding(.horizontal, Ink.Bar.edge)
+                    .padding(.bottom, Ink.Space.s)
+                    .transition(.opacity)
+                case .none:
+                    PetDockSlip(availableHeight: viewportMetrics.size.height) {
+                        InlineAsk(form: form) {
+                            expandToDetailSheet(form)
+                        }
+                        .id(form.id)
+                    }
+                    .padding(.horizontal, Ink.Bar.edge)
+                    .padding(.bottom, Ink.Space.s)
+                    .transition(.opacity)
+                }
             }
         }
         .animation(petDockMotion, value: form?.id)
@@ -683,6 +772,7 @@ struct ChatComposerBarView: View {
     let confirmStop: Bool
     let calmPetMotion: Bool
     let viewportMetrics: ChatViewportMetrics
+    var cardBudget: ChatDockCardBudget.Allocation? = nil
     let typing: FocusState<Bool>.Binding
 
     @Binding var usageOpen: Bool
@@ -720,6 +810,7 @@ struct ChatComposerBarView: View {
                 workTimer: workTimer,
                 calmPetMotion: calmPetMotion,
                 viewportMetrics: viewportMetrics,
+                cardBudget: cardBudget,
                 dockOpen: $dockOpen,
                 typing: typing,
                 roaming: $roaming,
@@ -773,6 +864,7 @@ private struct ChatDockAreaView: View {
     let workTimer: ChatWorkTimer
     let calmPetMotion: Bool
     var viewportMetrics: ChatViewportMetrics? = nil
+    var cardBudget: ChatDockCardBudget.Allocation? = nil
 
     @Binding var dockOpen: Bool
     let typing: FocusState<Bool>.Binding
@@ -816,10 +908,24 @@ private struct ChatDockAreaView: View {
     var body: some View {
         VStack(spacing: Ink.Space.xs) {
             if let plan = team.plans[chat.key] {
-                PlanCard(steps: plan, maxHeight: chatViewportHeight > 0 ? max(160, chatViewportHeight * 0.38) : nil) {
+                let fallbackMax = chatViewportHeight > 0 ? max(160, chatViewportHeight * 0.38) : nil
+                let resolvedPlanMax: CGFloat?
+                let forcePlanCollapsed: Bool
+                switch cardBudget?.planCard {
+                case .expandable(let cap):
+                    resolvedPlanMax = cap
+                    forcePlanCollapsed = false
+                case .forcedCollapsedCapsule:
+                    resolvedPlanMax = nil
+                    forcePlanCollapsed = true
+                default:
+                    resolvedPlanMax = fallbackMax
+                    forcePlanCollapsed = false
+                }
+                PlanCard(steps: plan, maxHeight: resolvedPlanMax, forceCollapsed: forcePlanCollapsed) {
                     team.clearPlan(chat.key)
                 }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .transition(calmPetMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
             }
             dockContent
         }
@@ -884,12 +990,14 @@ private struct ChatDockAreaView: View {
         switch card {
         case .waiting:
             if let waiting {
-                if !InlineApprovalPolicy.canAnswer(
+                let canAnswerInline = InlineApprovalPolicy.canAnswer(
                     answerable: waiting.answerable != false,
                     forced: waiting.forced == true,
                     tool: waiting.toolName,
                     hasCode: waiting.detail?.code?.isEmpty == false
-                ) {
+                )
+                let forceSheetFallback = (cardBudget?.approval == .sheetFallbackOnly) || !canAnswerInline
+                if forceSheetFallback {
                     Button {
                         Haptics.grab()
                         onPresentApproval(waiting)
@@ -913,8 +1021,12 @@ private struct ChatDockAreaView: View {
                         .paperCard()
                     }
                     .buttonStyle(PressStyle())
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(calmPetMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
                 } else {
+                    let approvalCap: CGFloat? = {
+                        if case .inline(let maxH) = cardBudget?.approval { return maxH }
+                        return nil
+                    }()
                     InlineApproval(
                         approval: waiting,
                         team: team,
@@ -922,8 +1034,9 @@ private struct ChatDockAreaView: View {
                     ) {
                         onPresentApproval(waiting)
                     }
+                    .frame(maxHeight: approvalCap)
                     .id(waiting.id)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(calmPetMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
                 }
             }
         case .roam:
@@ -1086,7 +1199,7 @@ private struct ChatComposerMainCard: View {
         .padding(.vertical, 7 * ChatBarMetrics.scale)
         .frostedChatChrome(in: RoundedRectangle(cornerRadius: max(26 * ChatBarMetrics.scale, Ink.Radius.card), style: .continuous))
         .padding(.horizontal, sidePadding)
-        .animation(Ink.Motion.quick, value: composing)
+        .animation(UIAccessibility.isReduceMotionEnabled ? .easeOut(duration: 0.16) : Ink.Motion.quick, value: composing)
     }
 }
 
@@ -1672,6 +1785,7 @@ private struct ChatDraftFieldCore: View {
             prompt: Text(placeholder).foregroundStyle(Ink.inkSoft),
             axis: .vertical
         )
+        .id("chat-composer-text-field")
         .font(largeText ? .body : .system(size: ChatBarMetrics.iconFontSize))
         .foregroundStyle(Ink.ink)
         .lineLimit(1...(largeText ? 3 : 6))

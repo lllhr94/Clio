@@ -7,7 +7,7 @@ import UIKit
 /// Uses pooled native views for prose, code, tables, math, thoughts, and footer actions, with zero-flicker
 /// in-place updates and cross-paragraph selection preservation.
 @MainActor
-final class ChatAssistantCell: UICollectionViewCell {
+final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
     static let reuseID = "ChatAssistantCell"
 
     struct Callbacks {
@@ -76,6 +76,20 @@ final class ChatAssistantCell: UICollectionViewCell {
     private var appliedContinueButtonSignature = ""
     private var appliedContinueThemeSignature = ""
     private var lastColorSignature = ""
+
+    private struct RevealSliceBinding {
+        let id: String
+        let kind: MessageRevealTimeline.SliceKind
+        let view: UIView
+        let richTextView: ChatRichTextView?
+        let expectedHeight: CGFloat
+        let attributedLength: Int
+    }
+
+    private var messageRevealCoordinator: MessageRevealCoordinator?
+    private var revealOwnerID: String?
+    private var revealSliceBindings: [RevealSliceBinding] = []
+    private var isCellRevealVisible = true
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -219,6 +233,7 @@ final class ChatAssistantCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        teardownMessageReveal()
         ownerID = ""
         currentRow = nil
         currentEntry = nil
@@ -226,6 +241,7 @@ final class ChatAssistantCell: UICollectionViewCell {
         hostViewController = nil
         actions = nil
         callbacks = Callbacks()
+        isCellRevealVisible = true
 
         thinkingTextView?.setRevealVisible(false)
         thinkingTextView?.resetForReuse()
@@ -340,6 +356,7 @@ final class ChatAssistantCell: UICollectionViewCell {
 
     @discardableResult
     func beginTextSelection() -> Bool {
+        revealAll()
         guard let entry = currentEntry, let target = firstSelectableTarget(in: entry) else {
             return false
         }
@@ -356,7 +373,30 @@ final class ChatAssistantCell: UICollectionViewCell {
         return row.line.id
     }
 
+    /// Immediately reveals every slice (sealed prose, tail prose, code, tables, formulas) and clears all masks & snippets.
+    func revealAll() {
+        let hadActive = messageRevealCoordinator != nil
+        messageRevealCoordinator?.revealAll()
+        teardownMessageReveal()
+        for tv in richTextViews where !tv.isHidden {
+            tv.revealAll()
+        }
+        if hadActive {
+            callbacks.onRevealFrame(true)
+        }
+    }
+
     func setRevealVisible(_ visible: Bool) {
+        isCellRevealVisible = visible
+        if !visible {
+            if let coord = messageRevealCoordinator, coord.isFinalizing {
+                revealAll()
+            } else {
+                ChatRevealDisplayDriver.shared.unregister(self)
+            }
+        } else {
+            syncMessageRevealDriver()
+        }
         for tv in richTextViews where !tv.isHidden {
             tv.setRevealVisible(visible)
         }
@@ -367,6 +407,28 @@ final class ChatAssistantCell: UICollectionViewCell {
     }
 
     func revealedLineBottom(in view: UIView) -> CGFloat? {
+        if let coord = messageRevealCoordinator, !coord.isComplete,
+           let activeIndex = coord.timeline.activeSliceIndex(forCursor: coord.cursorPoints),
+           activeIndex < revealSliceBindings.count {
+            let binding = revealSliceBindings[activeIndex]
+            if let tv = binding.richTextView, !tv.isHidden, tv.bounds.height > 0,
+               let bottom = tv.revealedLineBottom {
+                return tv.convert(CGPoint(x: 0, y: bottom), to: view).y
+            }
+            if !binding.view.isHidden && binding.view.bounds.height > 0 {
+                let progress: CGFloat
+                switch coord.sliceState(at: activeIndex) {
+                case .hidden:
+                    progress = 0.2
+                case .revealing(_, let p):
+                    progress = max(0.25, CGFloat(p))
+                case .complete:
+                    progress = 1.0
+                }
+                let localY = binding.view.bounds.height * progress
+                return binding.view.convert(CGPoint(x: 0, y: localY), to: view).y
+            }
+        }
         for textView in richTextViews.reversed() where !textView.isHidden {
             if let bottom = textView.revealedLineBottom, textView.bounds.height > 0 {
                 return textView.convert(CGPoint(x: 0, y: bottom), to: view).y
@@ -376,12 +438,122 @@ final class ChatAssistantCell: UICollectionViewCell {
     }
 
     func captureRevealHandoff() -> ChatRevealHandoff? {
+        if let coord = messageRevealCoordinator, !coord.isComplete {
+            let lastTV = richTextViews.last(where: { !$0.isHidden })
+            let fallbackHandoff = lastTV?.captureRevealHandoff()
+            return coord.makeHandoff(
+                tailText: fallbackHandoff?.tailText ?? "",
+                tailRevealedUTF16: fallbackHandoff?.remainingRevealedUTF16 ?? 0
+            )
+        }
         for tv in richTextViews.reversed() where !tv.isHidden {
             if let handoff = tv.captureRevealHandoff() {
                 return handoff
             }
         }
         return nil
+    }
+
+    private func teardownMessageReveal() {
+        ChatRevealDisplayDriver.shared.unregister(self)
+        messageRevealCoordinator = nil
+        revealOwnerID = nil
+        for binding in revealSliceBindings {
+            if let tv = binding.richTextView {
+                tv.revealAll()
+            } else {
+                binding.view.alpha = 1
+                binding.view.transform = .identity
+            }
+        }
+        revealSliceBindings.removeAll(keepingCapacity: true)
+    }
+
+    private func syncMessageRevealDriver() {
+        guard isCellRevealVisible, let coord = messageRevealCoordinator else {
+            ChatRevealDisplayDriver.shared.unregister(self)
+            return
+        }
+        let anySnippets = richTextViews.contains { !$0.isHidden && $0.hasActiveFlyingSnippets }
+        let needsTick = !coord.isComplete || coord.isFinalizing || coord.backlogPoints > 0 || anySnippets
+        if needsTick {
+            ChatRevealDisplayDriver.shared.register(self)
+        } else {
+            ChatRevealDisplayDriver.shared.unregister(self)
+        }
+    }
+
+    private func buildRevealSpecs(style: ChatListStyle) -> [MessageRevealTimeline.SliceSpec] {
+        revealSliceBindings.map { binding in
+            let weight: Int
+            if let tv = binding.richTextView {
+                weight = tv.revealSnapshotTotalPoints
+                    ?? MessageRevealTimeline.estimatedTextWeight(
+                        attributedLength: binding.attributedLength,
+                        fontSize: style.readingSize
+                    )
+            } else {
+                weight = MessageRevealTimeline.blockWeight(forHeight: binding.expectedHeight)
+            }
+            return MessageRevealTimeline.SliceSpec(id: binding.id, kind: binding.kind, weightPoints: weight)
+        }
+    }
+
+    private func applyMessageRevealVisuals(now: CFTimeInterval, style: ChatListStyle) {
+        guard let coord = messageRevealCoordinator else { return }
+        let motionEnabled = ChatRevealPolicy.currentAllowsMotionEffects(reduceMotion: style.reduceMotion)
+        for (idx, binding) in revealSliceBindings.enumerated() {
+            let state = coord.sliceState(at: idx)
+            if let tv = binding.richTextView {
+                tv.applyExternalRevealState(state, now: now)
+            } else {
+                switch state {
+                case .hidden:
+                    binding.view.alpha = 0
+                    binding.view.transform = motionEnabled ? CGAffineTransform(translationX: 0, y: 4) : .identity
+                case .revealing(_, let progress):
+                    let eased = CGFloat(1.0 - pow(1.0 - min(1.0, max(0.0, progress)), 3.0))
+                    binding.view.alpha = eased
+                    binding.view.transform = motionEnabled
+                        ? CGAffineTransform(translationX: 0, y: 4.0 * (1.0 - eased))
+                        : .identity
+                case .complete:
+                    binding.view.alpha = 1
+                    binding.view.transform = .identity
+                }
+            }
+        }
+    }
+
+    func revealDisplayTick(now: CFTimeInterval) {
+        guard isCellRevealVisible, let coord = messageRevealCoordinator, let style = currentStyle else {
+            ChatRevealDisplayDriver.shared.unregister(self)
+            return
+        }
+        // Upgrade any estimated text weights to exact CoreText totalPoints once tiles arrive.
+        let latestSpecs = buildRevealSpecs(style: style)
+        if latestSpecs != coord.timeline.intervals.map(\.spec) {
+            coord.update(
+                slices: latestSpecs,
+                isLive: isLiveStreamingOnly || (currentRow?.isFreshWriting ?? false),
+                pace: style.revealPace,
+                now: now
+            )
+        }
+        let stepResult = coord.step(now: now)
+        applyMessageRevealVisuals(now: now, style: style)
+
+        let anySnippets = richTextViews.contains { !$0.isHidden && $0.hasActiveFlyingSnippets }
+        if stepResult.isComplete && !anySnippets {
+            teardownMessageReveal()
+            callbacks.onRevealFrame(true)
+            return
+        }
+        callbacks.onRevealFrame(false)
+
+        if !coord.isFinalizing && coord.backlogPoints == 0 && !anySnippets {
+            ChatRevealDisplayDriver.shared.unregister(self)
+        }
     }
 
     func footerActionsRectInWindow() -> CGRect {
@@ -691,6 +863,7 @@ final class ChatAssistantCell: UICollectionViewCell {
 
     private func wireTextViewCallbacks(_ tv: ChatRichTextView, lineID: String) {
         tv.onRevealFrame = { [weak self] complete in self?.callbacks.onRevealFrame(complete) }
+        tv.onRequestRevealAll = { [weak self] in self?.revealAll() }
         tv.onQuoteSelection = { [weak self] excerpt in
             self?.callbacks.onQuoteExcerpt(excerpt)
         }
@@ -777,7 +950,23 @@ final class ChatAssistantCell: UICollectionViewCell {
         var pbIndex = 0
         let widthKey = Int(((entry.contentWidth + style.metrics.spacePage * 2) * 2).rounded())
         let isLive = isLiveStreamingOnly || (currentRow?.isFreshWriting ?? false)
-        let prevLiveHandoff: ChatRevealHandoff? = isLive ? captureRevealHandoff() : nil
+        let hasActiveSelection = transferredSelection != nil || !activeSelectionOwnerIDs().isEmpty
+        let totalTextLen = entry.slices.reduce(0) { acc, measured in
+            switch measured.slice {
+            case .richText(let prose): return acc + prose.attributed.length
+            case .pictures(let words, _, _): return acc + (words?.attributed.length ?? 0)
+            default: return acc
+            }
+        }
+        let continuingOwnReveal = messageRevealCoordinator != nil
+            && revealOwnerID == lineID
+            && !(messageRevealCoordinator?.isComplete ?? true)
+        let useUnifiedReveal = style.fade
+            && !style.reduceMotion
+            && !hasActiveSelection
+            && totalTextLen > 0
+            && totalTextLen <= ChatRevealPolicy.maxTailAttributedLength * 3
+            && (isLive || transferredReveal != nil || continuingOwnReveal)
 
         var totalRichTextCount = 0
         for measured in entry.slices {
@@ -801,6 +990,9 @@ final class ChatAssistantCell: UICollectionViewCell {
             return nil
         }
 
+        var nextRevealBindings: [RevealSliceBinding] = []
+        nextRevealBindings.reserveCapacity(entry.slices.count)
+
         for (slicePos, measured) in entry.slices.enumerated() {
             switch measured.slice {
             case .richText(let rendered):
@@ -808,23 +1000,24 @@ final class ChatAssistantCell: UICollectionViewCell {
                 tv.isHidden = false
                 wireTextViewCallbacks(tv, lineID: lineID)
                 let isSliceLiveTail = isLive && (rendered.liveTailIndex != nil)
-                let sliceRevealTransfer: ChatRevealHandoff?
-                if isSliceLiveTail {
-                    sliceRevealTransfer = (rtIndex == lastRichTextIndex) ? prevLiveHandoff : nil
-                } else if !isLive && rtIndex == lastRichTextIndex {
-                    sliceRevealTransfer = transferredReveal
-                } else {
-                    sliceRevealTransfer = nil
-                }
                 tv.apply(
                     ownerID: "\(lineID)#rt\(rtIndex)",
                     rendered: rendered,
                     style: style,
                     isLive: isLive,
                     isLiveTail: isSliceLiveTail,
+                    externalRevealControlled: useUnifiedReveal,
                     transferredSelection: transferTuple(for: rtIndex),
-                    transferredReveal: sliceRevealTransfer
+                    transferredReveal: nil
                 )
+                nextRevealBindings.append(RevealSliceBinding(
+                    id: "\(lineID)#rt\(rtIndex)",
+                    kind: .richText,
+                    view: tv,
+                    richTextView: tv,
+                    expectedHeight: measured.height,
+                    attributedLength: rendered.attributed.length
+                ))
                 rtIndex += 1
 
             case .code(let codeSlice, let sliceIndex):
@@ -846,15 +1039,31 @@ final class ChatAssistantCell: UICollectionViewCell {
                     self?.callbacks.onSelectionChanged(uuid, active)
                 }
                 cb.configure(slice: codeSlice, unfolded: unfoldedSlices.contains(sliceIndex), style: style)
+                nextRevealBindings.append(RevealSliceBinding(
+                    id: "\(lineID)#code\(sliceIndex)",
+                    kind: .code,
+                    view: cb,
+                    richTextView: nil,
+                    expectedHeight: measured.height,
+                    attributedLength: 0
+                ))
                 cbIndex += 1
 
-            case .table(let tableSlice, _):
+            case .table(let tableSlice, let sliceIndex):
                 let tb = ensureTableBlockView(at: tbIndex)
                 tb.isHidden = false
                 tb.onOpenURL = { [weak actions] url in
                     actions?.bridge.onOpenURL(url)
                 }
                 tb.configure(slice: tableSlice, style: style)
+                nextRevealBindings.append(RevealSliceBinding(
+                    id: "\(lineID)#table\(sliceIndex)",
+                    kind: .table,
+                    view: tb,
+                    richTextView: nil,
+                    expectedHeight: measured.height,
+                    attributedLength: 0
+                ))
                 tbIndex += 1
 
             case .math(let latex, let isLive, let sliceIndex):
@@ -870,6 +1079,14 @@ final class ChatAssistantCell: UICollectionViewCell {
                         self?.callbacks.onFormulaHeightResolved(lineID, mathKey, exactHeight)
                     }
                 )
+                nextRevealBindings.append(RevealSliceBinding(
+                    id: "\(lineID)#math\(sliceIndex)",
+                    kind: .math,
+                    view: fb,
+                    richTextView: nil,
+                    expectedHeight: measured.height,
+                    attributedLength: 0
+                ))
                 fbIndex += 1
 
             case .fileCards(let links, let sliceIndex):
@@ -887,6 +1104,14 @@ final class ChatAssistantCell: UICollectionViewCell {
                         self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
                     }
                 )
+                nextRevealBindings.append(RevealSliceBinding(
+                    id: "\(lineID)#file\(sliceIndex)",
+                    kind: .fileCards,
+                    view: fc,
+                    richTextView: nil,
+                    expectedHeight: measured.height,
+                    attributedLength: 0
+                ))
                 fcIndex += 1
 
             case .pictures(let words, let pics, let sliceIndex):
@@ -894,16 +1119,24 @@ final class ChatAssistantCell: UICollectionViewCell {
                     let tv = ensureRichTextView(at: rtIndex)
                     tv.isHidden = false
                     wireTextViewCallbacks(tv, lineID: lineID)
-                    let picRevealTransfer = (!isLive && rtIndex == lastRichTextIndex) ? transferredReveal : nil
                     tv.apply(
                         ownerID: "\(lineID)#picwords\(slicePos)",
                         rendered: words,
                         style: style,
                         isLive: isLive,
                         isLiveTail: false,
+                        externalRevealControlled: useUnifiedReveal,
                         transferredSelection: transferTuple(for: rtIndex),
-                        transferredReveal: picRevealTransfer
+                        transferredReveal: nil
                     )
+                    nextRevealBindings.append(RevealSliceBinding(
+                        id: "\(lineID)#picwords\(slicePos)",
+                        kind: .richText,
+                        view: tv,
+                        richTextView: tv,
+                        expectedHeight: measured.height,
+                        attributedLength: words.attributed.length
+                    ))
                     rtIndex += 1
                 }
                 for (picIndex, pic) in pics.enumerated() {
@@ -923,6 +1156,14 @@ final class ChatAssistantCell: UICollectionViewCell {
                             self?.callbacks.onBlockHeightChanged(lineID, heightKey, h)
                         }
                     )
+                    nextRevealBindings.append(RevealSliceBinding(
+                        id: "\(lineID)#pic\(sliceIndex)_\(picIndex)",
+                        kind: .pictures,
+                        view: pb,
+                        richTextView: nil,
+                        expectedHeight: picExpectedH,
+                        attributedLength: 0
+                    ))
                     pbIndex += 1
                 }
             }
@@ -933,24 +1174,66 @@ final class ChatAssistantCell: UICollectionViewCell {
             richTextViews[idx].resetForReuse()
         }
         for idx in cbIndex..<codeBlockViews.count {
+            codeBlockViews[idx].alpha = 1
+            codeBlockViews[idx].transform = .identity
             codeBlockViews[idx].isHidden = true
             codeBlockViews[idx].resetForReuse()
         }
         for idx in tbIndex..<tableBlockViews.count {
+            tableBlockViews[idx].alpha = 1
+            tableBlockViews[idx].transform = .identity
             tableBlockViews[idx].isHidden = true
             tableBlockViews[idx].resetForReuse()
         }
         for idx in fbIndex..<formulaBlockViews.count {
+            formulaBlockViews[idx].alpha = 1
+            formulaBlockViews[idx].transform = .identity
             formulaBlockViews[idx].isHidden = true
             formulaBlockViews[idx].resetForReuse()
         }
         for idx in fcIndex..<fileCardBlockViews.count {
+            fileCardBlockViews[idx].alpha = 1
+            fileCardBlockViews[idx].transform = .identity
             fileCardBlockViews[idx].isHidden = true
             fileCardBlockViews[idx].resetForReuse()
         }
         for idx in pbIndex..<pictureBlockViews.count {
+            pictureBlockViews[idx].alpha = 1
+            pictureBlockViews[idx].transform = .identity
             pictureBlockViews[idx].isHidden = true
             pictureBlockViews[idx].resetForReuse()
+        }
+
+        if useUnifiedReveal {
+            revealSliceBindings = nextRevealBindings
+            let specs = buildRevealSpecs(style: style)
+            let now = CACurrentMediaTime()
+            if let existing = messageRevealCoordinator, revealOwnerID == lineID {
+                existing.update(slices: specs, isLive: isLive, pace: style.revealPace, now: now)
+            } else {
+                let initialCursor: Double
+                if let handoff = transferredReveal {
+                    initialCursor = handoff.startsAtBeginning ? 0 : (handoff.globalCursorPoints ?? 0)
+                } else {
+                    initialCursor = 0
+                }
+                revealOwnerID = lineID
+                messageRevealCoordinator = MessageRevealCoordinator(
+                    slices: specs,
+                    initialCursorPoints: initialCursor,
+                    finalizeImmediately: !isLive,
+                    pace: style.revealPace,
+                    now: now
+                )
+            }
+            applyMessageRevealVisuals(now: now, style: style)
+            syncMessageRevealDriver()
+        } else {
+            teardownMessageReveal()
+            for binding in nextRevealBindings where binding.richTextView == nil {
+                binding.view.alpha = 1
+                binding.view.transform = .identity
+            }
         }
     }
 

@@ -505,7 +505,7 @@ private final class ChatTeamSliceObserver {
 
 /// SwiftUI host embedding `ChatListViewController` edge-to-edge under `header` and `bottomStack`
 /// while preserving safe-area alignment for `minimap` and automatic keyboard/dock inset tracking.
-struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
+struct ChatUIKitContainer<TopBar: View, BottomDock: View, Minimap: View>: View {
     let chat: ChatModel
     let team: TeamModel
     let bot: BotInfo
@@ -534,8 +534,11 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
     let bridge: ChatRowBridge
     let sourcesMemo: ChatPage.SourcesMemo
     let listProxy: ChatListControllerProxy
+    let focusBridge: ChatComposerFocusBridge
     let topBarSignature: String
+    let bottomDockSignature: String
     let onTopBarGeometry: (CGFloat, CGFloat) -> Void
+    let onEffectiveBottomGeometry: (ChatEffectiveOcclusionResult) -> Void
     let typing: FocusState<Bool>.Binding
     @Binding var touchScrolling: Bool
     @Binding var quote: String?
@@ -551,6 +554,7 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
     let endsTurn: (ChatLine) -> Bool
     let timeGap: (ChatLine) -> String?
     @ViewBuilder let topBar: () -> TopBar
+    @ViewBuilder let bottomDock: (FocusState<Bool>.Binding, CGFloat, CGFloat, CGFloat) -> BottomDock
     @ViewBuilder let minimap: () -> Minimap
 
     @Environment(\.colorScheme) private var colorScheme
@@ -565,6 +569,8 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
 
     @State private var fullVertical = SafeVerticalMetrics(minY: 0, maxY: 0, height: 0)
     @State private var safeVertical = SafeVerticalMetrics(minY: 0, maxY: 0, height: 0)
+    @State private var unifiedMinimapBottomPad: CGFloat?
+    @State private var bottomDockHostModel = ChatBottomDockHostModel()
     @State private var rowsMemo = ChatRowsMemo()
     @State private var photoHero: ChatPhotoHeroTarget?
     @State private var teamSlice: ChatTeamSliceObserver
@@ -598,8 +604,11 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
         bridge: ChatRowBridge,
         sourcesMemo: ChatPage.SourcesMemo,
         listProxy: ChatListControllerProxy,
+        focusBridge: ChatComposerFocusBridge,
         topBarSignature: String,
+        bottomDockSignature: String,
         onTopBarGeometry: @escaping (CGFloat, CGFloat) -> Void,
+        onEffectiveBottomGeometry: @escaping (ChatEffectiveOcclusionResult) -> Void,
         typing: FocusState<Bool>.Binding,
         touchScrolling: Binding<Bool>,
         quote: Binding<String?>,
@@ -615,6 +624,7 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
         endsTurn: @escaping (ChatLine) -> Bool,
         timeGap: @escaping (ChatLine) -> String?,
         @ViewBuilder topBar: @escaping () -> TopBar,
+        @ViewBuilder bottomDock: @escaping (FocusState<Bool>.Binding, CGFloat, CGFloat, CGFloat) -> BottomDock,
         @ViewBuilder minimap: @escaping () -> Minimap
     ) {
         self.chat = chat
@@ -645,8 +655,11 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
         self.bridge = bridge
         self.sourcesMemo = sourcesMemo
         self.listProxy = listProxy
+        self.focusBridge = focusBridge
         self.topBarSignature = topBarSignature
+        self.bottomDockSignature = bottomDockSignature
         self.onTopBarGeometry = onTopBarGeometry
+        self.onEffectiveBottomGeometry = onEffectiveBottomGeometry
         self.typing = typing
         self._touchScrolling = touchScrolling
         self._quote = quote
@@ -662,6 +675,7 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
         self.endsTurn = endsTurn
         self.timeGap = timeGap
         self.topBar = topBar
+        self.bottomDock = bottomDock
         self.minimap = minimap
         self._teamSlice = State(initialValue: ChatTeamSliceObserver(team: team, chatKey: chat.key))
     }
@@ -716,6 +730,7 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
                 state: state,
                 styleSignal: styleSignal,
                 topBarSignature: "\(topBarSignature)|\(styleSignal)",
+                bottomDockSignature: "\(bottomDockSignature)|\(styleSignal)",
                 safeTopInset: safeTopInset,
                 safeBottomInset: safeBottomInset,
                 touchScrolling: $touchScrolling,
@@ -732,8 +747,16 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
                 dictationSlot: dictationSlot,
                 idleMood: idleMood,
                 listProxy: listProxy,
+                focusBridge: focusBridge,
+                bottomDockHostModel: bottomDockHostModel,
                 typing: typing,
                 onTopBarGeometry: onTopBarGeometry,
+                onEffectiveBottomGeometry: { result in
+                    if abs((unifiedMinimapBottomPad ?? -1) - result.minimapBottomClearance) > 0.5 {
+                        unifiedMinimapBottomPad = result.minimapBottomClearance
+                    }
+                    onEffectiveBottomGeometry(result)
+                },
                 onLoadEarlier: onLoadEarlier,
                 onSelectionChanged: onSelectionChanged,
                 onSpeak: onSpeak,
@@ -743,6 +766,9 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
                 onDragStarted: onDragStarted,
                 onScrollEnded: onScrollEnded,
                 makeTopBarView: { makeTopBarAnyView() },
+                makeBottomDockView: { focusBinding, occlusion, hostHeight, topH in
+                    makeBottomDockAnyView(focusBinding: focusBinding, occlusion: occlusion, hostHeight: hostHeight, topH: topH)
+                },
                 makeEmptyView: { makeEmptyStatusAnyView() }
             )
             .ignoresSafeArea()
@@ -771,7 +797,8 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
                 }
                 .overlay(alignment: .trailing) {
                     let topPad = max(0, (headerBottomY ?? safeVertical.minY) - safeVertical.minY)
-                    let bottomPad = max(0, safeVertical.maxY - (dockTopY ?? safeVertical.maxY))
+                    let fallbackBottomPad = max(0, safeVertical.maxY - (dockTopY ?? safeVertical.maxY))
+                    let bottomPad = unifiedMinimapBottomPad ?? fallbackBottomPad
                     minimap()
                         .padding(.top, topPad)
                         .padding(.bottom, bottomPad)
@@ -802,6 +829,20 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
         )
     }
 
+    private func makeBottomDockAnyView(
+        focusBinding: FocusState<Bool>.Binding,
+        occlusion: CGFloat,
+        hostHeight: CGFloat,
+        topH: CGFloat
+    ) -> AnyView {
+        AnyView(
+            bottomDock(focusBinding, occlusion, hostHeight, topH)
+                .environment(\.openURL, openURL)
+                .environment(\.colorScheme, colorScheme)
+                .environment(\.dynamicTypeSize, dynamicTypeSize)
+        )
+    }
+
     private func makeEmptyStatusAnyView() -> AnyView {
         AnyView(
             ChatEmptyStatusView(chat: chat) {
@@ -813,7 +854,7 @@ struct ChatUIKitContainer<TopBar: View, Minimap: View>: View {
                     idleMood: idleMood,
                     starters: starters,
                     reach: reach,
-                    typing: typing,
+                    isTyping: focusBridge.isFocused,
                     onPickStarter: onPickStarter
                 )
             }
@@ -944,6 +985,7 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     let state: ChatListState
     let styleSignal: String
     let topBarSignature: String
+    let bottomDockSignature: String
     let safeTopInset: CGFloat
     let safeBottomInset: CGFloat
     @Binding var touchScrolling: Bool
@@ -960,8 +1002,11 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     let dictationSlot: ChatDictationSlot
     let idleMood: ChatIdleMood
     let listProxy: ChatListControllerProxy
+    let focusBridge: ChatComposerFocusBridge
+    let bottomDockHostModel: ChatBottomDockHostModel
     let typing: FocusState<Bool>.Binding
     let onTopBarGeometry: (CGFloat, CGFloat) -> Void
+    let onEffectiveBottomGeometry: (ChatEffectiveOcclusionResult) -> Void
     let onLoadEarlier: () -> Void
     let onSelectionChanged: (UUID, Bool) -> Void
     let onSpeak: (String) -> Void
@@ -971,10 +1016,15 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     let onDragStarted: () -> Void
     let onScrollEnded: () -> Void
     let makeTopBarView: () -> AnyView
+    let makeBottomDockView: (FocusState<Bool>.Binding, CGFloat, CGFloat, CGFloat) -> AnyView
     let makeEmptyView: () -> AnyView
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(lastStyleSignal: styleSignal, lastTopBarSignature: topBarSignature)
+        Coordinator(
+            lastStyleSignal: styleSignal,
+            lastTopBarSignature: topBarSignature,
+            lastBottomDockSignature: bottomDockSignature
+        )
     }
 
     func makeUIViewController(context: Context) -> ChatListViewController {
@@ -993,7 +1043,9 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         controller.onTopBarGeometryChanged = onTopBarGeometry
         listProxy.controller = controller
         context.coordinator.actions = actions
+        bottomDockHostModel.buildDock = makeBottomDockView
         controller.configureTopBarHost(rootView: makeTopBarView())
+        controller.configureBottomDockHost(model: bottomDockHostModel, focusBridge: focusBridge)
         controller.syncTopBarCollapseState(
             collapsed: chromeCoordinator.mode == .immersive && chromeCoordinator.isEnabled,
             animated: false
@@ -1015,10 +1067,16 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         uiViewController.makeEmptyView = makeEmptyView
         uiViewController.onTopBarGeometryChanged = onTopBarGeometry
         listProxy.controller = uiViewController
+        bottomDockHostModel.buildDock = makeBottomDockView
+        uiViewController.configureBottomDockHost(model: bottomDockHostModel, focusBridge: focusBridge)
 
         if coordinator.lastTopBarSignature != topBarSignature {
             coordinator.lastTopBarSignature = topBarSignature
             uiViewController.configureTopBarHost(rootView: makeTopBarView())
+        }
+        if coordinator.lastBottomDockSignature != bottomDockSignature {
+            coordinator.lastBottomDockSignature = bottomDockSignature
+            bottomDockHostModel.revision &+= 1
         }
         uiViewController.syncTopBarCollapseState(
             collapsed: chromeCoordinator.mode == .immersive && chromeCoordinator.isEnabled,
@@ -1070,13 +1128,14 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             onLoadEarlier()
         }
 
-        actions.onQuoteExcerpt = { [weak coordinator, typing] excerpt in
+        actions.onQuoteExcerpt = { [weak coordinator, typing, focusBridge] excerpt in
             guard let coordinator, !coordinator.isDismantled else { return }
             Haptics.tick(0.5)
             withAnimation(Ink.Motion.settle) {
                 quote = excerpt
             }
             typing.wrappedValue = true
+            focusBridge.requestFocus(true)
         }
 
         actions.onSpeakExcerpt = { [weak coordinator] excerpt in
@@ -1199,6 +1258,16 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
             chromeCoordinator.syncLocks(keyboardOpen: isOpen)
         }
 
+        actions.onKeyboardTransitionChanged = { [weak coordinator] transitioning in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            chromeCoordinator.syncLocks(keyboardTransitioning: transitioning)
+        }
+
+        actions.onEffectiveBottomGeometryChanged = { [weak coordinator] result in
+            guard let coordinator, !coordinator.isDismantled else { return }
+            onEffectiveBottomGeometry(result)
+        }
+
         actions.onProgrammaticScroll = { [weak coordinator] in
             guard let coordinator, !coordinator.isDismantled else { return }
             chromeCoordinator.markProgrammaticScroll()
@@ -1257,6 +1326,7 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
     final class Coordinator {
         var lastStyleSignal: String
         var lastTopBarSignature: String
+        var lastBottomDockSignature: String
         var actions: ChatListActions?
         var ownedSelectionIDs: Set<UUID> = []
         var isDismantled = false
@@ -1264,9 +1334,10 @@ private struct ChatListUIKitRepresentable: UIViewControllerRepresentable {
         weak var petPerch: PetPerch?
         weak var listProxy: ChatListControllerProxy?
 
-        init(lastStyleSignal: String, lastTopBarSignature: String) {
+        init(lastStyleSignal: String, lastTopBarSignature: String, lastBottomDockSignature: String) {
             self.lastStyleSignal = lastStyleSignal
             self.lastTopBarSignature = lastTopBarSignature
+            self.lastBottomDockSignature = lastBottomDockSignature
         }
     }
 }

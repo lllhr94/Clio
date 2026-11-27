@@ -172,15 +172,7 @@ struct PreparsedInline: Equatable, Sendable {
     }
 }
 
-enum CodeTokenKind: UInt8, Equatable, Sendable {
-    case plain, keyword, function, number, string, comment
-}
-
-struct PreparsedCodeSegment: Equatable, Sendable {
-    let text: String
-    let kind: CodeTokenKind
-    let isWide: Bool
-}
+typealias PreparsedCodeSegment = CodeTokenSegment
 
 struct PreparsedCodeModel: Equatable, Sendable {
     let isOutput: Bool
@@ -531,51 +523,26 @@ enum ProsePrebuiltCache {
     }
 }
 
-/// Pure-Swift off-MainActor syntax tokenizer (shared by background prewarming and MainActor `Highlight`).
+/// App-layer cache adapter delegating pure lexical scanning to SwiftPM `Prose.IncrementalCodeTokenizer`.
 enum CodeTokenizer {
-    private static let keywords: Set<String> = [
-        "func", "let", "var", "if", "else", "for", "while", "return", "import", "struct", "class", "enum", "case", "switch",
-        "def", "from", "as", "in", "not", "and", "or", "is", "None", "True", "False", "lambda", "with", "try", "except",
-        "const", "function", "async", "await", "new", "this", "self", "true", "false", "null", "nil", "export", "default",
-        "public", "private", "static", "void", "int", "string", "bool", "fn", "pub", "mut", "impl", "use", "match",
-    ]
-    private static let outputLanguages: Set<String> = [
-        "text", "txt", "output", "console", "log", "plaintext", "plain", "stdout", "shell-session",
-    ]
-    private static let codeMarks = [
-        "{", "}", ";", " = ", "=>", "->", "def ", "func ", "function ", "import ", "return ", "const ", "let ", "class ",
-    ]
-
     nonisolated static func trimmedLines(_ text: String) -> String {
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        while let first = lines.first, first.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeFirst() }
-        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
-        return lines.joined(separator: "\n")
+        IncrementalCodeTokenizer.trimmedLines(text)
     }
 
     nonisolated static func lineCount(_ text: String) -> Int {
-        text.utf8.reduce(1) { $0 + ($1 == 10 ? 1 : 0) }
+        IncrementalCodeTokenizer.lineCount(text)
     }
 
     nonisolated static func isOutputBlock(language: String, text: String) -> Bool {
-        if outputLanguages.contains(language.lowercased()) { return true }
-        guard language.isEmpty else { return false }
-        return !codeMarks.contains { text.contains($0) }
+        IncrementalCodeTokenizer.isOutputBlock(language: language, text: text)
     }
 
     nonisolated static func wide(_ character: Character) -> Bool {
-        guard let scalar = character.unicodeScalars.first else { return false }
-        switch scalar.value {
-        case 0x00B7, 0x2014, 0x2018...0x2019, 0x201C...0x201D, 0x2026, 0x1100...0x11FF, 0x2E80...0xA4CF, 0xAC00...0xD7FF, 0xF900...0xFAFF,
-             0xFE10...0xFE1F, 0xFE30...0xFE6F, 0xFF01...0xFF60, 0xFFE0...0xFFE6, 0x20000...0x323AF:
-            return true
-        default:
-            return false
-        }
+        IncrementalCodeTokenizer.isWide(character)
     }
 
     nonisolated static func prepare(_ shown: String, language: String, isOutput: Bool) -> PreparsedCodeModel {
-        let lowerLang = language.lowercased()
+        let lowerLang = IncrementalCodeTokenizer.canonicalLanguage(language)
         if let hit = ProsePrebuiltCache.codeModel(text: shown, language: lowerLang, isOutput: isOutput) {
             return hit
         }
@@ -593,83 +560,8 @@ enum CodeTokenizer {
     }
 
     nonisolated static func tokenize(_ text: String, language: String, isOutput: Bool) -> (segments: [PreparsedCodeSegment], hasWide: Bool) {
-        var segments: [PreparsedCodeSegment] = []
-        var anyWide = false
-
-        func appendSpan(_ slice: Substring, kind: CodeTokenKind) {
-            guard let first = slice.first else { return }
-            var currentWide = wide(first)
-            if currentWide { anyWide = true }
-            var start = slice.startIndex
-            func flush(upTo end: String.Index) {
-                guard start < end else { return }
-                let piece = String(slice[start..<end])
-                if let last = segments.last, last.kind == kind, last.isWide == currentWide {
-                    segments[segments.count - 1] = PreparsedCodeSegment(text: last.text + piece, kind: kind, isWide: currentWide)
-                } else {
-                    segments.append(PreparsedCodeSegment(text: piece, kind: kind, isWide: currentWide))
-                }
-            }
-            for idx in slice.indices.dropFirst() {
-                let nextWide = wide(slice[idx])
-                if nextWide { anyWide = true }
-                if nextWide != currentWide {
-                    flush(upTo: idx)
-                    start = idx
-                    currentWide = nextWide
-                }
-            }
-            flush(upTo: slice.endIndex)
-        }
-
-        if isOutput {
-            appendSpan(text[...], kind: .plain)
-            return (segments, anyWide)
-        }
-
-        let lowerLang = language.lowercased()
-        let hashComments = ["python", "py", "bash", "sh", "shell", "zsh", "ruby", "rb", "yaml", "yml", "toml"].contains(lowerLang)
-        var index = text.startIndex
-        var start = index
-        var kind: CodeTokenKind = .plain
-
-        while index < text.endIndex {
-            let rest = text[index...]
-            let character = text[index]
-            let next: CodeTokenKind
-            var end: String.Index
-            if rest.hasPrefix("//") || (hashComments && character == "#") {
-                end = rest.firstIndex(of: "\n") ?? text.endIndex
-                next = .comment
-            } else if character == "\"" || character == "'" || character == "`" {
-                end = text.index(after: index)
-                while end < text.endIndex, text[end] != character, text[end] != "\n" {
-                    if text[end] == "\\" { end = text.index(after: end) }
-                    if end < text.endIndex { end = text.index(after: end) }
-                }
-                if end < text.endIndex, text[end] == character { end = text.index(after: end) }
-                next = .string
-            } else if character.isLetter || character == "_" {
-                end = rest.firstIndex { !($0.isLetter || $0.isNumber || $0 == "_") } ?? text.endIndex
-                let word = text[index..<end]
-                let calls = end < text.endIndex && text[end] == "("
-                next = keywords.contains(String(word)) ? .keyword : (calls ? .function : .plain)
-            } else if character.isNumber {
-                end = rest.firstIndex { !($0.isNumber || $0 == ".") } ?? text.endIndex
-                next = .number
-            } else {
-                end = text.index(after: index)
-                next = .plain
-            }
-            if next != kind {
-                if start < index { appendSpan(text[start..<index], kind: kind) }
-                start = index
-                kind = next
-            }
-            index = end
-        }
-        if start < text.endIndex { appendSpan(text[start..<text.endIndex], kind: kind) }
-        return (segments, anyWide)
+        let result = IncrementalCodeTokenizer.tokenize(text, language: language, isOutput: isOutput)
+        return (result.segments, result.hasWide)
     }
 }
 

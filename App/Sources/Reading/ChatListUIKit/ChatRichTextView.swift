@@ -23,8 +23,17 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     var onSelectionActiveChanged: ((UUID, Bool) -> Void)?
     var onLinkTapped: ((URL) -> Void)?
     var onRevealFrame: ((Bool) -> Void)?
+    var onRequestRevealAll: (() -> Void)?
 
     var hasPaintedLiveTail: Bool { currentIsLiveTail && appliedRenderToken != 0 }
+
+    var revealSnapshotTotalPoints: Int? {
+        appliedRevealSnapshot?.totalPoints
+    }
+
+    var hasActiveFlyingSnippets: Bool {
+        revealMaskCoordinator.snippetHost.activeCount > 0
+    }
 
     /// Local bottom of the line currently being revealed, or the first line while tiles are being prepared.
     var revealedLineBottom: CGFloat? {
@@ -34,7 +43,27 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
               ) else { return nil }
 
         let bottom: CGFloat
-        if let session = revealSession {
+        if isExternallyRevealControlled {
+            switch externalRevealState {
+            case .hidden:
+                bottom = appliedRevealSnapshot?.lines.first?.bandBottom ?? (currentRendered.topInset + style.fonts.reading.regular.lineHeight)
+            case .revealing(let localPoints, let progress):
+                if let snap = appliedRevealSnapshot {
+                    switch snap.maskState(forPoints: localPoints) {
+                    case .hidden:
+                        bottom = snap.lines.first?.bandBottom ?? bounds.height
+                    case .partial(_, let top, let height, _, _, _):
+                        bottom = top + height
+                    case .complete:
+                        bottom = snap.layoutSize.height
+                    }
+                } else {
+                    bottom = max(currentRendered.topInset + style.fonts.reading.regular.lineHeight, bounds.height * CGFloat(progress))
+                }
+            case .complete:
+                bottom = appliedRevealSnapshot?.layoutSize.height ?? bounds.height
+            }
+        } else if let session = revealSession {
             switch session.currentMaskState() {
             case .hidden:
                 bottom = session.snapshot.lines.first?.bandBottom ?? bounds.height
@@ -126,6 +155,11 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     private var appliedRevealSnapshot: ChatRevealLayoutSnapshot?
     private var appliedRenderToken: UInt64 = 0
     private var isRevealVisible = true
+    private var isExternallyRevealControlled = false
+    private var externalRevealState: MessageRevealTimeline.SliceRevealState = .complete
+    private var lastExternalLocalPoints: Double = 0
+    private var hasAppliedExternalRevealBaseline = false
+    private var lastAppliedBoundsWidth: CGFloat = 0
 
     private var paintedWidth: CGFloat = -1
     private var paintedToken: UInt64 = 0
@@ -209,6 +243,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             UITraitPreferredContentSizeCategory.self,
             UITraitDisplayScale.self,
         ]) { (view: ChatRichTextView, _) in
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            view.revealMaskCoordinator.clearFlyingSnippets()
+            CATransaction.commit()
             view.drawGeneration &+= 1
             view.activeRenderKey = ""
             view.appliedRenderKey = ""
@@ -238,6 +276,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         style: ChatListStyle,
         isLive: Bool = false,
         isLiveTail: Bool = false,
+        externalRevealControlled: Bool = false,
         transferredSelection: (range: NSRange, substring: String)? = nil,
         transferredReveal: ChatRevealHandoff? = nil
     ) {
@@ -245,8 +284,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         let sameToken = sameOwner
             && rendered.renderToken == lastRenderToken
             && style.styleKey == lastStyleKey
+            && style.revealPace == currentStyle?.revealPace
             && isLive == lastIsLive
             && isLiveTail == lastIsLiveTail
+            && externalRevealControlled == isExternallyRevealControlled
         if sameToken && transferredSelection == nil && transferredReveal == nil { return }
 
         let wasLive = lastIsLive
@@ -290,13 +331,19 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
         let keepLiveTailGeneration = sameOwner
             && style.styleKey == lastStyleKey
-            && isLiveTail
-            && lastIsLiveTail
+            && (isLiveTail || externalRevealControlled)
+            && (lastIsLiveTail || isExternallyRevealControlled)
             && eligibleReveal
             && restoredRange == nil
             && selectionTextView == nil
         if !keepLiveTailGeneration {
             drawGeneration &+= 1
+        }
+        if style.styleKey != lastStyleKey {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            revealMaskCoordinator.clearFlyingSnippets()
+            CATransaction.commit()
         }
 
         currentOwnerID = ownerID
@@ -304,6 +351,12 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         currentStyle = style
         currentIsLive = isLive
         currentIsLiveTail = isLiveTail
+        isExternallyRevealControlled = externalRevealControlled && eligibleReveal && restoredRange == nil && !(selectionTextView != nil && oldRange.length > 0)
+        if !sameOwner {
+            lastExternalLocalPoints = 0
+            hasAppliedExternalRevealBaseline = false
+            externalRevealState = isExternallyRevealControlled ? .hidden : .complete
+        }
         lastRenderToken = rendered.renderToken
         lastStyleKey = style.styleKey
         lastIsLive = isLive
@@ -352,6 +405,15 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 activeRenderKey = ""
                 appliedRenderKey = ""
                 inFlightRenderKey = ""
+            }
+        } else if isExternallyRevealControlled {
+            // Driven by MessageRevealCoordinator across sealed paragraphs + live tail + blocks.
+            isAwaitingFinalizedTiles = false
+            pendingRevealHandoff = nil
+            revealSession = nil
+            ChatRevealDisplayDriver.shared.unregister(self)
+            if selectionTextView != nil {
+                teardownSelectionTextView(notifyIfNeeded: oldRange.length > 0, triggerLayout: false)
             }
         } else if isLiveTail {
             // CoreText tile reveal owns the active tail instead of mounting TextKit 2 selection text view.
@@ -455,6 +517,108 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         revealSession?.makeHandoff(sealedPrefixUTF16: sealedPrefixUTF16)
     }
 
+    /// Immediately clears all reveal masks and flying glyph snippets (e.g. on long-press selection or tap-to-finish).
+    func revealAll() {
+        isExternallyRevealControlled = false
+        externalRevealState = .complete
+        lastExternalLocalPoints = 0
+        hasAppliedExternalRevealBaseline = false
+        teardownReveal()
+    }
+
+    /// Applies unified cross-block message reveal progress from `MessageRevealCoordinator`.
+    func applyExternalRevealState(_ state: MessageRevealTimeline.SliceRevealState, now: CFTimeInterval) {
+        guard isExternallyRevealControlled, selectionTextView == nil else { return }
+        externalRevealState = state
+        guard bounds.width > 0, bounds.height > 0, let style = currentStyle else { return }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        applyExternalRevealMaskInsideTransaction(style: style, now: now)
+        CATransaction.commit()
+    }
+
+    private func applyExternalRevealMaskInsideTransaction(style: ChatListStyle, now: CFTimeInterval) {
+        switch externalRevealState {
+        case .hidden:
+            lastExternalLocalPoints = 0
+            hasAppliedExternalRevealBaseline = true
+            revealMaskCoordinator.clearFlyingSnippets()
+            revealMaskCoordinator.lockMaskBeforeTileContents(
+                maskState: .hidden,
+                bounds: bounds,
+                tileRoot: tileRoot,
+                overlayHost: layer
+            )
+
+        case .revealing(let localPoints, _):
+            guard let snap = appliedRevealSnapshot else {
+                revealMaskCoordinator.lockMaskBeforeTileContents(
+                    maskState: .hidden,
+                    bounds: bounds,
+                    tileRoot: tileRoot,
+                    overlayHost: layer
+                )
+                return
+            }
+            let clampedLocal = min(Double(snap.totalPoints), max(0, localPoints))
+            let newlyRevealed: [(lineHasRTL: Bool, units: [ChatRevealAtomicUnit])]
+            if !hasAppliedExternalRevealBaseline {
+                // First sample after a live->settled handoff seeds the baseline without re-spawning
+                // flying snippets for glyphs that were already visible prior to handoff.
+                hasAppliedExternalRevealBaseline = true
+                lastExternalLocalPoints = clampedLocal
+                newlyRevealed = []
+            } else {
+                let prev = min(lastExternalLocalPoints, clampedLocal)
+                newlyRevealed = snap.unitsNewlyRevealed(from: prev, to: clampedLocal)
+                lastExternalLocalPoints = max(lastExternalLocalPoints, clampedLocal)
+            }
+            let motionEnabled = ChatRevealPolicy.currentAllowsMotionEffects(reduceMotion: style.reduceMotion)
+            let allowsSnippets = ChatRevealPolicy.allowsSnippets(
+                fade: style.fade,
+                reduceMotion: style.reduceMotion,
+                attributedLength: currentRendered.attributed.length,
+                tileCount: max(1, activeTileCount)
+            )
+            revealMaskCoordinator.apply(
+                snapshot: snap,
+                cursorPoints: clampedLocal,
+                newlyRevealed: newlyRevealed,
+                bounds: bounds,
+                allowsSnippets: allowsSnippets,
+                motionEnabled: motionEnabled,
+                now: now,
+                tileRoot: tileRoot,
+                overlayHost: layer
+            )
+
+        case .complete:
+            if let snap = appliedRevealSnapshot, revealMaskCoordinator.snippetHost.activeCount > 0 {
+                let total = Double(snap.totalPoints)
+                let newlyRevealed = snap.unitsNewlyRevealed(from: lastExternalLocalPoints, to: total)
+                lastExternalLocalPoints = total
+                let motionEnabled = ChatRevealPolicy.currentAllowsMotionEffects(reduceMotion: style.reduceMotion)
+                revealMaskCoordinator.apply(
+                    snapshot: snap,
+                    cursorPoints: total,
+                    newlyRevealed: newlyRevealed,
+                    bounds: bounds,
+                    allowsSnippets: false,
+                    motionEnabled: motionEnabled,
+                    now: now,
+                    tileRoot: tileRoot,
+                    overlayHost: layer
+                )
+                if revealMaskCoordinator.snippetHost.activeCount == 0 {
+                    revealMaskCoordinator.detach(from: tileRoot)
+                }
+            } else {
+                revealMaskCoordinator.detach(from: tileRoot)
+            }
+        }
+    }
+
     func resetForReuse() {
         drawGeneration &+= 1
         isAwaitingFinalizedTiles = false
@@ -463,6 +627,11 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         currentStyle = nil
         currentIsLive = false
         currentIsLiveTail = false
+        isExternallyRevealControlled = false
+        externalRevealState = .complete
+        lastExternalLocalPoints = 0
+        hasAppliedExternalRevealBaseline = false
+        lastAppliedBoundsWidth = 0
         lastRenderToken = 0
         lastStyleKey = ""
         lastIsLive = false
@@ -482,6 +651,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         onSelectionActiveChanged = nil
         onLinkTapped = nil
         onRevealFrame = nil
+        onRequestRevealAll = nil
         updateGestureStates()
         updateAccessibility()
     }
@@ -529,6 +699,14 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             return
         }
 
+        if lastAppliedBoundsWidth > 0 && abs(bounds.width - lastAppliedBoundsWidth) > 0.5 {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            revealMaskCoordinator.clearFlyingSnippets()
+            CATransaction.commit()
+        }
+        lastAppliedBoundsWidth = bounds.width
+
         let scale = Self.resolveDisplayScale(for: traitCollection, window: window)
         let renderKey = ChatTextTileRenderer.cacheKey(
             token: currentRendered.renderToken,
@@ -538,22 +716,27 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             scale: scale
         )
 
-        let wantsRevealTiles = (currentIsLiveTail && ChatRevealPolicy.isEligible(
-            fade: style.fade,
-            reduceMotion: style.reduceMotion,
-            attributedLength: currentRendered.attributed.length
-        )) || revealSession != nil || pendingRevealHandoff != nil
+        let wantsRevealTiles = isExternallyRevealControlled
+            || (currentIsLiveTail && ChatRevealPolicy.isEligible(
+                fade: style.fade,
+                reduceMotion: style.reduceMotion,
+                attributedLength: currentRendered.attributed.length
+            ))
+            || revealSession != nil
+            || pendingRevealHandoff != nil
 
         if appliedRenderKey == renderKey && !isAwaitingFinalizedTiles {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             tileRoot.isHidden = false
             tileRoot.frame = bounds
-            if wantsRevealTiles {
+            if isExternallyRevealControlled {
+                applyExternalRevealMaskInsideTransaction(style: style, now: CACurrentMediaTime())
+            } else if wantsRevealTiles {
                 syncRevealSessionAndMaskAfterTiles(style: style, tileCount: max(1, activeTileCount))
             }
             CATransaction.commit()
-            if wantsRevealTiles {
+            if wantsRevealTiles && !isExternallyRevealControlled {
                 syncRevealDisplayDriver()
             }
             return
@@ -658,6 +841,51 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         tileRoot.isHidden = false
         tileRoot.frame = bounds
 
+        // Anti-flash redline: lock revealMask BEFORE assigning any tileLayer.contents.
+        if let style = currentStyle {
+            let eligible = ChatRevealPolicy.isEligible(
+                fade: style.fade,
+                reduceMotion: style.reduceMotion,
+                attributedLength: currentRendered.attributed.length
+            )
+            let preLockNeeded = eligible && (isExternallyRevealControlled || currentIsLiveTail || revealSession != nil || pendingRevealHandoff != nil)
+            if preLockNeeded {
+                let preLockState: ChatRevealLayoutSnapshot.MaskState
+                if isExternallyRevealControlled {
+                    switch externalRevealState {
+                    case .hidden:
+                        preLockState = .hidden
+                    case .revealing(let localPoints, _):
+                        if let snap = rendered.revealSnapshot {
+                            let clamped = ChatRevealSnippetPlanner.clampedStaticMaskPoints(
+                                cursorPoints: localPoints,
+                                lowestAnimatingStartPoints: revealMaskCoordinator.snippetHost.lowestAnimatingStartPoints
+                            )
+                            preLockState = snap.maskState(forPoints: clamped)
+                        } else {
+                            preLockState = .hidden
+                        }
+                    case .complete:
+                        preLockState = .complete
+                    }
+                } else if let session = revealSession {
+                    let clamped = ChatRevealSnippetPlanner.clampedStaticMaskPoints(
+                        cursorPoints: session.currentPoints,
+                        lowestAnimatingStartPoints: revealMaskCoordinator.snippetHost.lowestAnimatingStartPoints
+                    )
+                    preLockState = (rendered.revealSnapshot ?? session.snapshot).maskState(forPoints: clamped)
+                } else {
+                    preLockState = .hidden
+                }
+                revealMaskCoordinator.lockMaskBeforeTileContents(
+                    maskState: preLockState,
+                    bounds: bounds,
+                    tileRoot: tileRoot,
+                    overlayHost: layer
+                )
+            }
+        }
+
         while tileLayers.count < rendered.tiles.count {
             let tileLayer = CALayer()
             tileLayer.contentsGravity = .topLeft
@@ -680,8 +908,14 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             }
         }
 
+        revealMaskCoordinator.updateTiles(rendered, scale: scale)
+
         if let style = currentStyle {
-            syncRevealSessionAndMaskAfterTiles(style: style, tileCount: rendered.tiles.count)
+            if isExternallyRevealControlled {
+                applyExternalRevealMaskInsideTransaction(style: style, now: CACurrentMediaTime())
+            } else {
+                syncRevealSessionAndMaskAfterTiles(style: style, tileCount: rendered.tiles.count)
+            }
         }
 
         if selectionTextView != nil {
@@ -690,7 +924,9 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         CATransaction.commit()
         appliedRenderKey = key
         inFlightRenderKey = ""
-        syncRevealDisplayDriver()
+        if !isExternallyRevealControlled {
+            syncRevealDisplayDriver()
+        }
         updateAccessibility()
     }
 
@@ -737,7 +973,6 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         } else {
             return
         }
-        revealMaskCoordinator.updateTheme(traitCollection: traitCollection)
         let now = CACurrentMediaTime()
 
         if let handoff = pendingRevealHandoff {
@@ -747,6 +982,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                     snapshot: snap,
                     initialRevealedUTF16: initialUTF16,
                     finalizeImmediately: !currentIsLiveTail,
+                    pace: style.revealPace,
                     now: now
                 )
             } else {
@@ -757,7 +993,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             if session.snapshot.sourceRenderToken != snap.sourceRenderToken
                 || abs(session.snapshot.layoutSize.width - snap.layoutSize.width) > 0.5
                 || abs(session.snapshot.layoutSize.height - snap.layoutSize.height) > 0.5 {
-                session.update(snapshot: snap, isLive: currentIsLiveTail, now: now)
+                session.update(snapshot: snap, isLive: currentIsLiveTail, pace: style.revealPace, now: now)
             } else if !currentIsLiveTail && !session.isFinalizing {
                 session.markFinalizing(now: now)
             }
@@ -766,6 +1002,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 snapshot: snap,
                 initialRevealedUTF16: 0,
                 finalizeImmediately: false,
+                pace: style.revealPace,
                 now: now
             )
         } else {
@@ -773,40 +1010,43 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             return
         }
 
-        guard let session = revealSession, !session.isComplete else {
+        guard let session = revealSession, !session.isComplete || revealMaskCoordinator.snippetHost.activeCount > 0 else {
             detachRevealStateAndMask()
             return
         }
 
-        let maskState = session.currentMaskState()
+        let motionEnabled = ChatRevealPolicy.currentAllowsMotionEffects(reduceMotion: style.reduceMotion)
         let allowsSnippets = ChatRevealPolicy.allowsSnippets(
             fade: style.fade,
             reduceMotion: style.reduceMotion,
             attributedLength: currentRendered.attributed.length,
-            tileCount: tileCount,
-            backlogPoints: session.backlogPoints
+            tileCount: tileCount
         )
         revealMaskCoordinator.apply(
-            maskState: maskState,
+            snapshot: session.snapshot,
+            cursorPoints: session.currentPoints,
+            newlyRevealed: [],
             bounds: bounds,
             allowsSnippets: allowsSnippets,
+            motionEnabled: motionEnabled,
             now: now,
             tileRoot: tileRoot,
-            snippetHost: layer
+            overlayHost: layer
         )
     }
 
     private func syncRevealDisplayDriver() {
-        guard isRevealVisible,
+        guard !isExternallyRevealControlled,
+              isRevealVisible,
               let session = revealSession,
-              !session.isComplete else {
+              (!session.isComplete || revealMaskCoordinator.snippetHost.activeCount > 0) else {
             ChatRevealDisplayDriver.shared.unregister(self)
             return
         }
         let needsActiveTick = session.isFinalizing
             || session.backlogPoints > 0
             || session.currentMaskState() != .complete
-            || !revealMaskCoordinator.snippetLayer.isHidden
+            || revealMaskCoordinator.snippetHost.activeCount > 0
         if needsActiveTick {
             ChatRevealDisplayDriver.shared.register(self)
         } else {
@@ -829,7 +1069,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     }
 
     func revealDisplayTick(now: CFTimeInterval) {
-        guard isRevealVisible, let session = revealSession else {
+        guard !isExternallyRevealControlled, isRevealVisible, let session = revealSession else {
             ChatRevealDisplayDriver.shared.unregister(self)
             return
         }
@@ -838,35 +1078,44 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             return
         }
         let stepResult = session.step(now: now)
-        if stepResult.isComplete {
-            teardownReveal()
-            onRevealFrame?(true)
-            return
-        }
+        let newlyRevealed = session.snapshot.unitsNewlyRevealed(
+            from: stepResult.prevPoints,
+            to: stepResult.nextPoints
+        )
+        let motionEnabled = ChatRevealPolicy.currentAllowsMotionEffects(reduceMotion: style.reduceMotion)
         let allowsSnippets = ChatRevealPolicy.allowsSnippets(
             fade: style.fade,
             reduceMotion: style.reduceMotion,
             attributedLength: currentRendered.attributed.length,
-            tileCount: max(1, activeTileCount),
-            backlogPoints: stepResult.backlogPoints
+            tileCount: max(1, activeTileCount)
         )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         revealMaskCoordinator.apply(
-            maskState: stepResult.maskState,
+            snapshot: session.snapshot,
+            cursorPoints: stepResult.nextPoints,
+            newlyRevealed: newlyRevealed,
             bounds: bounds,
             allowsSnippets: allowsSnippets,
+            motionEnabled: motionEnabled,
             now: now,
             tileRoot: tileRoot,
-            snippetHost: layer
+            overlayHost: layer
         )
         CATransaction.commit()
+
+        let finished = stepResult.isComplete && revealMaskCoordinator.snippetHost.activeCount == 0
+        if finished {
+            teardownReveal()
+            onRevealFrame?(true)
+            return
+        }
         onRevealFrame?(false)
 
         if !session.isFinalizing
             && stepResult.backlogPoints == 0
             && stepResult.maskState == .complete
-            && revealMaskCoordinator.snippetLayer.isHidden {
+            && revealMaskCoordinator.snippetHost.activeCount == 0 {
             ChatRevealDisplayDriver.shared.unregister(self)
         }
     }
@@ -981,7 +1230,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     }
 
     private func activateSelection(at point: CGPoint) {
-        teardownReveal()
+        onRequestRevealAll?()
+        revealAll()
         isActivatingSelection = true
         defer { isActivatingSelection = false }
         guard let tv = prepareSelectionTextView() else { return }
@@ -1017,7 +1267,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     @discardableResult
     func activateSelectionAll() -> Bool {
         guard hasSelectableText else { return false }
-        teardownReveal()
+        onRequestRevealAll?()
+        revealAll()
         isActivatingSelection = true
         defer { isActivatingSelection = false }
         guard let tv = prepareSelectionTextView() else { return false }

@@ -79,9 +79,9 @@ extension ChatPage {
             largeText: largeText,
             textScale: textScale,
             historyInView: historyPage != nil,
-            isTyping: typing,
+            isTyping: isComposerFocused,
             reportsHeaderHeight: reportsHeight,
-            onDismissTyping: { typing = false },
+            onDismissTyping: { setComposerFocused(false) },
             onIntrinsicHeightChanged: reportsHeight ? nil : { height in
                 listProxy.controller?.updateHostedTopBarHeight(height)
             },

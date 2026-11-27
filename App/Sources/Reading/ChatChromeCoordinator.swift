@@ -19,6 +19,7 @@ final class ChatChromeCoordinator {
     var visualProgress: CGFloat { isEnabled ? collapseProgress : 0 }
 
     @ObservationIgnored var isKeyboardOpen = false
+    @ObservationIgnored var isKeyboardTransitioning = false
     @ObservationIgnored var isComposerFocused = false
     @ObservationIgnored var hasActiveSelection = false
     @ObservationIgnored var isDictating = false
@@ -86,6 +87,7 @@ final class ChatChromeCoordinator {
 
     var isLockedToFull: Bool {
         isKeyboardOpen
+            || isKeyboardTransitioning
             || isComposerFocused
             || hasActiveSelection
             || isDictating
@@ -132,6 +134,7 @@ final class ChatChromeCoordinator {
 
     func syncLocks(
         keyboardOpen: Bool? = nil,
+        keyboardTransitioning: Bool? = nil,
         composerFocused: Bool? = nil,
         activeSelection: Bool? = nil,
         dictating: Bool? = nil,
@@ -142,6 +145,7 @@ final class ChatChromeCoordinator {
         finding: Bool? = nil
     ) {
         if let keyboardOpen { isKeyboardOpen = keyboardOpen }
+        if let keyboardTransitioning { isKeyboardTransitioning = keyboardTransitioning }
         if let composerFocused { isComposerFocused = composerFocused }
         if let activeSelection { hasActiveSelection = activeSelection }
         if let dictating { isDictating = dictating }
@@ -265,6 +269,7 @@ final class ChatChromeCoordinator {
 
     func resetForChatSwitch() {
         isKeyboardOpen = false
+        isKeyboardTransitioning = false
         isComposerFocused = false
         hasActiveSelection = false
         isDictating = false

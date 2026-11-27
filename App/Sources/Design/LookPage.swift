@@ -587,6 +587,7 @@ struct ChatDisplayPage: View {
     @AppStorage("look.haptics") private var haptics = true
     @AppStorage("look.hapticIntensity") private var hapticIntensityRaw = Pref.HapticIntensity.standard.rawValue
     @AppStorage("look.fade") private var fade = true
+    @AppStorage(Pref.revealPaceKey) private var revealPaceRaw = Pref.RevealPace.balanced.rawValue
     @AppStorage("look.immersiveChrome") private var immersiveChrome = false
     @AppStorage("look.stats") private var stats = true
     @AppStorage("look.traceOpen") private var traceOpen = false
@@ -647,6 +648,21 @@ struct ChatDisplayPage: View {
         }
     }
 
+    private var revealPaceBinding: Binding<Pref.RevealPace> {
+        Binding(
+            get: { Pref.RevealPace(rawValue: revealPaceRaw) ?? .balanced },
+            set: { revealPaceRaw = $0.rawValue }
+        )
+    }
+
+    private static func revealPaceTitle(_ pace: Pref.RevealPace) -> String {
+        switch pace {
+        case .gentle: return L.t("settings.revealPaceGentle")
+        case .balanced: return L.t("settings.revealPaceBalanced")
+        case .fast: return L.t("settings.revealPaceFast")
+        }
+    }
+
     private var voiceSummary: String {
         let mode = VoiceTranscription.Mode(rawValue: voiceModeRaw) ?? .system
         if mode == .cloud {
@@ -665,6 +681,16 @@ struct ChatDisplayPage: View {
                 Toggle(L.t("settings.expandSteps"), isOn: $traceOpen)
                 Toggle(L.t("settings.preReplyThought"), isOn: $pulseOn)
                 Toggle(L.t("settings.fadeReply"), isOn: $fade)
+                if fade {
+                    StopRow(
+                        title: L.t("settings.revealPace"),
+                        value: revealPaceBinding,
+                        stops: Pref.RevealPace.allCases.map {
+                            Stop(value: $0, name: Self.revealPaceTitle($0))
+                        },
+                        defaultValue: .balanced
+                    )
+                }
                 Toggle(L.t("settings.immersiveChrome"), isOn: $immersiveChrome)
                 hapticModeRow
                 if hapticMode != .off {
@@ -721,6 +747,7 @@ struct ChatDisplayPage: View {
         Theme.shared.setReduceVisualEffects(false)
         hapticIntensityRaw = Pref.HapticIntensity.standard.rawValue
         fade = true
+        revealPaceRaw = Pref.RevealPace.balanced.rawValue
         immersiveChrome = false
         stats = true
         traceOpen = false
