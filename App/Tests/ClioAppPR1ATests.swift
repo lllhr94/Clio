@@ -102,6 +102,7 @@ final class ClioAppPR1ATests: XCTestCase {
             MemoryRecord(id: "m-stale-resurrection", text: "崩溃窗口里残留的旧SQLite行", createdAtMs: 9_000),
             explicitUserAction: true
         )
+        directSQLite.close()
         let bootstrap = bridge.bootstrapOnLaunch()
         XCTAssertEqual(bootstrap.book.memories.map(\.id), ["m1"])
         XCTAssertFalse(bridge.revisionStore.hasPendingProjectionRebuild)
