@@ -6,12 +6,40 @@ import SwiftUI
 /// the companion reads the whole page with `use_skill` when a task matches.
 enum SkillShelf {
     struct Item: Identifiable, Equatable, Sendable {
-        /// The path in 书案.
+        /// The path in 书案, or `builtin/<name>` for built-in on-demand skills.
         var id: String
         var skill: Skill
         var on: Bool
         var file: URL
+        var isBuiltIn: Bool = false
     }
+
+    private static let builtInTemplates: [(id: String, name: String, description: String, body: String)] = [
+        (
+            id: "builtin/quiet-musing",
+            name: "quiet-musing",
+            description: "当用户想要安静、简短的随想、留白或轻声陪伴时按需启用：不堆砌条目、不开教、不强行总结",
+            body: """
+使用场景：用户没有下达具体待办任务，只是随口感慨、发呆、倾诉情绪，或希望你安静陪一会儿。
+做法：
+1. 用自然口吻简短回应，只说一两句到几句贴合语境的话，不必展开长清单或行动计划。
+2. 允许适当留白：不强行给建议、不做说教式总结、不在末尾追问一连串问题。
+3. 如果用户随后切换到明确工作任务，立即恢复常规清晰高效的表达。
+"""
+        ),
+        (
+            id: "builtin/user-guide",
+            name: "user-guide",
+            description: "当用户询问 Clio 的功能边界、工作目录、内置 Linux、备份、权限确认或设置位置时按需启用",
+            body: """
+使用场景：用户咨询 Clio 自身怎么用、有哪些内置功能或权限如何生效。
+回答原则：
+1. 只陈述真实存在的能力，不臆造未出现的开关或菜单名。
+2. Clio 的核心本地能力包括：工作目录读写与笔记导出、本机 Alpine Linux 沙盒终端、按需授权后的日历/提醒/相册/位置/通讯录读取、凭据安全存储，以及本地/WebDAV 备份与缓存清理。
+3. 涉及写入系统日历、提醒、执行风险命令或向外部发送敏感内容时，Clio 会先请求用户确认。
+"""
+        )
+    ]
 
     static var folder: URL {
         let url = Workspace.root.appendingPathComponent("技能", isDirectory: true)
@@ -60,6 +88,12 @@ enum SkillShelf {
             let path = Workspace.relative(file)
             items.append(Item(id: path, skill: Skill.parse(text, fallback: fallback), on: !switchedOff.contains(path), file: file))
         }
+        let existingNames = Set(items.map { $0.skill.name.lowercased() })
+        for builtIn in builtInTemplates where !existingNames.contains(builtIn.name.lowercased()) {
+            let syntheticURL = folder.appendingPathComponent(".\(builtIn.name).builtin.md", isDirectory: false)
+            let skill = Skill(name: builtIn.name, description: builtIn.description, body: builtIn.body)
+            items.append(Item(id: builtIn.id, skill: skill, on: !switchedOff.contains(builtIn.id), file: syntheticURL, isBuiltIn: true))
+        }
         cacheLock.withLock { if version == cacheVersion { cache = (Date(), items) } }
         return items
     }
@@ -99,6 +133,7 @@ enum SkillShelf {
     }
 
     static func remove(_ item: Item) {
+        guard !item.isBuiltIn else { return }
         let parent = item.file.deletingLastPathComponent()
         // A skill kept as a folder goes with its folder.
         let target = parent.standardizedFileURL == folder.standardizedFileURL ? item.file : parent
@@ -128,12 +163,15 @@ enum SkillShelf {
         return cleaned
     }
 
-    /// The lines for the system prompt; empty without skills.
-    static var promptBlock: String {
+    /// The lines for the system prompt; empty without skills or on the casual track.
+    static func promptBlock(casualTrack: Bool) -> String {
+        guard !casualTrack else { return "" }
         let skills = enabled.map(\.skill)
         guard !skills.isEmpty else { return "" }
         return "\n\n你会的技能（书案/技能 里的说明，用户可以自己加）：\n" + Skill.menu(skills) + "\n任务和某个技能对得上时，先用 use_skill 读它的全文，再照着做。"
     }
+
+    static var promptBlock: String { promptBlock(casualTrack: false) }
 
     /// A few to start from. Written for Clio; change them to taste.
     static let samples: [Skill] = [
@@ -223,7 +261,7 @@ struct UseSkillTool: AgentTool {
         }
         var text = "技能「\(item.skill.name)」（\(item.id)）：\n\n\(item.skill.body)"
         let parent = item.file.deletingLastPathComponent()
-        if parent.standardizedFileURL != SkillShelf.folder.standardizedFileURL {
+        if !item.isBuiltIn && parent.standardizedFileURL != SkillShelf.folder.standardizedFileURL {
             let parentPath = parent.standardizedFileURL.path
             var others: [String] = []
             if let walker = FileManager.default.enumerator(at: parent, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
@@ -361,7 +399,7 @@ struct SkillsPage: View {
             VStack(alignment: .leading, spacing: Ink.Space.xs) {
                 Text(item.skill.name).font(.system(size: Ink.Size.body, weight: .semibold)).foregroundStyle(item.on ? Ink.ink : Ink.inkFaint)
                 Text(item.skill.description).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(2)
-                Text(Words.t("书案/") + item.id).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
+                Text(item.isBuiltIn ? "内置技能 · 按需加载" : Words.t("书案/") + item.id).font(Ink.mono(Ink.Size.micro)).foregroundStyle(Ink.inkFaint)
             }
             Spacer(minLength: 0)
             Toggle("", isOn: Binding(get: { item.on }, set: { value in
@@ -373,14 +411,18 @@ struct SkillsPage: View {
         }
         .padding(Ink.Space.l)
         .contentShape(Rectangle())
-        .onTapGesture { editing = Editing(item: item) }
+        .onTapGesture {
+            if !item.isBuiltIn { editing = Editing(item: item) }
+        }
         .contextMenu {
-            Button("改一改", systemImage: "pencil") { editing = Editing(item: item) }
-            Button("删掉", systemImage: "trash", role: .destructive) {
-                let target = item
-                Task {
-                    await Task.detached(priority: .userInitiated) { SkillShelf.remove(target) }.value
-                    items.removeAll { $0.id == target.id }
+            if !item.isBuiltIn {
+                Button("改一改", systemImage: "pencil") { editing = Editing(item: item) }
+                Button("删掉", systemImage: "trash", role: .destructive) {
+                    let target = item
+                    Task {
+                        await Task.detached(priority: .userInitiated) { SkillShelf.remove(target) }.value
+                        items.removeAll { $0.id == target.id }
+                    }
                 }
             }
         }

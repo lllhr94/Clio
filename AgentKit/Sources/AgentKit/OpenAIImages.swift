@@ -7,15 +7,25 @@ public enum ImageGenerationError: Error, Equatable {
 extension OpenAIProvider {
     /// Returns the image bytes from an OpenAI-compatible images endpoint.
     public func generateImage(model: String, prompt: String, size: String) async throws -> Data {
-        try await generateImage(model: model, prompt: prompt, size: size, session: HTTP.session)
+        try await generateImage(model: model, prompt: prompt, size: size, session: nil)
     }
 
     private static let maxImageBytes = 32_000_000
     private static let maxJSONEnvelopeBytes = 48_000_000
 
-    func generateImage(model: String, prompt: String, size: String, session: URLSession) async throws -> Data {
+    func generateImage(model: String, prompt: String, size: String, session: URLSession?) async throws -> Data {
         let request = try imageRequest(model: model, prompt: prompt, size: size)
-        let (bytes, response) = try await session.bytes(for: request)
+        let lease = session == nil ? HTTP.SessionPool.shared.acquireLease() : nil
+        let activeSession = session ?? lease?.session ?? HTTP.session
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await activeSession.bytes(for: request)
+        } catch {
+            if let lease { HTTP.SessionPool.shared.releaseLease(lease) }
+            throw error
+        }
+        if let lease { HTTP.SessionPool.shared.releaseLease(lease) }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if response.expectedContentLength > Int64(Self.maxJSONEnvelopeBytes) {
             throw ImageGenerationError.invalidResponse
@@ -42,8 +52,12 @@ extension OpenAIProvider {
         }
 
         // The download may be on a CDN. Keep the model key on the generation request, and block local/private SSRF & >32 MB payloads.
+        // Re-fetch from pool when session was not injected in case network/proxy rotated while the image generated.
         do {
-            let image = try await Web.publicBytes(from: url, limit: Self.maxImageBytes, timeout: 60, session: session)
+            let downloadLease = session == nil ? HTTP.SessionPool.shared.acquireLease() : nil
+            defer { if let downloadLease { HTTP.SessionPool.shared.releaseLease(downloadLease) } }
+            let downloadSession = session ?? downloadLease?.session ?? HTTP.session
+            let image = try await Web.publicBytes(from: url, limit: Self.maxImageBytes, timeout: 60, session: downloadSession)
             guard !image.isEmpty else { throw ImageGenerationError.invalidResponse }
             return image
         } catch let failure as ProviderError {
