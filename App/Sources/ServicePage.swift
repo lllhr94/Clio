@@ -1,5 +1,6 @@
 import AgentKit
 import Craft
+import Foundation
 import SwiftUI
 import UIKit
 
@@ -22,8 +23,9 @@ struct ServicePage: View {
     @State private var style: ThinkingStyle?
     @State private var newKey = ""
     @State private var keySuffix: String?
-    @State private var reading: Balance.Reading?
-    @State private var balanceNote: String?
+    @State private var showConnection = false
+    @State private var pausedOverride: Bool?
+    @State private var cacheOverride: ServiceCacheTier?
     @State private var inFlightSave: Task<String?, Never>?
     @State private var pendingSavedFields: EndpointDraftFields?
 
@@ -46,6 +48,7 @@ struct ServicePage: View {
         ScrollView {
             if let endpoint {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    hero(endpoint)
                     if let disabledReason = endpoint.disabledProtocolReason {
                         Text(disabledReason)
                             .font(Ink.secondary)
@@ -61,7 +64,7 @@ struct ServicePage: View {
                     }
                     inUse(endpoint)
                     connection(endpoint)
-                    if Balance.source(baseURL: endpoint.baseURL) != nil { balance(endpoint) }
+                    preferences(endpoint)
                     advanced(endpoint)
                     Button(L.t("actions.deleteProvider"), role: .destructive) { removing = true }
                         .font(.system(size: Ink.Size.sub, weight: .medium))
@@ -84,7 +87,10 @@ struct ServicePage: View {
             address = endpoint.baseURL
             style = endpoint.style
         }
-        .task { await loadBalance() }
+        .onChange(of: currentID) {
+            pausedOverride = nil
+            cacheOverride = nil
+        }
         .task(id: currentID) {
             let key = await team.readAPIKey(for: currentID)
             guard !Task.isCancelled else { return }
@@ -184,8 +190,7 @@ struct ServicePage: View {
     // MARK: 2. Connection and key
 
     private func connection(_ endpoint: Endpoint) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle(L.t("settings.connectionAndKey"))
+        DisclosureGroup(isExpanded: $showConnection) {
             VStack(alignment: .leading, spacing: Ink.Space.m) {
                 labeled(L.t("servicePage.nameLabel")) {
                     TextField(L.t("servicePage.nameLabel"), text: $name)
@@ -253,9 +258,13 @@ struct ServicePage: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(Ink.Space.l)
-            .paperCard()
+            .padding(.top, Ink.Space.m)
+        } label: {
+            Text(L.t("settings.connectionAndKey")).font(Ink.label).foregroundStyle(Ink.ink)
         }
+        .tint(Ink.accent)
+        .padding(Ink.Space.l)
+        .paperCard()
     }
 
     // MARK: 3. Advanced (collapsed by default)
@@ -293,14 +302,6 @@ struct ServicePage: View {
                             .font(.system(size: Ink.Size.sub))
                             .foregroundStyle(endpoint.isActiveProtocol ? Ink.inkSoft : Ink.stop)
                     }
-                    if endpoint.kind.supportsPromptCache {
-                        Kit.rule(inset: 0)
-                        promptCacheRow(endpoint)
-                        Text(L.t("servicePage.promptCacheNote"))
-                            .font(Ink.footnote)
-                            .foregroundStyle(Ink.inkSoft)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                     if endpoint.kind.supportsThinkingStyleSelection {
                         Kit.rule(inset: 0)
                         thinkingStyleRow(endpoint)
@@ -337,18 +338,61 @@ struct ServicePage: View {
     }
 
     private func promptCacheRow(_ endpoint: Endpoint) -> some View {
-        Toggle(isOn: Binding(
-            get: { endpoint.usesPromptCache },
-            set: { enabled in
-                Haptics.tick(0.5)
-                team.setPromptCache(endpoint.id, enabled: enabled)
+        let stops: [Stop<ServiceCacheTier>] = [
+            Stop(value: .off, name: L.t("services.cacheOff")),
+            Stop(value: .fiveMinutes, name: L.t("services.cacheFiveMinutes")),
+            Stop(value: .oneHour, name: L.t("services.cacheOneHour")),
+        ]
+        let current = cacheOverride ?? ServiceExtras.cacheTier(endpoint.id, fallback: endpoint.usesPromptCache ? .fiveMinutes : .off)
+        return StopRow(
+            title: L.t("services.cacheTier"),
+            value: Binding(
+                get: { cacheOverride ?? current },
+                set: { tier in
+                    ServiceExtras.setCacheTier(tier, for: endpoint.id)
+                    if endpoint.usesPromptCache != (tier != .off) { team.setPromptCache(endpoint.id, enabled: tier != .off) }
+                    cacheOverride = tier
+                }
+            ),
+            stops: stops
+        )
+        .id(endpoint.id)
+    }
+
+    private func preferences(_ endpoint: Endpoint) -> some View {
+        let paused = pausedOverride ?? ServiceExtras.isPaused(endpoint.id)
+        return VStack(alignment: .leading, spacing: Ink.Space.m) {
+            Toggle(isOn: Binding(
+                get: { pausedOverride ?? paused },
+                set: {
+                    ServiceExtras.setPaused($0, for: endpoint.id)
+                    pausedOverride = $0
+                }
+            )) {
+                Text(L.t("services.pauseService")).font(Ink.label).foregroundStyle(Ink.ink)
             }
-        )) {
-            Text(L.t("servicePage.promptCache"))
-                .font(.system(size: Ink.Size.sub))
-                .foregroundStyle(Ink.ink)
+            .tint(Ink.accent)
+            Text(L.t("services.pauseNote")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+            if endpoint.kind == .anthropic {
+                Kit.rule(inset: 0)
+                promptCacheRow(endpoint)
+            }
+            Kit.rule(inset: 0)
+            ServiceHeaderEditor(endpointID: endpoint.id)
+                .id(endpoint.id)
         }
-        .tint(Ink.accent)
+        .padding(Ink.Space.l)
+        .paperCard()
+    }
+
+    private func hero(_ endpoint: Endpoint) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            ServiceArchiveHeader(endpoint: endpoint)
+            ServiceBalanceLine(team: team, endpoint: endpoint, showsDashboard: true)
+        }
+        .padding(Ink.Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .paperCard()
     }
 
     private func thinkingStyleRow(_ endpoint: Endpoint) -> some View {
@@ -513,41 +557,6 @@ struct ServicePage: View {
         }
     }
 
-    // MARK: Balance
-
-    private func balance(_ endpoint: Endpoint) -> some View {
-        VStack(alignment: .leading, spacing: Ink.Space.s) {
-            SectionTitle(L.t("settings.balance"))
-            HStack {
-                VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
-                    if let reading {
-                        Text(reading.shown).font(Ink.serif(Ink.Size.title, bold: true)).foregroundStyle(Ink.ink)
-                        if let detail = reading.detail { Text(detail).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
-                    } else {
-                        Text(balanceNote ?? L.t("loading.checking")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                    }
-                }
-                Spacer()
-                if let source = Balance.source(baseURL: endpoint.baseURL) {
-                    Link(L.t("servicePage.topUp"), destination: source.topUp)
-                        .font(.system(size: Ink.Size.sub, weight: .medium))
-                        .foregroundStyle(Ink.accent)
-                }
-            }
-            .padding(Ink.Space.l)
-            .paperCard()
-        }
-    }
-
-    private func loadBalance() async {
-        guard let endpoint, Balance.source(baseURL: endpoint.baseURL) != nil else { return }
-        do {
-            reading = try await team.balance(endpoint)
-        } catch {
-            balanceNote = error.localizedDescription
-        }
-    }
-
     // MARK: Doing
 
     private func refresh(_ endpoint: Endpoint) {
@@ -638,7 +647,7 @@ private struct ServiceActiveModelsSection: View {
         let gone = listedSet.map { !$0.contains(model) } ?? false
         let custom = endpoint.customName(for: model)
         let title = endpoint.distinguishableDisplayName(for: model)
-        let titleFont: Font = Ink.mono(Ink.Size.sub, weight: .medium)
+        let titleFont: Font = Ink.mono(Ink.Size.sub, weight: .semibold)
         return Button {
             Haptics.light()
             onEdit(model)
@@ -663,7 +672,7 @@ private struct ServiceActiveModelsSection: View {
                             .foregroundStyle(Ink.inkFaint)
                             .lineLimit(1)
                     }
-                    TraitChips(traits: traits, corrected: endpoint.corrected(model))
+                    TraitChips(traits: traits, corrected: endpoint.corrected(model), positiveOnly: true)
                     if gone {
                         Text(L.t("settings.modelUnavailable")).font(Ink.footnote).foregroundStyle(Ink.warn)
                     }
@@ -927,12 +936,16 @@ extension Endpoint {
 struct TraitChips: View {
     let traits: ModelTraits
     var corrected = false
+    var positiveOnly = false
 
     var body: some View {
         HStack(spacing: Ink.Space.xs) {
-            tag(traits.sees ? L.t("settings.modelVision") : L.t("servicePage.noVisionTag"), traits.sees ? "eye" : "eye.slash", on: traits.sees)
+            if traits.sees || !positiveOnly {
+                tag(traits.sees ? L.t("settings.modelVision") : L.t("servicePage.noVisionTag"), traits.sees ? "eye" : "eye.slash", on: traits.sees)
+            }
             if traits.thinks { tag(L.t("settings.modelReasoning"), "brain", on: true) }
-            if !traits.tools { tag(L.t("servicePage.noToolsTag"), "wrench.and.screwdriver", on: false) }
+            if positiveOnly && traits.tools { tag(L.t("services.supportsTools"), "wrench", on: true) }
+            if !positiveOnly && !traits.tools { tag(L.t("servicePage.noToolsTag"), "wrench.and.screwdriver", on: false) }
             tag(Tokens.short(traits.window).replacingOccurrences(of: ".05M", with: "M").replacingOccurrences(of: ".00M", with: "M"), "text.alignleft", on: true)
             if corrected { Text(L.t("servicePage.modifiedTag")).font(.system(size: Ink.Size.micro, weight: .medium)).foregroundStyle(Ink.inkFaint) }
         }
@@ -1512,23 +1525,124 @@ struct ModelChoices: View {
     let current: String?
     let pick: (String) -> Void
 
+    static func selectableEndpoints(in endpoints: [Endpoint], defaults: UserDefaults = .standard) -> [Endpoint] {
+        endpoints.filter { $0.isActiveProtocol && !ServiceExtras.isPaused($0.id, defaults: defaults) && !$0.models.isEmpty }
+    }
+
     var body: some View {
-        ForEach(team.settings.endpoints) { endpoint in
-            Section(endpoint.name) {
-                ForEach(endpoint.models, id: \.self) { model in
-                    Button {
-                        pick("\(endpoint.id)/\(model)")
-                    } label: {
-                        let title = endpoint.distinguishableDisplayName(for: model)
-                        if current == "\(endpoint.id)/\(model)" {
-                            Label(title, systemImage: "checkmark")
-                        } else {
-                            Text(title)
-                        }
-                        Text(endpoint.traits(model).summary)
+        let recent = RecentModelsStore.recent(in: team)
+        if !recent.isEmpty {
+            Section(L.t("services.recentModels")) {
+                ForEach(recent, id: \.self) { ref in
+                    if let resolved = team.resolveActive(ref) {
+                        modelButton(resolved.endpoint, model: resolved.model)
                     }
                 }
             }
         }
+        ForEach(Self.selectableEndpoints(in: team.settings.endpoints)) { endpoint in
+            Section(endpoint.name) {
+                ForEach(endpoint.models, id: \.self) { model in
+                    modelButton(endpoint, model: model)
+                }
+            }
+        }
+    }
+
+    private func modelButton(_ endpoint: Endpoint, model: String) -> some View {
+        let ref = "\(endpoint.id)/\(model)"
+        return Button {
+            RecentModelsStore.record(ref, in: team)
+            pick(ref)
+        } label: {
+            let title = endpoint.distinguishableDisplayName(for: model)
+            if current == ref {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
+            Text(endpoint.traits(model).summary)
+        }
+    }
+}
+
+private struct ServiceHeaderEditor: View {
+    let endpointID: String
+
+    @State private var expanded = false
+    @State private var headers: [String: String] = [:]
+    @State private var name = ""
+    @State private var value = ""
+    @State private var rejected = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: Ink.Space.m) {
+                Text(L.t("services.headersNote")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                ForEach(headers.keys.sorted(), id: \.self) { field in
+                    HStack {
+                        Button {
+                            name = field
+                            value = headers[field] ?? ""
+                            rejected = false
+                        } label: {
+                            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                                Text(field).font(Ink.mono(Ink.Size.sub)).foregroundStyle(Ink.ink)
+                                Text(headers[field] ?? "").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        Button(role: .destructive) {
+                            headers.removeValue(forKey: field)
+                            ServiceExtras.setCustomHeaders(headers, for: endpointID)
+                            if name.caseInsensitiveCompare(field) == .orderedSame { clearDraft() }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .accessibilityLabel(L.format("services.removeHeader", field))
+                    }
+                }
+                TextField(L.t("services.headerName"), text: $name)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .paperField()
+                TextField(L.t("services.headerValue"), text: $value)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .paperField()
+                if rejected {
+                    Text(L.t("services.headerRejected")).font(Ink.footnote).foregroundStyle(Ink.stop)
+                }
+                Button(L.t("actions.save"), action: save)
+                    .buttonStyle(WideButtonStyle(filled: false))
+                    .disabled(name.isEmpty)
+            }
+            .padding(.top, Ink.Space.m)
+        } label: {
+            Text(L.t("services.headers")).font(Ink.label).foregroundStyle(Ink.ink)
+        }
+        .tint(Ink.accent)
+        .onAppear { headers = ServiceExtras.customHeaders(endpointID) }
+    }
+
+    private func save() {
+        let field = name.trimmingCharacters(in: .whitespaces)
+        guard ServiceExtras.permitsHeader(field, value: value) else {
+            rejected = true
+            return
+        }
+        if let old = headers.keys.first(where: { $0.caseInsensitiveCompare(field) == .orderedSame }) {
+            headers.removeValue(forKey: old)
+        }
+        headers[field] = value
+        ServiceExtras.setCustomHeaders(headers, for: endpointID)
+        clearDraft()
+    }
+
+    private func clearDraft() {
+        name = ""
+        value = ""
+        rejected = false
     }
 }
