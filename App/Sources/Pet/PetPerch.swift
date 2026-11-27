@@ -7,6 +7,15 @@ import UIKit
 @MainActor @Observable
 final class PetPerch {
     var mood: PetMood = .idle
+    var workingCount: Int {
+        if case .working(let count) = mood { return count }
+        return 0
+    }
+
+    static func allowsPettingParticles(reduceMotion: Bool, reduceVisualEffects: Bool,
+                                      lowPower: Bool, thermal: ProcessInfo.ThermalState) -> Bool {
+        !reduceMotion && !reduceVisualEffects && !lowPower && thermal.rawValue < ProcessInfo.ThermalState.serious.rawValue
+    }
     var face: String?
     var foot: CGFloat = 0 { didSet { updateReplyClearance() } }
     var chatOffset: CGFloat = 0

@@ -1,3 +1,4 @@
+import Craft
 import ImageIO
 import PDFKit
 import QuickLook
@@ -131,6 +132,11 @@ struct WorkspaceFileRef: Equatable, Hashable, Sendable {
 struct StudyPage: View {
     var folder: URL = Workspace.root
     @Environment(\.dismiss) private var dismiss
+    @State private var tab: Tab = .directory
+
+    private enum Tab: String, CaseIterable {
+        case directory, library
+    }
 
     struct Item: Identifiable, Hashable, Sendable {
         let url: URL
@@ -145,6 +151,14 @@ struct StudyPage: View {
     var body: some View {
         NavigationStack {
             content
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    SlidingCapsuleControl(selection: $tab, options: Tab.allCases) {
+                        L.t("artifacts.tab.\($0.rawValue)")
+                    }
+                    .padding(.horizontal, Ink.Space.page)
+                    .padding(.vertical, Ink.Space.s)
+                    .background(Ink.paper)
+                }
                 .navigationDestination(for: Item.self) { item in
                     if item.folder {
                         StudyFolder(folder: item.url, mount: item.mount)
@@ -156,7 +170,149 @@ struct StudyPage: View {
     }
 
     private var content: some View {
-        StudyFolder(folder: folder, top: true, close: { dismiss() })
+        Group {
+            if tab == .directory {
+                StudyFolder(folder: folder, top: true, close: { dismiss() })
+            } else {
+                ArtifactLibraryPage(close: { dismiss() })
+            }
+        }
+    }
+}
+
+private struct ArtifactLibraryPage: View {
+    let close: () -> Void
+    private let team = TeamModel.shared
+    @State private var records: [ArtifactIndex.Record] = []
+    @State private var promoted: [SubConversationRecord] = []
+    @State private var kind: ArtifactIndex.Kind?
+    @State private var companion: String?
+    @State private var loading = true
+    @State private var failed = false
+    @State private var mountRevision = MountedFolders.revision
+    @State private var selected: SubConversationRecord?
+
+    private var visible: [ArtifactIndex.Record] {
+        records.filter { (kind == nil || $0.kind == kind) && (companion == nil || $0.companionID == companion) }
+    }
+
+    private var companions: [BotInfo] {
+        let ids = Set(records.compactMap(\.companionID))
+        return team.bots.filter { ids.contains($0.id) }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Ink.Space.m) {
+                filters
+                if loading {
+                    ProgressView(L.t("loading.generic"))
+                } else {
+                    if failed || visible.isEmpty {
+                        Text(L.t(failed ? "artifacts.unavailable" : "artifacts.empty"))
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                    }
+                    LazyVStack(spacing: Ink.Space.s) {
+                        ForEach(visible) { item in artifactRow(item) }
+                    }
+                    if kind == nil, companion == nil, !promoted.isEmpty {
+                        SectionTitle(L.t("subConversation.independent"))
+                        ForEach(promoted) { record in
+                            Button { selected = record } label: {
+                                Label(String(record.origin.selectedQuote.prefix(100)), systemImage: "arrow.branch")
+                                    .font(Ink.reading)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(Ink.Space.m)
+                                    .paperCard()
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Ink.Space.page)
+        }
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle(L.t("artifacts.tab.library"))
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { Button(L.t("actions.done"), action: close) } }
+        .task(id: mountRevision) { await reload() }
+        .refreshable { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in
+            records.removeAll { $0.version.mountID != nil }
+            mountRevision = MountedFolders.revision
+        }
+        .sheet(item: $selected, onDismiss: { Task { await reload() } }) { record in
+            SubConversationSheet(record: record)
+        }
+    }
+
+    private var filters: some View {
+        HStack(spacing: Ink.Space.m) {
+            Menu {
+                Button(L.t("artifacts.allTypes")) { kind = nil }
+                ForEach(ArtifactIndex.Kind.allCases) { option in
+                    Button(L.t(option.titleKey)) { kind = option }
+                }
+            } label: {
+                Label(L.t(kind?.titleKey ?? "artifacts.allTypes"), systemImage: "line.3.horizontal.decrease")
+            }
+            if !companions.isEmpty {
+                Menu {
+                    Button(L.t("artifacts.allCompanions")) { companion = nil }
+                    ForEach(companions) { bot in Button(bot.name) { companion = bot.id } }
+                } label: {
+                    Label(companions.first { $0.id == companion }?.name ?? L.t("artifacts.allCompanions"),
+                          systemImage: "person")
+                }
+            }
+        }
+        .font(Ink.label)
+    }
+
+    private func artifactRow(_ item: ArtifactIndex.Record) -> some View {
+        Button {
+            let root = item.sourceChatKey.split(separator: "~", maxSplits: 1).first.map(String.init) ?? item.sourceChatKey
+            close()
+            NotificationCenter.default.post(name: .clioOpenChat, object: root)
+        } label: {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                Text((item.version.relativePath as NSString).lastPathComponent)
+                    .font(Ink.label)
+                    .foregroundStyle(Ink.ink)
+                Text(item.version.relativePath)
+                    .font(Ink.mono(Ink.Size.small))
+                    .foregroundStyle(Ink.inkSoft)
+                Text(L.t(item.kind.titleKey))
+                    .font(Ink.footnote)
+                    .foregroundStyle(Ink.inkSoft)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(Ink.Space.m)
+            .paperCard()
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(L.t("artifacts.openSource"))
+    }
+
+    private func reload() async {
+        loading = true
+        failed = false
+        let revision = MountedFolders.revision
+        do {
+            let entries = try await ArtifactIndex.shared.refresh(live: team.entries, keeping: team.keeping)
+            guard !Task.isCancelled, revision == MountedFolders.revision else { return }
+            records = entries
+        } catch {
+            guard !Task.isCancelled else { return }
+            failed = true
+        }
+        let branches = (try? await SubConversationStore.shared.records()) ?? []
+        guard !Task.isCancelled, revision == MountedFolders.revision else { return }
+        promoted = branches.filter { $0.promotedChatKey != nil }.sorted { $0.id.uuidString < $1.id.uuidString }
+        loading = false
     }
 }
 
