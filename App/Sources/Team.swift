@@ -686,7 +686,7 @@ final class TeamModel: ObservableObject {
 
     private func shelveCurrent(_ key: String) -> Bool {
         guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return false }
-        guard ensureChatReadableForWrite(key) else {
+        guard ensureChatReadableForWrite(key, verifyDisk: true) else {
             let reason = "当前对话历史暂时无法读取，已中止收起/翻页以防止覆盖原记录。"
             Diag.note(reason)
             notify(key, .failed(reason))
@@ -743,9 +743,10 @@ final class TeamModel: ObservableObject {
         rotatedOptions.title = nil
         rotatedOptions.conversationID = UUID().uuidString.lowercased()
         if keeping {
-            // The page is emptied below: only once its copy, queued messages, leaf index, AND rotated conversationID
-            // options are all surely on disk. Any failure rolls back the new leaf files and restores prior options.
+            // The page is emptied synchronously inside the same transaction as its leaf copy, leaf index, and rotated
+            // conversationID options so crashes never leave old active history paired with a rotated identity.
             let priorPersistedOptions = options(key)
+            var clearedActive = false
             do {
                 try Disk.write(current, Self.leafFile(key, leaf.id))
                 if let old = summaryRecord(key) {
@@ -753,8 +754,13 @@ final class TeamModel: ObservableObject {
                 }
                 if !waiting.isEmpty { try QueuedStore.saveAndWait(waiting, for: leafKey, anchor: leafAnchor) }
                 try Disk.write(nextLeaves, Self.leafList(key))
+                try ChatDisk.saveAndWait([Entry](), chat: key)
+                clearedActive = true
                 try ChatDisk.writeValueAndWait(rotatedOptions, file: Self.optionsFile(key))
             } catch {
+                if clearedActive {
+                    try? ChatDisk.saveAndWait(current, chat: key)
+                }
                 Disk.remove(Self.leafFile(key, leaf.id))
                 Disk.remove(Self.leafSummary(key, leaf.id))
                 if !waiting.isEmpty { try? QueuedStore.saveAndWait([], for: leafKey) }
@@ -789,7 +795,6 @@ final class TeamModel: ObservableObject {
         queued[key] = nil
         persistQueued(key)
         modelInputLog.clear(key)
-        if keeping { ChatDisk.save([Entry](), chat: key) }
         scheduleIndexSync(key, leafID: leaf.id, leafTitle: leaf.title, entries: current)
         scheduleIndexSync(key, entries: [])
         clearPreview(key)
@@ -914,7 +919,7 @@ final class TeamModel: ObservableObject {
             keptSummary = read.summary
         }
         guard canDispatchQueue, !unresolvedLeafOpenChats.contains(key) else { return }
-        guard ensureChatReadableForWrite(key) else {
+        guard ensureChatReadableForWrite(key, verifyDisk: true) else {
             let reason = "当前对话历史暂时无法读取，已中止翻页以防止覆盖原记录。"
             Diag.note(reason)
             notify(key, .failed(reason))
@@ -957,7 +962,9 @@ final class TeamModel: ObservableObject {
                 writtenActiveQueuedIds: saveQueue ? persistSnapshot.map(\.id) : [],
                 writtenChatInode: nil,
                 chatsDirInode: QueuedMessageStore.directoryInode(at: chatsDirURL),
-                leafChatInode: QueuedMessageStore.fileInode(at: leafChatURL)
+                leafChatInode: QueuedMessageStore.fileInode(at: leafChatURL),
+                priorConversationID: priorOptions.conversationID,
+                targetConversationID: targetOptions.conversationID
             )
             let saved: (error: Error?, unresolvedRollback: Bool) = await Task.detached(priority: .userInitiated) {
                 var wroteChat = false
@@ -1344,10 +1351,27 @@ final class TeamModel: ObservableObject {
     }
 
     /// Verifies that `key`'s on-disk history is readable before allowing any write/shelve/openLeaf replacement.
-    func ensureChatReadableForWrite(_ key: String) -> Bool {
+    /// Pass `verifyDisk: true` for whole-file replacement paths (`shelveCurrent` / `openLeafNow`) so even a previously
+    /// cached chat whose file later became unreadable on disk is caught before overwriting.
+    func ensureChatReadableForWrite(_ key: String, verifyDisk: Bool = false) -> Bool {
         guard keeping else { return true }
-        if unreadableChats.contains(key) {
-            _ = applyChatLoadOutcome(Disk.loadChatChecked(key), for: key)
+        if verifyDisk || unreadableChats.contains(key) {
+            let outcome = Disk.loadChatChecked(key)
+            switch outcome {
+            case .unreadable:
+                unreadableChats.insert(key)
+                return false
+            case .corrupt(_, let quarantined, _) where !quarantined:
+                unreadableChats.insert(key)
+                return false
+            case .missing, .loaded, .corrupt:
+                if entries[key] == nil {
+                    _ = applyChatLoadOutcome(outcome, for: key)
+                } else {
+                    unreadableChats.remove(key)
+                }
+                return true
+            }
         } else if entries[key] == nil {
             _ = history(key)
         }
@@ -1390,19 +1414,22 @@ final class TeamModel: ObservableObject {
         deterministicQueuedID: UUID
     ) -> Bool {
         guard phase != .demo, canAcceptInput(for: key), ensureChatReadableForWrite(key) else { return false }
+        func matchesDeterministicResume(_ entry: Entry) -> Bool {
+            entry.id == deterministicEntryID || (entry.queuedIds?.contains(deterministicQueuedID) ?? false)
+        }
         if keeping {
             switch Disk.loadChatChecked(key) {
             case .loaded(let existing):
-                if existing.contains(where: { $0.id == deterministicEntryID }) { return true }
+                if existing.contains(where: matchesDeterministicResume) { return true }
             case .corrupt(let recovered, let quarantined, _):
                 guard quarantined else { return false }
-                if recovered.contains(where: { $0.id == deterministicEntryID }) { return true }
+                if recovered.contains(where: matchesDeterministicResume) { return true }
             case .missing:
                 break
             case .unreadable:
                 return false
             }
-        } else if entries[key]?.contains(where: { $0.id == deterministicEntryID }) == true {
+        } else if entries[key]?.contains(where: matchesDeterministicResume) == true {
             return true
         }
         if allPersistableQueued(key).contains(where: { $0.id == deterministicQueuedID }) {
@@ -3411,8 +3438,15 @@ final class TeamModel: ObservableObject {
         // - `.leaf` / `.ambiguous` (shelved behind a newer conversation reusing `chat`): allow one-shot ONLY;
         //   NEVER grant standing `trustChat` or `throughWeb` to the newer conversation occupying `chat`.
         let resolvedTarget: ConversationTarget?
-        if let chat = approval.chat, let convID = approval.parentConversationID, !convID.isEmpty {
-            resolvedTarget = resolveConversationTarget(slotKey: chat, conversationID: convID)
+        if let chat = approval.chat {
+            if let convID = approval.parentConversationID, !convID.isEmpty {
+                resolvedTarget = resolveConversationTarget(slotKey: chat, conversationID: convID)
+            } else if approval.executionChat != nil {
+                // Legacy delegated/subtask approval lacking `parentConversationID`: treat as ambiguous (one-shot only).
+                resolvedTarget = .ambiguous
+            } else {
+                resolvedTarget = nil
+            }
         } else {
             resolvedTarget = nil
         }

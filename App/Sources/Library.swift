@@ -809,20 +809,35 @@ enum Disk {
     /// Testing hook to simulate atomic write failures on `Disk.write` (e.g. disk full / Data Protection error).
     nonisolated(unsafe) static var writeDataOverride: (@Sendable (Data, URL) throws -> Void)?
 
+    /// Serializes direct `Disk.write` / `Disk.remove` / `Disk.writePhoto` mutations against `Backup.restore`'s
+    /// freeze barrier so a background task (such as `openLeafNow`) that passed `!frozen` cannot cross directory swap.
+    private static let writeBarrierLock = NSLock()
+
+    static func withWriteBarrier<T>(_ body: () throws -> T) rethrows -> T {
+        try writeBarrierLock.withLock {
+            try body()
+        }
+    }
+
     static func write<Value: Encodable>(_ value: Value, _ name: String) throws {
-        guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
         let data = try JSONEncoder().encode(value)
         let destination = url(name)
-        if let override = writeDataOverride {
-            try override(data, destination)
-        } else {
-            try data.write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try writeBarrierLock.withLock {
+            guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
+            if let override = writeDataOverride {
+                try override(data, destination)
+            } else {
+                try data.write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            }
         }
     }
 
     static func remove(_ name: String) {
-        guard !frozen else { return }
-        try? FileManager.default.removeItem(at: url(name))
+        let destination = url(name)
+        writeBarrierLock.withLock {
+            guard !frozen else { return }
+            try? FileManager.default.removeItem(at: destination)
+        }
     }
 
     /// Set once a backup has been put back: what is in memory is the old state, and writing it out would undo the
@@ -932,9 +947,12 @@ enum Disk {
 
     /// Writes a photo atomically and throws on failure so callers transferring queued photos can abort before deleting the source.
     static func writePhoto(_ data: Data) throws -> String {
-        guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
         let name = UUID().uuidString + ".jpg"
-        try data.write(to: url("media/\(name)"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let destination = url("media/\(name)")
+        try writeBarrierLock.withLock {
+            guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
+            try data.write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
         return name
     }
 

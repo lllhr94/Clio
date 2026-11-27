@@ -225,8 +225,10 @@ final class R1ADataIntegrityTests: XCTestCase {
         )
         let jsonlURL = dir.appendingPathComponent("casual/bot-a.jsonl")
         try FileManager.default.createDirectory(at: jsonlURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let corruptPrefix = "{not-valid-json-must-be-preserved}\n"
-        try Data(corruptPrefix.utf8).write(to: jsonlURL, options: .atomic)
+        var corruptPrefixData = Data("{not-valid-json-".utf8)
+        corruptPrefixData.append(contentsOf: [0xFF, 0xFE, 0x80]) // invalid UTF-8 bytes
+        corruptPrefixData.append(Data("}\n".utf8))
+        try corruptPrefixData.write(to: jsonlURL, options: .atomic)
 
         let step1 = try store.commitStep1QueuedBeforeSend(
             botID: "bot-a",
@@ -240,9 +242,11 @@ final class R1ADataIntegrityTests: XCTestCase {
 
         let reply = CasualEntry(id: "a-batch-append-only-0", botID: "bot-a", role: .assistant, text: "hi", batchID: step1.batchID)
         _ = try store.appendEntriesAndCompleteOutbox(entries: [reply], batchID: step1.batchID)
+        // Replaying with the same ID must still deduplicate despite the invalid UTF-8 line earlier in the file.
+        _ = try store.appendEntriesAndCompleteOutbox(entries: [reply], batchID: step1.batchID)
 
-        let rawAfter = try String(contentsOf: jsonlURL, encoding: .utf8)
-        XCTAssertTrue(rawAfter.hasPrefix(corruptPrefix), "Append-only reply write MUST preserve existing raw lines untouched")
+        let rawAfter = try Data(contentsOf: jsonlURL)
+        XCTAssertTrue(rawAfter.starts(with: corruptPrefixData), "Append-only reply write MUST preserve existing raw bytes untouched")
         XCTAssertEqual(store.entries(for: "bot-a").map(\.id), ["a-batch-append-only-0"])
     }
 
@@ -300,6 +304,18 @@ final class R1ADataIntegrityTests: XCTestCase {
         XCTAssertEqual(store.loadOutboxBatch(batchID: "old-batch")?.state, .completed)
         XCTAssertTrue(recovery.batchesNeedingReconcile.isEmpty)
         XCTAssertEqual(recovery.batchesReadyForInitialSend.map(\.batchID), ["fresh-healed"])
+
+        // Attempting to replace an already-completed old batch MUST be rejected.
+        let duplicateFresh = CasualOutboxBatch(
+            batchID: "fresh-dup",
+            botID: "bot-a",
+            casualSessionID: "sess-a",
+            segments: ["重发测试"],
+            state: .queuedBeforeSend,
+            trackEpoch: 0
+        )
+        XCTAssertThrowsError(try store.replaceReconciledBatch(oldBatchID: "old-batch", with: duplicateFresh))
+        XCTAssertNil(store.loadOutboxBatch(batchID: "fresh-dup"))
     }
 
     func testCasualSendQueueConcurrentFlushesAndEnqueueNeverDuplicateOrDropSegments() async throws {

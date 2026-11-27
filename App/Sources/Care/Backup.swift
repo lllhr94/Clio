@@ -734,6 +734,7 @@ enum Backup {
         }
         if !skipGlobalBridges {
             ChatDisk.finishWrites()
+            Disk.withWriteBarrier {}
             Disk.forgetPhotos()
             SubtaskManager.sharedCanonicalStore.withWriteBarrier {}
             CasualTrackController.sharedStore.withWriteBarrier {}

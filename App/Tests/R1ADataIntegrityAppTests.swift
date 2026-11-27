@@ -279,6 +279,16 @@ final class R1ADataIntegrityAppTests: XCTestCase {
             return XCTFail("Expected merged history on disk")
         }
         XCTAssertEqual(merged.map(\.id), ["e-orig-1", "e-orig-2", "e-new"])
+
+        // Now test that even when `entries[key]` IS already cached in memory, `turnLeaf` verifies disk and aborts if unreadable!
+        Disk.readChatDataOverride = { url in
+            if url.path == chatPath {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))
+            }
+            return try Data(contentsOf: url)
+        }
+        XCTAssertFalse(team.turnLeaf(key), "turnLeaf MUST check disk readability even when entries[key] is cached")
+        Disk.readChatDataOverride = nil
     }
 
     // MARK: - CX-04: Subtask Delivery Confirms Disk Persistence via onSaved & Defeats Memory Masking
@@ -458,19 +468,31 @@ final class R1ADataIntegrityAppTests: XCTestCase {
         XCTAssertTrue(team.entries[parentKey]?.contains(where: { $0.id == eventID2 }) ?? false)
     }
 
-    func testApprovalFromShelvedConversationCannotGrantTrustToNewConversationAndGoneApprovalDenies() async throws {
+    func testApprovalFromShelvedLegacyAndGoneConversationsEnforcesExactScope() async throws {
         let team = TeamModel()
-        team.phase = .demo
+        team.phase = .ready
         let botID = "r1a-appr-\(UUID().uuidString.lowercased())"
         let key = TeamModel.key(bot: botID)
         team.bots = [BotInfo(id: botID, name: "主旅伴")]
+        defer {
+            ChatDisk.removeAndWait(key)
+            for leaf in team.leaves(key) {
+                Disk.remove(TeamModel.leafFile(key, leaf.id))
+                Disk.remove(TeamModel.leafSummary(key, leaf.id))
+            }
+            Disk.remove(TeamModel.leafList(key))
+            Disk.remove(TeamModel.optionsFile(key))
+        }
+
         team.append(Entry(id: "u-appr-1", at: 100, message: .user("旧对话")), to: key)
+        ChatDisk.finishWrites()
         let oldConvID = team.activeConversationID(for: key)
 
         // Shelve old conversation so `key` now hosts a brand-new conversation.
         XCTAssertTrue(team.turnLeaf(key))
         XCTAssertFalse(team.trusted.contains(key))
 
+        // 1) Approval from shelved `.leaf`: allowed once, NEVER trusts new active conversation!
         let shelvedApproval = Approval(
             id: "appr-shelved-1",
             botId: botID,
@@ -488,10 +510,89 @@ final class R1ADataIntegrityAppTests: XCTestCase {
             answerable: true,
             forced: false
         )
-        team.approvals = [shelvedApproval]
+        let shelvedDecisionTask = Task {
+            await team.approvalQueue.awaitDecision(
+                id: shelvedApproval.id,
+                evaluate: { .wait },
+                onEnqueue: { team.approvals.append(shelvedApproval) },
+                onLeave: {},
+                onUserApproved: {}
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
         try await team.answer(shelvedApproval, allow: true, trustChat: true, throughWeb: true)
+        let shelvedAllowed = await shelvedDecisionTask.value
+        XCTAssertTrue(shelvedAllowed, "Shelved conversation approval should still allow one-shot execution")
         XCTAssertFalse(team.trusted.contains(key), "Approving a shelved conversation's task MUST NOT trust the new active conversation")
         XCTAssertFalse(team.taint.isAllowedThrough(key), "Approving a shelved conversation's task MUST NOT grant throughWeb to the new active conversation")
+
+        // 2) Legacy subtask approval (`parentConversationID == nil`, `executionChat != nil`): treated as `.ambiguous` -> one-shot only!
+        let legacyApproval = Approval(
+            id: "appr-legacy-1",
+            botId: botID,
+            roomId: nil,
+            chat: key,
+            executionChat: "attempt-legacy-1",
+            parentConversationID: nil,
+            hostID: nil,
+            boundGrant: .web,
+            tool: "抓取网页",
+            toolName: "web_fetch",
+            reason: "旧版子任务审批",
+            detail: Approval.Detail(text: Taint.reason + "外部网页", code: nil),
+            at: Now.ms,
+            answerable: true,
+            forced: false
+        )
+        let legacyDecisionTask = Task {
+            await team.approvalQueue.awaitDecision(
+                id: legacyApproval.id,
+                evaluate: { .wait },
+                onEnqueue: { team.approvals.append(legacyApproval) },
+                onLeave: {},
+                onUserApproved: {}
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        try await team.answer(legacyApproval, allow: true, trustChat: true, throughWeb: true)
+        let legacyAllowed = await legacyDecisionTask.value
+        XCTAssertTrue(legacyAllowed)
+        XCTAssertFalse(team.trusted.contains(key), "Legacy subtask approval lacking parentConversationID MUST NOT trust active chat")
+        XCTAssertFalse(team.taint.isAllowedThrough(key))
+
+        // 3) Approval whose parent conversation is `.gone` (deleted/cleared): MUST force-deny even when user taps allow!
+        let goneApproval = Approval(
+            id: "appr-gone-1",
+            botId: botID,
+            roomId: nil,
+            chat: key,
+            executionChat: "attempt-gone-1",
+            parentConversationID: "conv-deleted-forever",
+            hostID: nil,
+            boundGrant: .web,
+            tool: "抓取网页",
+            toolName: "web_fetch",
+            reason: "已删会话审批",
+            detail: Approval.Detail(text: Taint.reason + "外部网页", code: nil),
+            at: Now.ms,
+            answerable: true,
+            forced: false
+        )
+        let goneDecisionTask = Task {
+            await team.approvalQueue.awaitDecision(
+                id: goneApproval.id,
+                evaluate: { .wait },
+                onEnqueue: { team.approvals.append(goneApproval) },
+                onLeave: {},
+                onUserApproved: {}
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        try await team.answer(goneApproval, allow: true, trustChat: true, throughWeb: true)
+        let goneAllowed = await goneDecisionTask.value
+        XCTAssertFalse(goneAllowed, "Approval from a deleted/cleared (.gone) conversation MUST be force-denied")
+        XCTAssertFalse(team.trusted.contains(key))
+        XCTAssertFalse(team.taint.isAllowedThrough(key))
     }
 
     // MARK: - CX-07: Casual Controller Multi-Bot Isolation via Coordinator & Safe Resend/Reply Persistence

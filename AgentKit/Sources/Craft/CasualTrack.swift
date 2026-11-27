@@ -300,11 +300,9 @@ public final class CasualTrackStore: @unchecked Sendable {
         }
         let endsWithNewline = data.isEmpty || data.last == 0x0A
         var ids: Set<String> = []
-        if let raw = String(data: data, encoding: .utf8) {
-            for line in raw.split(separator: "\n", omittingEmptySubsequences: true) {
-                if let decoded = try? decoder.decode(CasualEntry.self, from: Data(line.utf8)) {
-                    ids.insert(decoded.id)
-                }
+        for lineSlice in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            if let decoded = try? decoder.decode(CasualEntry.self, from: Data(lineSlice)) {
+                ids.insert(decoded.id)
             }
         }
         return (true, endsWithNewline, ids)
@@ -593,8 +591,8 @@ public final class CasualTrackStore: @unchecked Sendable {
     }
 
     /// Atomically replaces a `.needsReconcile` batch with a fresh resend batch carrying `supersedesBatchID`.
-    /// Both persisting `fresh` AND closing `oldBatchID` MUST succeed before returning; if closing `oldBatchID`
-    /// fails, `fresh` is removed and the error is rethrown so two sendable copies never coexist.
+    /// Enforces that `oldBatchID` is STILL `.needsReconcile` and has NO existing non-cancelled replacement so at most
+    /// one sendable replacement can ever exist for a given old batch.
     @discardableResult
     public func replaceReconciledBatch(
         oldBatchID: String,
@@ -606,6 +604,20 @@ public final class CasualTrackStore: @unchecked Sendable {
             guard var oldBatch = loadOutboxBatchLocked(batchID: oldBatchID) else {
                 throw CasualTrackError.batchNotFound(oldBatchID)
             }
+            guard oldBatch.state == .needsReconcile else {
+                throw CasualTrackError.invalidStateTransition(from: oldBatch.state, to: .completed)
+            }
+            let existingSuperseder = loadAllOutboxBatchesLocked().first {
+                $0.supersedesBatchID == oldBatchID && $0.state != .cancelled
+            }
+            if existingSuperseder != nil {
+                // Heal stale open oldBatch if a prior rollback delete failed, and refuse creating a second replacement.
+                oldBatch.state = .completed
+                oldBatch.updatedAtMs = nowMs
+                try? persistOutboxBatchLocked(oldBatch)
+                throw CasualTrackError.invalidStateTransition(from: .completed, to: .queuedBeforeSend)
+            }
+
             var replacement = fresh
             replacement.supersedesBatchID = oldBatchID
             replacement.updatedAtMs = nowMs
@@ -616,7 +628,10 @@ public final class CasualTrackStore: @unchecked Sendable {
             do {
                 try persistOutboxBatchLocked(oldBatch)
             } catch {
-                try? FileManager.default.removeItem(at: outboxURL(batchID: replacement.batchID))
+                // Attempt rollback removal of replacement; if deletion also fails, `supersedesBatchID` stays persisted
+                // so cold start and subsequent `replaceReconciledBatch` calls guarantee at most one replacement exists.
+                let replacementURL = outboxURL(batchID: replacement.batchID)
+                try? FileManager.default.removeItem(at: replacementURL)
                 throw error
             }
             return replacement
@@ -733,10 +748,9 @@ public final class CasualTrackStore: @unchecked Sendable {
     private func outboxURL(batchID: String) -> URL { outboxDir.appendingPathComponent("\(batchID).json") }
 
     private func loadRawEntriesLocked(botID: String) -> [CasualEntry] {
-        guard let data = try? Data(contentsOf: entriesURL(botID: botID)),
-              let raw = String(data: data, encoding: .utf8) else { return [] }
-        return raw.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
-            try? decoder.decode(CasualEntry.self, from: Data(line.utf8))
+        guard let data = try? Data(contentsOf: entriesURL(botID: botID)) else { return [] }
+        return data.split(separator: 0x0A, omittingEmptySubsequences: true).compactMap { lineSlice in
+            try? decoder.decode(CasualEntry.self, from: Data(lineSlice))
         }
     }
 
@@ -882,6 +896,7 @@ public final class CasualSendQueue: @unchecked Sendable {
     /// Always acquired BEFORE any `store` method (strict lock hierarchy: `serialLock -> store.lock`).
     private let serialLock = NSLock()
     private var trackEpoch: UInt64 = 0
+    private var timerGeneration: UInt64 = 0
     private var pendingSegments: [BufferedSegment] = []
     private var debounceTask: Task<Void, Never>?
 
@@ -905,7 +920,8 @@ public final class CasualSendQueue: @unchecked Sendable {
         serialLock.withLock { pendingSegments.map(\.text) }
     }
 
-    /// Enqueues a rapid burst message, persisting to Canonical draft immediately and resetting the 2.5s timer.
+    /// Enqueues a rapid burst message, persisting to Canonical draft immediately and resetting the 2.5s timer
+    /// ONLY AFTER draft persistence succeeds (so a failed draft write never cancels an earlier pending timer).
     public func enqueue(
         _ text: String,
         onReadyToDispatch: @escaping @Sendable (CasualOutboxBatch) async -> Void
@@ -916,22 +932,20 @@ public final class CasualSendQueue: @unchecked Sendable {
         let delay = mergeWindowNanoseconds
         try serialLock.withLock {
             let entry = BufferedSegment(id: UUID(), text: trimmed)
+            let candidateTexts = pendingSegments.map(\.text) + [trimmed]
+
+            // Persist draft FIRST without cancelling the existing debounceTask; if save fails, prior segments & timer stay intact.
+            try store.saveDraft(CasualDraft(
+                botID: botID,
+                casualSessionID: casualSessionID,
+                segments: candidateTexts
+            ))
+
             pendingSegments.append(entry)
             debounceTask?.cancel()
+            timerGeneration &+= 1
+            let gen = timerGeneration
             let epoch = trackEpoch
-            let snapshotTexts = pendingSegments.map(\.text)
-
-            // Persist draft atomically inside `serialLock` so concurrent `flushNow` cannot clear or overwrite it.
-            do {
-                try store.saveDraft(CasualDraft(
-                    botID: botID,
-                    casualSessionID: casualSessionID,
-                    segments: snapshotTexts
-                ))
-            } catch {
-                pendingSegments.removeAll { $0.id == entry.id }
-                throw error
-            }
 
             let task = Task { [weak self] in
                 do {
@@ -940,7 +954,7 @@ public final class CasualSendQueue: @unchecked Sendable {
                     return
                 }
                 guard let self else { return }
-                await self.flushNow(expectedEpoch: epoch, onReadyToDispatch: onReadyToDispatch)
+                await self.flushNow(expectedEpoch: epoch, expectedTimerGeneration: gen, onReadyToDispatch: onReadyToDispatch)
             }
             debounceTask = task
         }
@@ -952,6 +966,7 @@ public final class CasualSendQueue: @unchecked Sendable {
     public func cancelForTrackSwitch() -> CasualDraft? {
         serialLock.withLock {
             trackEpoch &+= 1
+            timerGeneration &+= 1
             debounceTask?.cancel()
             debounceTask = nil
             let snapshotTexts = pendingSegments.map(\.text)
@@ -971,9 +986,21 @@ public final class CasualSendQueue: @unchecked Sendable {
         expectedEpoch: UInt64? = nil,
         onReadyToDispatch: @escaping @Sendable (CasualOutboxBatch) async -> Void
     ) async -> CasualOutboxBatch? {
+        await flushNow(expectedEpoch: expectedEpoch, expectedTimerGeneration: nil, onReadyToDispatch: onReadyToDispatch)
+    }
+
+    private func flushNow(
+        expectedEpoch: UInt64?,
+        expectedTimerGeneration: UInt64?,
+        onReadyToDispatch: @escaping @Sendable (CasualOutboxBatch) async -> Void
+    ) async -> CasualOutboxBatch? {
         let step1: CasualOutboxBatch? = serialLock.withLock {
             let targetEpoch = expectedEpoch ?? trackEpoch
             guard trackEpoch == targetEpoch, !pendingSegments.isEmpty else { return nil }
+            if let expectedGen = expectedTimerGeneration, timerGeneration != expectedGen {
+                return nil
+            }
+            timerGeneration &+= 1
             debounceTask?.cancel()
             debounceTask = nil
             let claimed = pendingSegments
