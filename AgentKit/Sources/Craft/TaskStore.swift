@@ -193,6 +193,9 @@ public struct SubtaskAttempt: Codable, Equatable, Hashable, Identifiable, Sendab
 public struct SubtaskThread: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var threadID: String
     public var stableParentChatID: String
+    /// Non-reusable parent conversation identity (migrates with `shelveCurrent` / `openLeaf` so late deliveries
+    /// and approvals never bleed into a brand-new conversation reusing the same `bot-<id>` slot).
+    public var parentConversationID: String?
     public var askerBotID: String
     public var helperBotID: String
     public var helperBotName: String
@@ -215,6 +218,7 @@ public struct SubtaskThread: Codable, Equatable, Hashable, Identifiable, Sendabl
     public init(
         threadID: String = "subtask-\(UUID().uuidString.lowercased())",
         stableParentChatID: String,
+        parentConversationID: String? = nil,
         askerBotID: String,
         helperBotID: String,
         helperBotName: String,
@@ -229,6 +233,7 @@ public struct SubtaskThread: Codable, Equatable, Hashable, Identifiable, Sendabl
     ) {
         self.threadID = threadID
         self.stableParentChatID = stableParentChatID
+        self.parentConversationID = parentConversationID
         self.askerBotID = askerBotID
         self.helperBotID = helperBotID
         self.helperBotName = helperBotName
@@ -346,6 +351,7 @@ public enum TaskStoreError: Error, LocalizedError, Equatable, Sendable {
     case foregroundRequired
     case questionAlreadyFinalized(PendingQuestion.State)
     case reconcileRequiredBeforeRetry
+    case writesFrozen
 
     public var errorDescription: String? {
         switch self {
@@ -357,6 +363,7 @@ public enum TaskStoreError: Error, LocalizedError, Equatable, Sendable {
         case .foregroundRequired: return "此项涉及安全确认或机密信息，请回到前台处理。"
         case .questionAlreadyFinalized(let state): return "该问题已处理（\(state.rawValue)）。"
         case .reconcileRequiredBeforeRetry: return "该任务中断前存在未确认的外部/文件副作用，需先核对确认后才能重跑。"
+        case .writesFrozen: return "刚恢复了备份，任务写入已冻结，请重新打开 Clio 后再试。"
         }
     }
 }
@@ -380,12 +387,15 @@ public final class TaskStore: @unchecked Sendable {
 
     /// Testing / injection hook to simulate atomic write failures (e.g. Data Protection locked device).
     public var simulateQuestionWriteFailure: (@Sendable (PendingQuestion) -> Error?)?
+    /// External write-freeze barrier hook (e.g. wired to `Disk.frozen` during backup restore).
+    public var isWriteFrozen: (@Sendable () -> Bool)?
 
-    public init(canonicalTeamDirectory: URL, projectionDatabaseURL: URL? = nil) {
+    public init(canonicalTeamDirectory: URL, projectionDatabaseURL: URL? = nil, isWriteFrozen: (@Sendable () -> Bool)? = nil) {
         self.subtasksDir = canonicalTeamDirectory.appendingPathComponent("subtasks", isDirectory: true)
         self.questionsDir = canonicalTeamDirectory.appendingPathComponent("pending-questions", isDirectory: true)
         self.manifestURL = subtasksDir.appendingPathComponent("resume-manifest.json")
         self.sqliteURL = projectionDatabaseURL ?? canonicalTeamDirectory.appendingPathComponent("clio-tasks.db")
+        self.isWriteFrozen = isWriteFrozen
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
         self.encoder = enc
@@ -393,6 +403,13 @@ public final class TaskStore: @unchecked Sendable {
         lock.withLock {
             ensureDirectoriesLocked()
             openOrRebuildProjectionLocked()
+        }
+    }
+
+    /// Serializes against all in-flight TaskStore writes (e.g. inside a backup restore barrier while frozen).
+    public func withWriteBarrier<T>(_ body: () throws -> T) rethrows -> T {
+        try lock.withLock {
+            try body()
         }
     }
 
@@ -405,6 +422,7 @@ public final class TaskStore: @unchecked Sendable {
     @discardableResult
     public func createThread(
         stableParentChatID: String,
+        parentConversationID: String? = nil,
         askerBotID: String,
         helperBotID: String,
         helperBotName: String,
@@ -441,6 +459,7 @@ public final class TaskStore: @unchecked Sendable {
             let thread = SubtaskThread(
                 threadID: threadID,
                 stableParentChatID: stableParentChatID,
+                parentConversationID: parentConversationID,
                 askerBotID: askerBotID,
                 helperBotID: helperBotID,
                 helperBotName: helperBotName,
@@ -800,6 +819,15 @@ public final class TaskStore: @unchecked Sendable {
         }
     }
 
+    /// Releases a claimed `resumeAttemptID` ONLY when foreground dispatch synchronously refused to enqueue the reply.
+    public func releaseQuestionResumeClaim(resumeAttemptID: String) {
+        lock.withLock {
+            var manifest = loadManifestLocked()
+            guard manifest.dispatchedResumeAttemptIDs.removeValue(forKey: resumeAttemptID) != nil else { return }
+            try? persistManifestLocked(manifest)
+        }
+    }
+
     /// Phase 2b: Marks a `.pending` (foreground answered) OR `.answered` (notification resumed) question `.consumed`.
     @discardableResult
     public func markQuestionConsumed(
@@ -931,6 +959,7 @@ public final class TaskStore: @unchecked Sendable {
     }
 
     private func persistThreadLocked(_ thread: SubtaskThread) throws {
+        guard !(isWriteFrozen?() ?? false) else { throw TaskStoreError.writesFrozen }
         ensureDirectoriesLocked()
         let url = try safeFileURL(in: subtasksDir, id: thread.threadID)
         let data = try encoder.encode(thread)
@@ -958,6 +987,7 @@ public final class TaskStore: @unchecked Sendable {
     }
 
     private func persistQuestionLocked(_ question: PendingQuestion) throws {
+        guard !(isWriteFrozen?() ?? false) else { throw TaskStoreError.writesFrozen }
         if let injected = simulateQuestionWriteFailure?(question) {
             throw injected
         }
@@ -996,6 +1026,7 @@ public final class TaskStore: @unchecked Sendable {
     }
 
     private func persistManifestLocked(_ manifest: ResumeManifest) throws {
+        guard !(isWriteFrozen?() ?? false) else { throw TaskStoreError.writesFrozen }
         ensureDirectoriesLocked()
         let data = try encoder.encode(manifest)
         try data.write(to: manifestURL, options: .atomic)

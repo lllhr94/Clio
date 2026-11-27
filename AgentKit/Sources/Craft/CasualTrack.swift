@@ -200,6 +200,7 @@ public enum CasualTrackError: Error, LocalizedError, Equatable, Sendable {
     case emptyDraft
     case batchNotFound(String)
     case invalidStateTransition(from: CasualOutboxBatch.State, to: CasualOutboxBatch.State)
+    case writesFrozen
 
     public var errorDescription: String? {
         switch self {
@@ -208,6 +209,7 @@ public enum CasualTrackError: Error, LocalizedError, Equatable, Sendable {
         case .emptyDraft: return "没有待发送的闲谈内容。"
         case .batchNotFound(let id): return "找不到闲谈批次：\(id)"
         case .invalidStateTransition(let from, let to): return "不允许的状态流转：\(from.rawValue) -> \(to.rawValue)"
+        case .writesFrozen: return "刚恢复了备份，闲谈写入已冻结，请重新打开 Clio 后再试。"
         }
     }
 }
@@ -223,13 +225,18 @@ public final class CasualTrackStore: @unchecked Sendable {
     private let decoder: JSONDecoder
     private var db: OpaquePointer?
 
-    /// Testing hook to simulate failure during Step 2 `in_flight` commit before network dispatch.
+    /// Testing hook to simulate failure during outbox batch persistence.
     public var simulateOutboxWriteFailure: (@Sendable (CasualOutboxBatch) -> Error?)?
+    /// Testing hook to simulate failure when persisting casual reply/user entries to JSONL.
+    public var simulateEntryWriteFailure: (@Sendable (CasualEntry) -> Error?)?
+    /// External write-freeze barrier hook (e.g. wired to `Disk.frozen` during backup restore).
+    public var isWriteFrozen: (@Sendable () -> Bool)?
 
-    public init(canonicalTeamDirectory: URL, projectionDatabaseURL: URL? = nil) {
+    public init(canonicalTeamDirectory: URL, projectionDatabaseURL: URL? = nil, isWriteFrozen: (@Sendable () -> Bool)? = nil) {
         self.casualDir = canonicalTeamDirectory.appendingPathComponent("casual", isDirectory: true)
         self.outboxDir = casualDir.appendingPathComponent("outbox", isDirectory: true)
         self.sqliteURL = projectionDatabaseURL ?? canonicalTeamDirectory.appendingPathComponent("clio-casual.db")
+        self.isWriteFrozen = isWriteFrozen
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
         self.encoder = enc
@@ -237,6 +244,13 @@ public final class CasualTrackStore: @unchecked Sendable {
         lock.withLock {
             ensureDirectoriesLocked()
             openProjectionLocked()
+        }
+    }
+
+    /// Serializes against all in-flight CasualTrackStore writes (e.g. during a backup restore barrier while frozen).
+    public func withWriteBarrier<T>(_ body: () throws -> T) rethrows -> T {
+        try lock.withLock {
+            try body()
         }
     }
 
@@ -249,27 +263,38 @@ public final class CasualTrackStore: @unchecked Sendable {
     @discardableResult
     public func appendEntry(_ entry: CasualEntry) throws -> Bool {
         try lock.withLock {
-            try validateBotID(entry.botID)
-            let tombstones = loadTombstonesLocked(botID: entry.botID)
-            if tombstones[entry.id] != nil {
-                return false
-            }
-            ensureDirectoriesLocked()
-            let jsonlURL = entriesURL(botID: entry.botID)
-            let data = try encoder.encode(entry)
-            var line = data
-            line.append(0x0A)
-            if FileManager.default.fileExists(atPath: jsonlURL.path) {
-                let handle = try FileHandle(forWritingTo: jsonlURL)
-                defer { try? handle.close() }
-                try handle.seekToEnd()
-                try handle.write(contentsOf: line)
-            } else {
-                try line.write(to: jsonlURL, options: .atomic)
-            }
-            insertProjectionEntryLocked(entry)
-            return true
+            try appendEntryLocked(entry)
         }
+    }
+
+    @discardableResult
+    private func appendEntryLocked(_ entry: CasualEntry) throws -> Bool {
+        guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
+        try validateBotID(entry.botID)
+        if let err = simulateEntryWriteFailure?(entry) { throw err }
+        let tombstones = loadTombstonesLocked(botID: entry.botID)
+        if tombstones[entry.id] != nil {
+            return false
+        }
+        let existing = loadRawEntriesLocked(botID: entry.botID)
+        if existing.contains(where: { $0.id == entry.id }) {
+            return false
+        }
+        ensureDirectoriesLocked()
+        let jsonlURL = entriesURL(botID: entry.botID)
+        let data = try encoder.encode(entry)
+        var line = data
+        line.append(0x0A)
+        if FileManager.default.fileExists(atPath: jsonlURL.path) {
+            let handle = try FileHandle(forWritingTo: jsonlURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: line)
+        } else {
+            try line.write(to: jsonlURL, options: .atomic)
+        }
+        insertProjectionEntryLocked(entry)
+        return true
     }
 
     public func entries(for botID: String) -> [CasualEntry] {
@@ -284,6 +309,7 @@ public final class CasualTrackStore: @unchecked Sendable {
     /// on cold start or archive merge when covered by local or archive tombstones.
     public func permanentlyDelete(entryID: String, botID: String, nowMs: Double = Date().timeIntervalSince1970 * 1000) throws {
         try lock.withLock {
+            guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
             try validateBotID(botID)
             var tombstones = loadTombstonesLocked(botID: botID)
             if let existing = tombstones[entryID] {
@@ -304,6 +330,7 @@ public final class CasualTrackStore: @unchecked Sendable {
         archiveTombstones: [CasualTombstone]
     ) throws -> [CasualEntry] {
         try lock.withLock {
+            guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
             try validateBotID(botID)
             var mergedTombstones = loadTombstonesLocked(botID: botID)
             for t in archiveTombstones {
@@ -352,6 +379,7 @@ public final class CasualTrackStore: @unchecked Sendable {
 
     public func saveDraft(_ draft: CasualDraft) throws {
         try lock.withLock {
+            guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
             try validateBotID(draft.botID)
             ensureDirectoriesLocked()
             let url = draftURL(botID: draft.botID)
@@ -374,6 +402,7 @@ public final class CasualTrackStore: @unchecked Sendable {
 
     public func clearDraft(botID: String) {
         lock.withLock {
+            guard !(isWriteFrozen?() ?? false) else { return }
             try? FileManager.default.removeItem(at: draftURL(botID: botID))
         }
     }
@@ -459,6 +488,90 @@ public final class CasualTrackStore: @unchecked Sendable {
             try persistOutboxBatchLocked(batch)
             return batch
         }
+    }
+
+    /// Persists all reply entries atomically to `botID.jsonl` (idempotent by `entry.id`) BEFORE marking
+    /// the outbox batch `.completed`. If any entry write fails, the outbox batch stays open and is never dropped.
+    @discardableResult
+    public func appendEntriesAndCompleteOutbox(
+        entries: [CasualEntry],
+        batchID: String,
+        nowMs: Double = Date().timeIntervalSince1970 * 1000
+    ) throws -> CasualOutboxBatch {
+        try lock.withLock {
+            guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
+            guard var batch = loadOutboxBatchLocked(batchID: batchID) else {
+                throw CasualTrackError.batchNotFound(batchID)
+            }
+            if !entries.isEmpty {
+                let grouped = Dictionary(grouping: entries, by: \.botID)
+                for (botID, botEntries) in grouped {
+                    try validateBotID(botID)
+                    for entry in botEntries {
+                        if let err = simulateEntryWriteFailure?(entry) { throw err }
+                    }
+                    let tombstones = loadTombstonesLocked(botID: botID)
+                    var merged = loadRawEntriesLocked(botID: botID)
+                    var existingIDs = Set(merged.map(\.id))
+                    var newlyAdded: [CasualEntry] = []
+                    for entry in botEntries where tombstones[entry.id] == nil && existingIDs.insert(entry.id).inserted {
+                        merged.append(entry)
+                        newlyAdded.append(entry)
+                    }
+                    if !newlyAdded.isEmpty {
+                        try rewriteEntriesLocked(merged, botID: botID)
+                        for entry in newlyAdded {
+                            insertProjectionEntryLocked(entry)
+                        }
+                    }
+                }
+            }
+            batch.state = .completed
+            batch.updatedAtMs = nowMs
+            try persistOutboxBatchLocked(batch)
+            return batch
+        }
+    }
+
+    /// Read-only per-bot outbox query (safe to call when opening a companion's Casual page without
+    /// touching any other companion's active `.inFlight` batches).
+    public func outboxBatches(for botID: String) -> [CasualOutboxBatch] {
+        lock.withLock {
+            loadAllOutboxBatchesLocked()
+                .filter { $0.botID == botID }
+                .sorted { $0.createdAtMs < $1.createdAtMs }
+        }
+    }
+
+    /// Demotes all `.queuedBeforeSend` / `.inFlight` outbox batches inside a staged backup-restored `Team/`
+    /// directory to `.needsReconcile` BEFORE swap so restored casual batches NEVER auto-send on open.
+    @discardableResult
+    public static func demoteRestoredOutboxBatches(
+        in teamDirectory: URL,
+        nowMs: Double = Date().timeIntervalSince1970 * 1000
+    ) throws -> Int {
+        let outboxDir = teamDirectory
+            .appendingPathComponent("casual", isDirectory: true)
+            .appendingPathComponent("outbox", isDirectory: true)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: outboxDir.path) else { return 0 }
+        let files = try fm.contentsOfDirectory(at: outboxDir, includingPropertiesForKeys: nil)
+        let decoder = JSONDecoder()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        var demoted = 0
+        for url in files where url.pathExtension == "json" {
+            let data = try Data(contentsOf: url)
+            guard var batch = try? decoder.decode(CasualOutboxBatch.self, from: data) else { continue }
+            if batch.state == .queuedBeforeSend || batch.state == .inFlight {
+                batch.state = .needsReconcile
+                batch.updatedAtMs = nowMs
+                let updated = try encoder.encode(batch)
+                try updated.write(to: url, options: .atomic)
+                demoted += 1
+            }
+        }
+        return demoted
     }
 
     /// Cold-start recovery across all 4 crash windows:
@@ -561,6 +674,7 @@ public final class CasualTrackStore: @unchecked Sendable {
     }
 
     private func persistOutboxBatchLocked(_ batch: CasualOutboxBatch) throws {
+        guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
         if let err = simulateOutboxWriteFailure?(batch) { throw err }
         ensureDirectoriesLocked()
         let data = try encoder.encode(batch)
@@ -766,10 +880,24 @@ public final class CasualSendQueue: @unchecked Sendable {
             return nil
         }
 
-        lock.withLock {
+        let remainingAfterFlush: [String] = lock.withLock {
             if trackEpoch == targetEpoch {
-                pendingSegments.removeAll()
+                if pendingSegments.starts(with: snapshot) {
+                    pendingSegments.removeFirst(snapshot.count)
+                } else {
+                    let drop = min(snapshot.count, pendingSegments.count)
+                    pendingSegments.removeFirst(drop)
+                }
+                return pendingSegments
             }
+            return []
+        }
+        if !remainingAfterFlush.isEmpty {
+            try? store.saveDraft(CasualDraft(
+                botID: botID,
+                casualSessionID: casualSessionID,
+                segments: remainingAfterFlush
+            ))
         }
 
         // Step 2: Advance the SAME `batchID` to `in_flight` on disk STRICTLY BEFORE calling `onReadyToDispatch`.
