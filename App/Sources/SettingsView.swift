@@ -432,20 +432,7 @@ struct SettingsView: View {
     private func destination(_ page: SettingsPage) -> some View {
         switch page {
         case .services:
-            subpage(page) {
-                SettingsServicesSection(team: team) { open(.add) }
-            }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            Haptics.light()
-                            open(.add)
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel(L.t("settings.addService"))
-                    }
-                }
+            ServicesHubPage(team: team) { open(.add) }
         case .models:
             DefaultModelsPage(team: team) {
                 path.append(.services)
@@ -509,23 +496,12 @@ struct SettingsView: View {
     @ViewBuilder
     private func sheetContent(_ page: SettingsPage) -> some View {
         switch page {
-        case .add: SetupView(team: team) { sheet = nil }
+        case .add: AddServiceSheet(team: team) { sheet = nil }
         default: EmptyView()
         }
     }
 
-    private func subpage<Content: View>(_ page: SettingsPage, @ViewBuilder _ content: () -> Content) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Ink.Space.xl) { content() }
-                .padding(.horizontal, Ink.Space.page)
-                .padding(.vertical, Ink.Space.l)
-        }
-        .scrollEdgeEffectStyle(.soft, for: .vertical)
-        .scrollDismissesKeyboard(.interactively)
-        .background(Ink.paper.ignoresSafeArea())
-        .navigationTitle(L.t(page.titleKey))
-        .navigationBarTitleDisplayMode(.inline)
-    }
+
 }
 
 private struct SettingsUserAvatarButton: View {
@@ -672,34 +648,6 @@ private struct SettingsSchedulePage: View {
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-private struct SettingsServicesSection: View {
-    @ObservedObject var team: TeamModel
-    let openAdd: () -> Void
-
-    var body: some View {
-        RowCard(note: team.phase == .demo ? L.t("settings.demoData") : nil) {
-            ForEach(team.settings.endpoints) { endpoint in
-                let host = URL(string: endpoint.baseURL)?.host ?? endpoint.baseURL
-                NavigationLink {
-                    ServicePage(team: team, id: endpoint.id)
-                } label: {
-                    RowLabel(title: endpoint.name, line: L.format("settings.providerCountSummary", host, endpoint.models.count)) {
-                        ServiceIcon(service: Service.of(endpoint), size: Kit.badge, name: endpoint.name)
-                    }
-                }
-                .buttonStyle(PressStyle())
-            }
-            Button {
-                Haptics.light()
-                openAdd()
-            } label: {
-                RowLabel(SettingsPage.add.symbol, tint: Ink.Tile.dai, title: L.t(SettingsPage.add.titleKey), line: L.t(SettingsPage.add.lineKey))
-            }
-            .buttonStyle(PressStyle(haptic: false))
-        }
     }
 }
 
