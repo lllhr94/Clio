@@ -461,9 +461,41 @@ def perf_checks():
     return perf_errors
 
 
+L_KEY_SCAN = re.compile(
+    r'//[^\n]*|/\*[\s\S]*?\*/'
+    r'|(?P<raw>#+)(?:"""[\s\S]*?"""|"[^\n]*?")(?P=raw)'
+    r'|"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"'
+    r'|(?P<lcall>\bL\s*\.\s*(?:t|format|hint)\s*\(\s*"(?P<key>[^"\\\n]+)"\s*(?:,|\)))'
+)
+
+
+def used_dictionary_keys():
+    valid_keys = None
+    for style in ("daily", "literary"):
+        path = ROOT / TONE / f"zh-CN.{style}.json"
+        try:
+            content = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(content, dict):
+            return
+        keys = {".".join(parts) for parts in leaf_keys(content)}
+        valid_keys = keys if valid_keys is None else (valid_keys & keys)
+    if not valid_keys:
+        return
+    for full_path in sorted((ROOT / "App/Sources").rglob("*.swift")):
+        path = full_path.relative_to(ROOT)
+        text = full_path.read_text(encoding="utf-8")
+        for match in L_KEY_SCAN.finditer(text):
+            key = match.group("key")
+            if key and key not in valid_keys:
+                lineno = text.count("\n", 0, match.start("lcall")) + 1
+                yield path, lineno, f"Missing localization key {key!r} in Tone dictionaries"
+
+
 def main():
     perf_errors = perf_checks()
-    errors = [*dictionaries(), *swift_sources(), *perf_errors]
+    errors = [*dictionaries(), *used_dictionary_keys(), *swift_sources(), *perf_errors]
     warnings = list(literary_warnings())
     for path, line, message in warnings:
         print(f"warning: {path}:{line}: {message}", file=sys.stderr)
