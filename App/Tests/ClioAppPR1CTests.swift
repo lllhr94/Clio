@@ -32,7 +32,7 @@ final class ClioAppPR1CTests: XCTestCase {
 
         let output = try await UseSkillTool().run(["name": .string("quiet-musing")])
         XCTAssertFalse(output.isError)
-        XCTAssertTrue(output.content.contains("quiet-musing"))
+        XCTAssertTrue(output.text.contains("quiet-musing"))
     }
 
     func testCPUGuardEvaluatorRequiresSustainedHighUtilizationAndCooldown() {
@@ -64,8 +64,9 @@ final class ClioAppPR1CTests: XCTestCase {
             .appendingPathComponent("clio-den-dns-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let resolvURL = dir.appendingPathComponent("resolv.conf", isDirectory: false)
+        let prefsResolvURL = dir.appendingPathComponent("prefs-resolv.conf", isDirectory: false)
 
-        let parsed = Den.shared.updateDNSConfiguration(mode: .custom, customInput: "10.0.0.53, bad-host", defaults: defaults, resolvURL: resolvURL)
+        let parsed = Den.shared.updateDNSConfiguration(mode: .custom, customInput: "10.0.0.53, bad-host", defaults: defaults, resolvURL: prefsResolvURL)
         XCTAssertEqual(parsed.valid, ["10.0.0.53"])
         XCTAssertEqual(parsed.invalid, ["bad-host"])
         XCTAssertEqual(defaults.string(forKey: Den.dnsModeDefaultsKey), DenDNSMode.custom.rawValue)

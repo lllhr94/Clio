@@ -409,7 +409,7 @@ enum HTTP {
     }
 
     /// Rejects cross-origin and HTTPS-to-HTTP redirects on API calls so auth headers never leak.
-    final class RedirectGuardDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+    final class RedirectGuardDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         static let shared = RedirectGuardDelegate()
 
         func urlSession(

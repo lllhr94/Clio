@@ -3,6 +3,36 @@ import Foundation
 import XCTest
 
 final class ProviderSessionTests: XCTestCase {
+    private final class FlagBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func setTrue() {
+            lock.withLock { value = true }
+        }
+
+        func isTrue() -> Bool {
+            lock.withLock { value }
+        }
+    }
+
+    private final class StringBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: String
+
+        init(_ value: String) {
+            self.value = value
+        }
+
+        func get() -> String {
+            lock.withLock { value }
+        }
+
+        func set(_ newValue: String) {
+            lock.withLock { value = newValue }
+        }
+    }
+
     private final class MockURLProtocol: URLProtocol {
         nonisolated(unsafe) static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
         private static let urlsLock = NSLock()
@@ -122,14 +152,8 @@ final class ProviderSessionTests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]
 
-        let lock = NSLock()
-        var createdSessions: [URLSession] = []
         let pool = HTTP.SessionPool(initialSignature: "wifi:en0", startMonitor: false) { _ in
-            let s = URLSession(configuration: config)
-            lock.lock()
-            createdSessions.append(s)
-            lock.unlock()
-            return s
+            URLSession(configuration: config)
         }
 
         let initialSession = pool.currentSession
@@ -137,10 +161,10 @@ final class ProviderSessionTests: XCTestCase {
         XCTAssertEqual(pool.generation, 0)
         XCTAssertTrue(pool.currentSession === initialSession)
 
-        let streamStarted = DispatchSemaphore(value: 0)
+        let streamStarted = FlagBox()
         let releaseStream = DispatchSemaphore(value: 0)
         MockURLProtocol.handler = { request in
-            streamStarted.signal()
+            streamStarted.setTrue()
             _ = releaseStream.wait(timeout: .now() + 5)
             let payload = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"
             let response = HTTPURLResponse(
@@ -167,7 +191,7 @@ final class ProviderSessionTests: XCTestCase {
 
         // Wait until the request is genuinely in-flight before rotating & invalidating the retired session.
         let deadline = Date().addingTimeInterval(3)
-        while streamStarted.wait(timeout: .now()) != .success {
+        while !streamStarted.isTrue() {
             if Date() >= deadline {
                 releaseStream.signal()
                 XCTFail("Timed out waiting for in-flight request to start")
@@ -188,14 +212,13 @@ final class ProviderSessionTests: XCTestCase {
     }
 
     func testSessionPoolRotatesOnProxyChangeAndDefersRetirementDuringLease() {
-        let proxyLock = NSLock()
-        nonisolated(unsafe) var proxyString = "none"
+        let proxyBox = StringBox("none")
         let config = URLSessionConfiguration.ephemeral
 
         let pool = HTTP.SessionPool(
             initialSignature: "wifi:en0",
             startMonitor: false,
-            proxySignatureProvider: { proxyLock.withLock { proxyString } },
+            proxySignatureProvider: { proxyBox.get() },
             factory: { _ in URLSession(configuration: config) }
         )
 
@@ -203,7 +226,7 @@ final class ProviderSessionTests: XCTestCase {
         XCTAssertEqual(lease.generation, 0)
         XCTAssertEqual(pool.pendingRetirementCount, 0)
 
-        proxyLock.withLock { proxyString = "HTTPEnable=1;HTTPProxy=127.0.0.1;HTTPPort=8888" }
+        proxyBox.set("HTTPEnable=1;HTTPProxy=127.0.0.1;HTTPPort=8888")
         let rotatedSession = pool.currentSession
         XCTAssertEqual(pool.generation, 1)
         XCTAssertFalse(rotatedSession === lease.session)
