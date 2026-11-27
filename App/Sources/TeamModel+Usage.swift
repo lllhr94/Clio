@@ -215,14 +215,16 @@ extension TeamModel {
         estimate.model = found?.model ?? ""
         estimate.window = traits?.window ?? Tokens.window(for: estimate.model)
         let workplace = place(of: key)
+        let passTool = traits?.tools == false ? nil : ChannelPassTool.forRoom(room, helping: false, state: ChannelPassState())
         let prompt = assembledSystemPrompt(
             for: bot,
             in: key,
             room: room,
             workplace: workplace,
-            memory: !chatOptions.off.contains(Grant.memory.rawValue)
+            memory: !chatOptions.off.contains(Grant.memory.rawValue),
+            extraTail: companionPromptTail(for: bot, room: room, canPass: passTool != nil)
         ).full
-        let specs = traits?.tools == false ? [] : tools(for: bot, key: key, canSee: vision, workplace: workplace).map(\.spec)
+        let specs = traits?.tools == false ? [] : tools(for: bot, key: key, canSee: vision, workplace: workplace, channelPass: passTool).map(\.spec)
         let context = context(for: key, bot: bot, room: room, vision: vision)
         let recipient = found?.endpoint.recipientIdentity
         let auxiliary = directVision ? nil : visionModelSelection

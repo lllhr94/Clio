@@ -23,6 +23,10 @@ extension TeamModel {
         var thinking: Thinking?
         /// Versioned high-fidelity thinking selection (v2, authoritative when present).
         var thinkingSelection: ThinkingSelection?
+        /// Conversation-scoped read-only Plan mode (default off; never mutates global `Grant`).
+        var planMode: Bool?
+
+        var isPlanMode: Bool { planMode == true }
 
         var web: Bool { !off.contains(Grant.web.rawValue) && !off.contains(Grant.browser.rawValue) }
 
@@ -45,7 +49,8 @@ extension TeamModel {
             title: String? = nil,
             spend: Spend? = nil,
             thinking: Thinking? = nil,
-            thinkingSelection: ThinkingSelection? = nil
+            thinkingSelection: ThinkingSelection? = nil,
+            planMode: Bool? = nil
         ) {
             self.off = off
             self.model = model
@@ -54,10 +59,11 @@ extension TeamModel {
             self.spend = spend
             self.thinking = thinking
             self.thinkingSelection = thinkingSelection
+            self.planMode = planMode
         }
 
         private enum CodingKeys: String, CodingKey {
-            case off, model, place, title, spend, thinking, thinkingSelection
+            case off, model, place, title, spend, thinking, thinkingSelection, planMode
         }
 
         init(from decoder: Decoder) throws {
@@ -69,6 +75,7 @@ extension TeamModel {
             spend = try? c.decodeIfPresent(Spend.self, forKey: .spend)
             thinking = try? c.decodeIfPresent(Thinking.self, forKey: .thinking)
             thinkingSelection = try? c.decodeIfPresent(ThinkingSelection.self, forKey: .thinkingSelection)
+            planMode = try? c.decodeIfPresent(Bool.self, forKey: .planMode)
         }
     }
 
@@ -79,6 +86,7 @@ extension TeamModel {
         let loaded = keeping ? (Disk.load(ChatOptions.self, Self.optionsFile(key)) ?? ChatOptions()) : ChatOptions()
         optionBook[key] = loaded
         liveChatMemoryGate.setDisabled(loaded.off.contains(Grant.memory.rawValue), for: key)
+        livePlanModeLedger.setPlanMode(loaded.isPlanMode, for: key)
         return loaded
     }
 
@@ -100,6 +108,7 @@ extension TeamModel {
         objectWillChange.send()
         optionBook[key] = value
         liveChatMemoryGate.setDisabled(newOff, for: key)
+        livePlanModeLedger.setPlanMode(value.isPlanMode, for: key)
         let newHostID = WorkPlace(code: value.place).hostID
         hostBindings.set(newHostID, for: key)
         if keeping { ChatDisk.saveValue(value, file: Self.optionsFile(key)) }
@@ -109,6 +118,29 @@ extension TeamModel {
         if oldOff != newOff {
             invalidateMemoryPromptCache()
         }
+        if oldOptions.isPlanMode != value.isPlanMode {
+            bumpPlanSessionEpoch(for: key)
+            approvalQueue.bumpRevision()
+            reconcilePendingApprovals()
+            invalidateMemoryPromptCache()
+        }
+    }
+
+    /// True when conversation-scoped Plan mode OR an inherited read-only sub-companion ceiling is active.
+    func isPlanModeActive(for key: String) -> Bool {
+        guard !key.hasPrefix("casual-") else { return false }
+        _ = options(key)
+        return livePlanModeLedger.isRestricted(key)
+    }
+
+    /// Enables or disables conversation-scoped read-only Plan mode without modifying any global `Grant`.
+    func setPlanMode(_ on: Bool, in key: String) {
+        guard !key.hasPrefix("casual-") else { return }
+        var value = options(key)
+        let target: Bool? = on ? true : nil
+        guard value.planMode != target else { return }
+        value.planMode = target
+        setOptions(key, value)
     }
 
     /// Switches one ability on or off for this conversation.
@@ -139,7 +171,10 @@ extension TeamModel {
         setOptions(key, value)
     }
 
-    func place(of key: String) -> WorkPlace { WorkPlace(code: options(key).place) }
+    func place(of key: String) -> WorkPlace {
+        if let bound = ephemeralPlaces[key] { return bound }
+        return WorkPlace(code: options(key).place)
+    }
 
     /// The model this conversation will use.
     func model(for key: String, bot: BotInfo) -> String? { options(key).model ?? bot.model ?? settings.defaultModel }
@@ -244,8 +279,15 @@ extension TeamModel {
     }
 
     func offBlock(_ key: String) -> String {
+        var blocks: [String] = []
+        if isPlanModeActive(for: key) {
+            blocks.append("【规划模式 · 只看不动】当前对话处于只读规划模式：你只能阅读资料、搜索信息、向用户提普通澄清问题（不可采集机密或密码表单）并用 update_plan 维护步骤方案；禁止写/改/删文件、运行命令/脚本、修改记忆或调用第三方 MCP。请先给出清晰可执行的方案，等用户点击「按此方案执行」后再开始动手。")
+        }
         let off = options(key).off.compactMap(Grant.init(rawValue:))
-        guard !off.isEmpty else { return "" }
-        return "\n\n在这段絮语里，用户关掉了这些本事：" + off.map(\.title).joined(separator: "、") + "。需要用到时，告诉用户可以在输入框下的「本事」里打开，不要假装做了。"
+        if !off.isEmpty {
+            blocks.append("在这段絮语里，用户关掉了这些本事：" + off.map(\.title).joined(separator: "、") + "。需要用到时，告诉用户可以在输入框下的「本事」里打开，不要假装做了。")
+        }
+        guard !blocks.isEmpty else { return "" }
+        return "\n\n" + blocks.joined(separator: "\n\n")
     }
 }

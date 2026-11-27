@@ -19,13 +19,45 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         [.banner, .sound, .list]
     }
 
-    /// Tapping a companion's notification opens that conversation; 同意 / 不同意 on an approval answers it.
+    /// Tapping a companion's notification opens that conversation; 同意 / 不同意 answers an approval;
+    /// `clio.question` replies commit Phase 1 (`.answered`) atomically before routing resume.
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
         if let id = info["approval"] as? String, ["allow", "deny"].contains(response.actionIdentifier) {
             let allow = response.actionIdentifier == "allow"
             await MainActor.run {
                 ChatNotificationRoute.enqueue(.answer(id, allow))
+            }
+            return
+        }
+        if let questionID = info["question"] as? String, !questionID.isEmpty,
+           ["reply_question", "option_0", "option_1"].contains(response.actionIdentifier) {
+            let answerText: String?
+            if response.actionIdentifier == "reply_question",
+               let textResponse = response as? UNTextInputNotificationResponse {
+                answerText = textResponse.userText.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else if response.actionIdentifier == "option_0",
+                      let options = info["options"] as? [String], options.indices.contains(0) {
+                answerText = options[0]
+            } else if response.actionIdentifier == "option_1",
+                      let options = info["options"] as? [String], options.indices.contains(1) {
+                answerText = options[1]
+            } else {
+                answerText = nil
+            }
+            if let answerText, !answerText.isEmpty {
+                let answerID = UUID().uuidString.lowercased()
+                let persisted = (try? SubtaskManager.sharedCanonicalStore.recordQuestionAnswer(
+                    questionID: questionID,
+                    answerText: answerText,
+                    answerID: answerID,
+                    fromBackgroundNotification: true
+                )) != nil
+                if persisted {
+                    await MainActor.run {
+                        ChatNotificationRoute.enqueue(.answerQuestion(questionID, answerID, answerText))
+                    }
+                }
             }
             return
         }
@@ -43,6 +75,7 @@ enum ChatNotificationRoute {
     enum Action {
         case open(String)
         case answer(String, Bool)
+        case answerQuestion(String, String, String)
     }
 
     private static var pending: [Action] = []

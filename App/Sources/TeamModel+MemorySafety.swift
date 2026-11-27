@@ -424,6 +424,9 @@ extension TeamModel {
         }
         guard !Task.isCancelled, let reply, !reply.isEmpty else { return }
         guard keeping, !Disk.frozen else { return }
+        // Mid-flight Plan-mode re-check: if the conversation switched into Plan mode or inherited read-only
+        // after extraction started, discard results without writing memories or advancing the watermark.
+        guard canWriteMemories(beforeCompressing: key) else { return }
         guard canAcceptInput(for: key),
               MemorySafety.isFlushCommitValid(
                   preparedIDs: prepared.entryIDs,

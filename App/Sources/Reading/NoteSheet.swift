@@ -169,7 +169,7 @@ struct NoteSheet: View {
                 .environment(\.noteInk, theme.words)
             HStack(spacing: Ink.Space.s) {
                 Spacer()
-                PetStill(size: 22, wash: theme.words.opacity(0.14), avatar: true, bot: bot)
+                CompanionAvatar(size: 22, wash: theme.words.opacity(0.14), bot: bot)
                 Text(signed ? "\(from) · Clio" : "Clio")
                     .font(Ink.serif(Ink.Size.small, relativeTo: .footnote))
                     .foregroundStyle(theme.words.opacity(0.6))

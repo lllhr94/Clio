@@ -222,6 +222,8 @@ struct PlusSheet: View {
     let removePhoto: (Data) -> Void
     /// Camera, files or the full photo picker: opened once the sheet is gone.
     let pick: (AttachKind) -> Void
+    var hasDraftToMove: Bool = false
+    var onMoveDraft: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var recent: [PHAsset] = []
     @State private var sheetSize = CGSize.zero
@@ -252,6 +254,13 @@ struct PlusSheet: View {
                         line("camera", "拍照") { choose(.camera) }
                         divider
                         line("folder", "添加文件") { choose(.files) }
+                        if hasDraftToMove, let onMoveDraft {
+                            divider
+                            line("arrow.right.doc.on.clipboard", L.t("draftTransfer.moveAction")) {
+                                dismiss()
+                                onMoveDraft()
+                            }
+                        }
                     }
                     group {
                         NavigationLink {

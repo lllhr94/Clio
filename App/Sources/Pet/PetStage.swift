@@ -1,3 +1,4 @@
+import Craft
 import SwiftUI
 
 /// What the conversation on screen is doing, as far as the pet is concerned.
@@ -25,6 +26,7 @@ struct PetStage: View {
 
     @State private var library = PetLibrary.shared
     @State private var news = PetNews.shared
+    @ObservedObject private var subtasks = TeamModel.shared.subtasks
     @AppStorage("pet.x") private var restX = 0.22
     @AppStorage("pet.lift") private var legacyLift = 0.0
     /// Left over from when the pet could be pinned anywhere up the screen. It now always stands on the composer
@@ -58,6 +60,7 @@ struct PetStage: View {
 
     private var mood: PetMood {
         let sideCount = SubConversationActivity.shared.running.count
+            + subtasks.threads.filter { $0.status.isActive }.count
         guard sideCount > 0 else { return perch.mood }
         switch perch.mood {
         case .waiting, .sweeping: return perch.mood

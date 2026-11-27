@@ -412,6 +412,13 @@ struct DeskSidebarView: View {
 
     @ViewBuilder
     private func sidebarMenu(_ row: DeskSideConversation) -> some View {
+        if case .current(let item) = row, case .companion(let botID) = item.id {
+            Button(L.t("casual.openAction"), systemImage: "bubble.left.and.text.bubble.right") {
+                CasualTrackDoor.pendingBotID = botID
+                jump(item.id)
+                NotificationCenter.default.post(name: .clioOpenCasualTrack, object: botID)
+            }
+        }
         DeskThreadHelpers.conversationMenu(
             row,
             team: team,

@@ -1,3 +1,4 @@
+import SwiftUI
 import UIKit
 
 /// The companion's face made tiny enough to ride along with its Live Activity (the island has no way to read Clio's files).
@@ -10,18 +11,14 @@ enum LiveFace {
         let source: (image: CGImage, pixel: Bool, round: Bool)
         if let bot, bot.avatar == "photo", let photo = Avatars.image(bot.id)?.cgImage {
             source = (image: photo, pixel: false, round: true)
+        } else if let legacy = CompanionAvatar.legacyFrame(for: bot?.avatar, state: "working"),
+                  let image = legacy.image.cgImage {
+            source = (image: image, pixel: legacy.pixelArt, round: false)
         } else {
-            var pack = PetLibrary.shared.pack
-            if let face = bot?.avatar, face.hasPrefix("pet:"),
-               let own = PetLibrary.shared.packs.first(where: { $0.id == String(face.dropFirst(4)) }) {
-                pack = own
-            }
-            guard let pack,
-                  let name = pack.anim(for: "working") ?? pack.anim(for: "idle"),
-                  let animation = pack.animations[name],
-                  let first = animation.frames.first,
-                  let cell = PetSheets.cell(pack, animation, first.i) else { return nil }
-            source = (image: cell, pixel: pack.pixelArt, round: false)
+            let renderer = ImageRenderer(content: CompanionAvatar(size: min(side, 32), bot: bot))
+            renderer.scale = 1
+            guard let image = renderer.uiImage?.pngData(), image.count <= maxLiveBytes else { return nil }
+            return image
         }
         // Large exports (e.g. NameCard's 256pt still) are for file sharing, not ActivityKit's 4 KB payload.
         if side > 40 {

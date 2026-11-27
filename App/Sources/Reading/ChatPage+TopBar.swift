@@ -89,6 +89,7 @@ extension ChatPage {
                 listProxy.controller?.updateTopBarHitRect(slot, rect: rect)
             },
             headerHeight: $headerHeight,
+            trackMode: $trackMode,
             detailOpen: $detailOpen,
             cardOpen: $cardOpen,
             roaming: $roaming,
@@ -215,6 +216,7 @@ struct ChatTopBarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var headerHeight: CGFloat
+    @Binding var trackMode: ChatTrackMode
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
     @Binding var roaming: Bool
@@ -319,6 +321,7 @@ struct ChatTopBarView: View {
             isTyping: isTyping,
             isImmersiveCollapsed: isImmersiveCollapsed,
             onDismissTyping: onDismissTyping,
+            trackMode: $trackMode,
             detailOpen: $detailOpen,
             cardOpen: $cardOpen
         )
@@ -393,6 +396,7 @@ private struct ChatCenteredIdentityPill: View {
     let isImmersiveCollapsed: Bool
     let onDismissTyping: () -> Void
 
+    @Binding var trackMode: ChatTrackMode
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
     @State private var showCompanionHub = false
@@ -460,6 +464,7 @@ private struct ChatCenteredIdentityPill: View {
                 isTyping: isTyping,
                 onDismissTyping: onDismissTyping,
                 isPresented: $showCompanionHub,
+                trackMode: $trackMode,
                 detailOpen: $detailOpen,
                 cardOpen: $cardOpen
             )
@@ -568,6 +573,7 @@ private struct ChatCompanionHubPopover: View {
     let onDismissTyping: () -> Void
 
     @Binding var isPresented: Bool
+    @Binding var trackMode: ChatTrackMode
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
 
@@ -698,6 +704,21 @@ private struct ChatCompanionHubPopover: View {
 
     private var rootView: some View {
         VStack(spacing: 0) {
+            if !isRoom {
+                SlidingCapsuleControl(
+                    selection: $trackMode,
+                    options: ChatTrackMode.allCases,
+                    compact: true
+                ) { option in
+                    L.t(option.titleKey)
+                }
+                .padding(.horizontal, Ink.Space.m)
+                .padding(.vertical, Ink.Space.s)
+                .onChange(of: trackMode) { _, _ in
+                    isPresented = false
+                }
+                hairlineDivider
+            }
             rootHeaderSection
             hairlineDivider
             rootModelRowSection
@@ -705,9 +726,45 @@ private struct ChatCompanionHubPopover: View {
                 hairlineDivider
                 rootThinkingSection
             }
+            if !chat.key.hasPrefix("casual-") {
+                hairlineDivider
+                rootPlanModeSection
+            }
             hairlineDivider
             rootContextSection
         }
+    }
+
+    private var rootPlanModeSection: some View {
+        let active = team.isPlanModeActive(for: chat.key)
+        return Button {
+            Haptics.light()
+            team.setPlanMode(!active, in: chat.key)
+        } label: {
+            HStack(spacing: Ink.Space.s) {
+                Image(systemName: active ? "map.fill" : "map")
+                    .font(.system(size: Ink.Size.small, weight: .medium))
+                    .foregroundStyle(active ? Ink.accent : Ink.inkSoft)
+                    .frame(width: 24 * UIScale.factor, height: 24 * UIScale.factor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(L.t("plan.modeTitle"))
+                        .font(.system(size: Ink.Size.small, weight: .medium))
+                        .foregroundStyle(Ink.ink)
+                    Text(L.t(active ? "plan.statusCapsule" : "plan.modeSubtitle"))
+                        .font(.system(size: Ink.Size.micro))
+                        .foregroundStyle(active ? Ink.accent : Ink.inkFaint)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: active ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                    .foregroundStyle(active ? Ink.accent : Ink.inkFaint)
+            }
+            .padding(.horizontal, Ink.Space.m)
+            .padding(.vertical, Ink.Space.s)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
     }
 
     private var rootHeaderSection: some View {
@@ -1302,6 +1359,18 @@ private struct ChatTopBarControlsView: View {
                         outlining = true
                     }
                 }
+                if !chat.key.hasPrefix("casual-") {
+                    let planOn = team.isPlanModeActive(for: chat.key)
+                    Button {
+                        Haptics.light()
+                        team.setPlanMode(!planOn, in: chat.key)
+                    } label: {
+                        Label(
+                            L.t(planOn ? "plan.exitMenu" : "plan.enterMenu"),
+                            systemImage: planOn ? "map.fill" : "map"
+                        )
+                    }
+                }
             }
             Menu(L.t("chatMenu.workbench"), systemImage: "wrench.and.screwdriver") {
                 menuButton("chat.files", icon: "folder") { filesOpen = true }
@@ -1419,7 +1488,7 @@ private struct ChatTopBarPetFace: View {
                 cheering: cheering,
                 dozing: dozing
             )
-            PetStill(size: size, state: state, avatar: true, bot: isRoom ? nil : bot)
+            CompanionAvatar(size: size, state: state, bot: isRoom ? nil : bot)
                 .breathing(working, tint: Ink.accent)
         }
     }
@@ -1449,7 +1518,7 @@ private struct ChatActiveTopBarPetFace: View {
             cheering: cheering,
             dozing: dozing
         )
-        PetStill(size: size, state: state, avatar: true, bot: isRoom ? nil : bot)
+        CompanionAvatar(size: size, state: state, bot: isRoom ? nil : bot)
             .breathing(working, tint: Ink.accent)
     }
 }

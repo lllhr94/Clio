@@ -537,13 +537,17 @@ struct Desk: View {
                 if taken.contains(name) { name += "·二" }
                 Task {
                     do {
-                        // A pet the phone doesn't have falls back to the default; a photo comes with the card.
-                        let pet = card.pet.flatMap { face in PetLibrary.shared.packs.contains { "pet:\($0.id)" == face } ? face : nil }
+                        // A pet the phone doesn't have falls back to a name seal; a photo comes with the card.
+                        let pet = card.pet.flatMap { face in CompanionAvatar.legacyPack(for: face) == nil ? nil : face }
                         // A pet this phone doesn't have comes as its still picture, and you are told so.
                         let missingPet = card.pet != nil && pet == nil
-                        let picture = (card.photo ?? (missingPet ? card.petStill : nil)).flatMap(UIImage.init(data:))
+                        let picture = (card.photo ?? (missingPet ? card.petStill : nil)).flatMap(NameCard.importedAvatar)
                         let id = try await team.saveBot(id: nil, name: name, role: card.role ?? "", color: card.color ?? "dai", instructions: card.instructions,
-                                                        avatar: picture != nil ? "photo" : pet, temper: card.temper, style: card.style, seal: card.seal)
+                                                        avatar: picture != nil ? "photo" : pet, temper: card.temper, style: card.style, seal: card.seal,
+                                                        relationship: card.relationship, expressionStyle: card.expressionStyle,
+                                                        antiSlop: card.antiSlop, firstPersonThoughts: card.firstPersonThoughts,
+                                                        expertiseBoundary: card.expertiseBoundary, privateNotes: card.privateNotes,
+                                                        publicAgentsCard: card.publicAgentsCard)
                         if let picture { Avatars.save(picture, for: id) }
                         Haptics.thud()
                         notice = Words.t("收下了\(name)的名帖。")
@@ -577,6 +581,7 @@ struct Desk: View {
             switch action {
             case .open(let chat): openChat(chat)
             case .answer(let id, let allow): team.answerFromNotification(id, allow: allow)
+            case .answerQuestion: team.subtasks.drainPendingQuestionResumes(team: team)
             }
         }
     }

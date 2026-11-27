@@ -55,6 +55,8 @@ struct Approval: Identifiable, Equatable {
     var answerable: Bool?
     /// Asked because the turn read the web: no standing permission covers it.
     var forced: Bool?
+    /// Verified read-only safe under `PlanModeReadOnlyPolicy` when this approval was created.
+    var planReadOnlySafe: Bool? = nil
 
     var authChat: String? { executionChat ?? chat }
 }
@@ -72,7 +74,7 @@ enum TurnEvent {
     /// A tool started.
     case tool(String)
     /// More of what the model thinks before it answers.
-    case thinking(String)
+    case thinking(String, firstPerson: Bool)
     /// More of the companion's 心绪 before it speaks.
     case pulse(String, speaker: String?)
     case finished
@@ -111,6 +113,8 @@ final class TeamModel: ObservableObject {
     var memoryTaintedTurns: Set<String> = []
     var livePromptRefreshers: [UUID: MemoryRecallPromptRefresher] = [:]
     let liveChatMemoryGate = LiveChatMemoryGate()
+    let livePlanModeLedger = LivePlanModeLedger()
+    let subtasks = SubtaskManager()
     var memoryWriteGuard: MemoryWriteGuard = .init()
     let contextEstimateCache = ContextEstimateCache()
     @Published var compressionFailures: [String: String] = [:]
@@ -181,6 +185,8 @@ final class TeamModel: ObservableObject {
     let approvalQueue = PendingApprovalQueue()
     let approvalReceipts = ApprovalReceiptBook()
     let hostBindings = HostBindingBook()
+    /// Ephemeral workplace overrides bound to non-reusable async subtask execution keys (`attempt-*`).
+    var ephemeralPlaces: [String: WorkPlace] = [:]
     private var hostBindingObserver: AnyCancellable?
     private var mountedFoldersObserver: AnyCancellable?
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
@@ -190,11 +196,29 @@ final class TeamModel: ObservableObject {
     var pulseSplitters: [String: PulseSplitter] = [:]
     /// The steps a companion laid out for the task in hand (update_plan), per conversation.
     @Published var plans: [String: [PlanStep]] = [:]
+    /// Revision-bound plan metadata so "按此方案执行" can never unlock a stale plan or wrong turn.
+    @Published var planRecords: [String: PlanRecord] = [:]
+    private var nextPlanRevision: UInt64 = 0
+    private var nextPlanSessionEpoch: UInt64 = 0
+    var planSessionEpochs: [String: UInt64] = [:]
+    var activePlanTurnIDs: [String: String] = [:]
 
     struct PlanStep: Equatable, Sendable {
         var text: String
         /// "todo", "doing" or "done".
         var state: String
+    }
+
+    struct PlanRecord: Equatable, Sendable {
+        var steps: [PlanStep]
+        var revision: UInt64
+        var turnID: String
+        var sessionEpoch: UInt64
+    }
+
+    func bumpPlanSessionEpoch(for key: String) {
+        nextPlanSessionEpoch &+= 1
+        planSessionEpochs[key] = nextPlanSessionEpoch
     }
 
     /// 连接器推荐: the connectors not yet connected, so a companion can say which one would help.
@@ -213,13 +237,67 @@ final class TeamModel: ObservableObject {
         KeepAwake.start()
     }
 
-    func setPlan(_ key: String, _ steps: [PlanStep]) {
-        withAnimation(.smooth) { plans[key] = steps.isEmpty ? nil : steps }
+    func setPlan(_ key: String, _ steps: [PlanStep], turnID: String? = nil) {
+        nextPlanRevision &+= 1
+        let rev = nextPlanRevision
+        let resolvedTurnID: String
+        if let turnID {
+            resolvedTurnID = turnID
+            activePlanTurnIDs[key] = turnID
+        } else if let active = activePlanTurnIDs[key] {
+            resolvedTurnID = active
+        } else {
+            let fresh = UUID().uuidString
+            activePlanTurnIDs[key] = fresh
+            resolvedTurnID = fresh
+        }
+        let sessionEpoch = planSessionEpochs[key, default: 0]
+        withAnimation(.smooth) {
+            if steps.isEmpty {
+                plans[key] = nil
+                planRecords[key] = nil
+            } else {
+                plans[key] = steps
+                planRecords[key] = PlanRecord(steps: steps, revision: rev, turnID: resolvedTurnID, sessionEpoch: sessionEpoch)
+            }
+        }
     }
 
     func clearPlan(_ key: String) {
-        guard plans[key] != nil else { return }
-        withAnimation(.smooth) { plans[key] = nil }
+        guard plans[key] != nil || planRecords[key] != nil else { return }
+        withAnimation(.smooth) {
+            plans[key] = nil
+            planRecords[key] = nil
+        }
+    }
+
+    /// True ONLY when `revision` and `turnID` match the active turn's current Plan-session record and the chat is idle.
+    func canExecutePlan(chat key: String, revision: UInt64, turnID: String) -> Bool {
+        guard phase != .demo, canAcceptInput(for: key) else { return false }
+        guard isPlanModeActive(for: key), !livePlanModeLedger.isInheritedReadOnly(key) else { return false }
+        guard runs[key] == nil, !helping.contains(key) else { return false }
+        guard let record = planRecords[key],
+              !record.steps.isEmpty,
+              record.revision == revision,
+              record.turnID == turnID,
+              !turnID.isEmpty,
+              record.sessionEpoch == planSessionEpochs[key, default: 0] else {
+            return false
+        }
+        if let currentTurn = activePlanTurnIDs[key], record.turnID != currentTurn {
+            return false
+        }
+        return true
+    }
+
+    /// Unlocks Plan mode and starts execution ONLY if the caller presents the exact current `revision` and `turnID`
+    /// belonging to the active turn and current Plan session.
+    @discardableResult
+    func unlockPlanAndExecute(chat key: String, revision: UInt64, turnID: String) -> Bool {
+        guard canExecutePlan(chat: key, revision: revision, turnID: turnID) else { return false }
+        setPlanMode(false, in: key)
+        _ = send(L.t("plan.executePrompt"), photos: [], to: key, userInitiated: true)
+        return true
     }
 
     /// The tool that lays out and ticks off the steps of a longer task, shown as a card above the composer.
@@ -269,6 +347,11 @@ final class TeamModel: ObservableObject {
     var written: [String: Int] = [:]
 
     init() {
+        let planLedger = livePlanModeLedger
+        memoryWriteGuard = MemoryWriteGuard(modeAllowsWrite: { key in
+            !planLedger.isRestricted(key)
+        })
+        subtasks.bind(to: self)
         hostBindingObserver = Hills.shared.hostBindingChanges.sink { [weak self] change in
             guard let self else { return }
             for key in self.hostBindings.replace(change.old, with: change.new) {
@@ -1236,16 +1319,26 @@ final class TeamModel: ObservableObject {
         if !keepSendNow { sendQueuedNow.remove(key) }
         if runs[key] != nil { Asker.shared.cancel(chat: key) }
         var executionChats: Set<String> = [key]
-        for approval in approvals where approval.chat == key {
+        // Only cancel approvals owned by the main turn (preserve independent async subtask approvals).
+        let isMainTurnApproval: (Approval) -> Bool = { approval in
+            approval.chat == key && (approval.executionChat == nil || approval.executionChat == key)
+        }
+        for approval in approvals where isMainTurnApproval(approval) {
             if let authChat = approval.authChat { executionChats.insert(authChat) }
             approvalQueue.cancel(id: approval.id)
         }
         for execChat in executionChats {
             approvalReceipts.clear(executionChat: execChat)
         }
-        withAnimation(.smooth) { approvals.removeAll { $0.chat == key } }
+        withAnimation(.smooth) { approvals.removeAll(where: isMainTurnApproval) }
         if runs[key] != nil { browser.cancelHandoff(for: key) }
         runs[key]?.task.cancel()
+    }
+
+    /// Stops both the active main reply and background subtasks for `key`, respecting remote Hills preference.
+    func stopAll(_ key: String, includeRemoteHills: Bool = true) {
+        stop(key)
+        subtasks.stopSubtasks(for: key, includeRemoteHills: includeRemoteHills, team: self)
     }
 
     func start(_ key: String, userInitiated: Bool = true, experienceSource: ExperienceWriteSource = .mainChat) {
@@ -1530,10 +1623,13 @@ final class TeamModel: ObservableObject {
         // Never waits on a compression: it runs alongside, and this turn reads the chat as it is.
         foldQuietly(key)
         var ok = true
-        if key.hasPrefix("room-") {
+        let isGathering = key.hasPrefix("room-")
+        let roomReplyBefore = isGathering ? latestGatheringReply(key)?.id : nil
+        if isGathering {
             if let room = rooms.first(where: { Self.key(room: $0.id) == key }) {
                 let members = (room.members ?? []).compactMap({ id in bots.first { $0.id == id } })
                 var going = true
+                var consumedReply = roomReplyBefore
                 for member in members {
                     if Task.isCancelled { break }
                     busyBots.insert(member.id)
@@ -1544,9 +1640,10 @@ final class TeamModel: ObservableObject {
                 // A companion can hand the word on by ending with @名字; at most three hand-offs, then it is the user's turn.
                 var relays = 0
                 while going, relays < 3, !Task.isCancelled,
-                      let last = history(key).last(where: { $0.message.role == .assistant && !$0.message.text.isEmpty }),
+                      let last = latestGatheringReply(key), last.id != consumedReply,
                       let next = Relay.next(after: last.message.text, from: last.speaker, among: members.map { (id: $0.id, name: $0.name) }),
                       let member = members.first(where: { $0.id == next }) {
+                    consumedReply = last.id
                     relays += 1
                     doing[key] = "\(member.name)接着说"
                     busyBots.insert(member.id)
@@ -1559,7 +1656,11 @@ final class TeamModel: ObservableObject {
             ok = await turn(bot, in: key, room: nil, experienceSource: experienceSource)
         }
         let cancelled = Task.isCancelled
-        settleUsage(key)
+        if isGathering, latestGatheringReply(key)?.id == roomReplyBefore {
+            written.removeValue(forKey: key)
+        } else {
+            settleUsage(key)
+        }
         let wasActiveToken = (runs[key]?.token == token)
         if wasActiveToken {
             runs[key] = nil
@@ -1624,6 +1725,7 @@ final class TeamModel: ObservableObject {
         sharedRetries: WholeTurnRetryArbiter? = nil
     ) async -> Bool {
         runs[key]?.companion = bot.id
+        activePlanTurnIDs[key] = UUID().uuidString
         let picked = forced ?? options(key).model ?? bot.model ?? settings.defaultModel
         guard let found = resolveActive(picked) ?? resolveActive(settings.defaultModel) ?? resolve(picked) ?? resolve(settings.defaultModel) else {
             fail(key, "还没有可用的模型\n到调弦里添一家模型服务。", next: .tuning)
@@ -1707,8 +1809,11 @@ final class TeamModel: ObservableObject {
             recordUsage: false
         )
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
+        let passState = ChannelPassState()
+        let passTool = traits.tools ? ChannelPassTool.forRoom(room, helping: false, state: passState) : nil
+        let presentation = CompanionTurnPresentation(bot: bot, channelPass: passTool?.state)
         let turnTools: [AgentTool] = traits.tools
-            ? await toolsAsync(for: bot, key: key, canSee: canReceiveImages, workplace: workplace, experienceSource: experienceSource)
+            ? await toolsAsync(for: bot, key: key, canSee: canReceiveImages, workplace: workplace, experienceSource: experienceSource, channelPass: passTool)
             : []
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         let liveUsesMemory = !options(key).off.contains(Grant.memory.rawValue) && Grant.memory.policy != .off
@@ -1730,7 +1835,7 @@ final class TeamModel: ObservableObject {
         } else {
             validatedHints = []
         }
-        if isKeeping && !validatedHints.isEmpty {
+        if isKeeping && !validatedHints.isEmpty && !isPlanModeActive(for: key) {
             MemoryRecallBridge.shared.recordUsageAsync(ids: validatedHints.map(\.id))
         }
         let (refresher, refresherToken) = registerLivePromptRefresher(
@@ -1739,14 +1844,17 @@ final class TeamModel: ObservableObject {
             room: room,
             workplace: workplace,
             memory: liveUsesMemory,
-            recalledHints: validatedHints
+            recalledHints: validatedHints,
+            extraTail: companionPromptTail(for: bot, room: room, canPass: passTool != nil)
         )
         defer { unregisterLivePromptRefresher(refresherToken) }
         let assembled = refresher.currentPrompt()
         let baseProvider = overrideProvider ?? endpoint.provider(key: apiKey, stableSystemPrefix: assembled.prefix)
+        let outbound = outboundProvider(recordingProvider(baseProvider, chat: key, refresher: refresher),
+                                        endpoint: endpoint, model: found.model, chat: key)
+        let turnProvider: any ModelProvider = passTool == nil ? outbound : ChannelPassProvider(base: outbound, state: passState)
         var agent = Agent(
-            provider: outboundProvider(recordingProvider(baseProvider, chat: key, refresher: refresher),
-                                       endpoint: endpoint, model: found.model, chat: key),
+            provider: turnProvider,
             model: found.model,
             system: assembled.full,
             tools: turnTools,
@@ -1788,7 +1896,10 @@ final class TeamModel: ObservableObject {
                 agent.thinkingBodyFields = thinkingResolution.bodyFields
             }
         }
-        agent.inbox = { [weak self] in await self?.takeInbox(key) ?? [] }
+        agent.inbox = { [weak self] in
+            guard !passState.passed else { return [] }
+            return await self?.takeInbox(key) ?? []
+        }
         agent.screen = Self.screen
         pulseSplitters[key] = nil
         doing[key] = room == nil ? "已递出，等它开口" : "\(bot.name)：已递出，等它开口"
@@ -1810,7 +1921,14 @@ final class TeamModel: ObservableObject {
         let retries = sharedRetries ?? WholeTurnRetryArbiter()
         do {
             try await agent.run(history: messages, retryArbiter: retries) { [weak self] event in
-                await self?.hear(event, chat: key, speaker: speaker, epoch: epoch)
+                await self?.hear(event, chat: key, speaker: speaker, epoch: epoch, presentation: presentation)
+            }
+            if passState.passed {
+                guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
+                streamed[key] = nil
+                pulseSplitters[key] = nil
+                notify(key, .streamReset)
+                return true
             }
             // An answer that came back cut short is not 「done」: no 「做完了」, and what is waiting to be sent waits
             // for the user (the review, #19).
@@ -1958,10 +2076,12 @@ final class TeamModel: ObservableObject {
         )
     }
 
-    func hear(_ event: AgentEvent, chat key: String, speaker: String?, epoch: Int? = nil) async {
+    func hear(_ event: AgentEvent, chat key: String, speaker: String?, epoch: Int? = nil,
+              presentation: CompanionTurnPresentation? = nil) async {
         let generation = epoch ?? epochs[key, default: 0]
         guard epochs[key, default: 0] == generation else { return }
         heard[key] = Date()
+        if presentation?.isSilent(event) == true { return }
         MemoryNight.recordActivity()
         switch event {
         case .text(let raw):
@@ -1971,6 +2091,7 @@ final class TeamModel: ObservableObject {
             for part in pieces {
                 switch part {
                 case .pulse(let felt):
+                    if presentation?.handlingInterjection == true { continue }
                     if doing[key] != "心里起了念头" { doing[key] = "心里起了念头" }
                     notify(key, .pulse(felt, speaker: speaker ?? runs[key]?.companion))
                 case .text(let piece):
@@ -1981,7 +2102,7 @@ final class TeamModel: ObservableObject {
             }
         case .reasoning(let piece):
             if doing[key] != "正在想", streamed[key] == nil { doing[key] = "正在想" }
-            notify(key, .thinking(piece))
+            notify(key, .thinking(piece, firstPerson: presentation?.bot.firstPersonThoughts == true))
         case .toolStarted(let id, _, let label):
             lastWritingStatus[key] = nil
             labels[id] = label
@@ -2030,8 +2151,8 @@ final class TeamModel: ObservableObject {
             var felt: String?
             if message.role == .assistant {
                 let split = Pulse.split(message.text)
-                felt = split.pulse
-                message.text = split.rest
+                felt = presentation?.handlingInterjection == true ? nil : split.pulse
+                message.text = ReplySanitizer.sanitizeReply(split.rest, antiSlop: presentation?.bot.antiSlop == true && message.toolCalls.isEmpty)
             }
             if message.role == .assistant {
                 streamed[key] = nil
@@ -2084,6 +2205,7 @@ final class TeamModel: ObservableObject {
             if message.role == .user,
                var waitingInterjects = pendingInterjects[key],
                let matchIndex = waitingInterjects.firstIndex(where: { $0.text == kept.text }) {
+                presentation?.handlingInterjection = true
                 matchedInterjectId = waitingInterjects.remove(at: matchIndex).id
                 pendingInterjects[key] = waitingInterjects.isEmpty ? nil : waitingInterjects
             }
@@ -2098,6 +2220,7 @@ final class TeamModel: ObservableObject {
                 experienceSource: matchedInterjectId != nil ? (activeTurnExperienceSource[key] ?? .mainChat).rawValue : nil
             )
             entry.pulse = felt
+            if message.role == .assistant { entry.firstPersonThoughts = presentation?.bot.firstPersonThoughts }
             if message.role == .tool {
                 if Taint.reads(message.toolName ?? "") || taint.isTainted(key) || isTurnMemoryTainted(key) {
                     markTurnMemoryTainted(key)
@@ -2385,7 +2508,7 @@ final class TeamModel: ObservableObject {
     /// Read-only snapshots for the usage sheet, scoped to the open conversation.
     func modelInputs(_ key: String) -> [ModelInput] { modelInputLog.requests(in: key) }
 
-    private func recordingProvider(_ provider: any ModelProvider, chat: String, refresher: MemoryRecallPromptRefresher) -> LivePromptProvider {
+    func recordingProvider(_ provider: any ModelProvider, chat: String, refresher: MemoryRecallPromptRefresher) -> LivePromptProvider {
         let epoch = epochs[chat, default: 0]
         let session = modelInputLog.session
         return LivePromptProvider(upstream: provider, refresher: refresher) { [weak self] input in
@@ -2401,7 +2524,8 @@ final class TeamModel: ObservableObject {
     }
 
     func system(for bot: BotInfo, room: RoomInfo?, memory: Bool = true) -> String {
-        assembledSystemPrompt(for: bot, room: room, memory: memory).full
+        assembledSystemPrompt(for: bot, room: room, memory: memory,
+                              extraTail: companionPromptTail(for: bot, room: room)).full
     }
 
     func toolsAsync(
@@ -2411,7 +2535,8 @@ final class TeamModel: ObservableObject {
         helping: Bool = false,
         displayChat: String? = nil,
         workplace: WorkPlace? = nil,
-        experienceSource: ExperienceWriteSource = .mainChat
+        experienceSource: ExperienceWriteSource = .mainChat,
+        channelPass: ChannelPassTool? = nil
     ) async -> [AgentTool] {
         let imageAPIKey: String?
         if phase != .demo, let selected = imageModelSelection {
@@ -2427,7 +2552,8 @@ final class TeamModel: ObservableObject {
             displayChat: displayChat,
             workplace: workplace,
             imageAPIKey: imageAPIKey,
-            experienceSource: experienceSource
+            experienceSource: experienceSource,
+            channelPass: channelPass
         )
     }
 
@@ -2439,7 +2565,9 @@ final class TeamModel: ObservableObject {
         displayChat: String? = nil,
         workplace: WorkPlace? = nil,
         imageAPIKey: String? = nil,
-        experienceSource: ExperienceWriteSource = .mainChat
+        experienceSource: ExperienceWriteSource = .mainChat,
+        subtaskSideEffectContext: (threadID: String, attemptID: String, store: TaskStore)? = nil,
+        channelPass: ChannelPassTool? = nil
     ) -> [AgentTool] {
         let botId = bot.id
         let approvalChat = displayChat ?? key
@@ -2447,13 +2575,26 @@ final class TeamModel: ObservableObject {
         // Asking another companion: from one's own conversation only, and one level deep (a helper does not pass work on).
         let others = bots.filter { $0.id != botId }
         if !helping, !key.hasPrefix("room-"), !others.isEmpty {
-            all.append(DelegateTool(others: others.map { ($0.name, $0.role ?? "") }) { [weak self] name, task in
-                await self?.delegate(from: botId, to: name, task: task, chat: key) ?? ToolOutput("没办成。", isError: true)
+            all.append(DelegateTool(others: others.map { ($0.name, $0.role ?? "") }) { [weak self] name, task, runAsync in
+                guard let self else { return ToolOutput("没办成。", isError: true) }
+                if runAsync {
+                    return await self.subtasks.launchAsyncSubtask(
+                        from: botId,
+                        to: name,
+                        task: task,
+                        parentChat: key,
+                        team: self
+                    )
+                }
+                return await self.delegate(from: botId, to: name, task: task, chat: key)
             })
         }
         all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
         all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
-        all.append(RecallTool { [weak self] words in await self?.recall(words) ?? [] })
+        all.append(RecallTool { [weak self] words in
+            guard let self else { return [] }
+            return await self.recall(words, chat: key)
+        })
         let effectiveExperienceSource: ExperienceWriteSource = helping ? .subtask : experienceSource
         all.append(RecordExperienceTool(source: effectiveExperienceSource) { title, content, tags, source in
             await ExperienceStoreBridge.shared.recordTool(title: title, content: content, tags: tags, source: source)
@@ -2538,7 +2679,7 @@ final class TeamModel: ObservableObject {
         all += Hills.shared.sshTools()
         all += GoogleTools.all()
         all.append(Self.planTool(key: key, team: self))
-        all += SecretTools.all(botName: bot.name, chat: key)
+        all += SecretTools.all(botName: bot.name, chat: key, displayChat: approvalChat, subtasks: subtasks)
         all += HealthTools.all()
         var grants: [String: Grant] = [:]
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
@@ -2548,9 +2689,20 @@ final class TeamModel: ObservableObject {
         let receipts = approvalReceipts
         let queue = approvalQueue
         let bindings = hostBindings
+        let planLedger = livePlanModeLedger
+        let planHostKind = code ?? "desk"
+        let isPlanActive: @Sendable () -> Bool = { planLedger.isRestricted(key) }
         // Keep TaintGuard inside Grant.gate so turning a grant off mid-turn immediately blocks execution without prompting.
         func wrap(_ rawTools: [AgentTool]) -> [AgentTool] {
-            let guarded = rawTools.map {
+            let instrumented: [AgentTool]
+            if let ctx = subtaskSideEffectContext {
+                instrumented = rawTools.map {
+                    SideEffectRecordingTool(inner: $0, threadID: ctx.threadID, attemptID: ctx.attemptID, store: ctx.store)
+                }
+            } else {
+                instrumented = rawTools
+            }
+            let guarded = instrumented.map {
                 TaintGuard(
                     $0,
                     key: key,
@@ -2565,16 +2717,20 @@ final class TeamModel: ObservableObject {
                 workspace: grants,
                 executionChat: key,
                 hostID: boundHostID,
+                hostKind: planHostKind,
                 hostBindings: bindings,
                 receipts: receipts,
                 policyRevision: { queue.currentRevision },
+                planModeActive: isPlanActive,
                 reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: approvalChat, executionChat: key, workplace: workplace) ?? false }
             ).filter { tool in
                 guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
                 return !off.contains(grant.rawValue)
             }
         }
-        let residentBuiltIns = wrap(all)
+        var residentBuiltIns = wrap(all)
+        // A pass only advances this speaker in the current gathering. It touches no device resource.
+        if !helping, key.hasPrefix("room-"), let channelPass { residentBuiltIns.append(channelPass) }
         let rawMCPEntries = Hills.shared.mcpToolEntries(canSee: canSee)
         let gatedMCPEntries: [DeferredMCPTools.Entry] = rawMCPEntries.compactMap { entry in
             guard let gatedTool = wrap([entry.tool]).first else { return nil }
@@ -2586,11 +2742,15 @@ final class TeamModel: ObservableObject {
             )
         }
         let mcpPolicy = Hills.shared.deferredMCPPolicy(disabledGrants: off)
-        return DeferredMCPTools.assemble(
+        let assembled = DeferredMCPTools.assemble(
             builtInTools: residentBuiltIns,
             mcpEntries: gatedMCPEntries,
             policy: mcpPolicy
         )
+        return assembled.map { tool in
+            if tool is PlanGatedTool { return tool }
+            return PlanGatedTool(inner: tool, hostKind: planHostKind, isPlanModeActive: isPlanActive)
+        }
     }
 
     // MARK: 派活
@@ -2635,8 +2795,15 @@ final class TeamModel: ObservableObject {
         resetTurnMemoryTaint(helperKey)
         if taint.isTainted(key) { taint.mark(helperKey) }
         if isTurnMemoryTainted(key) { markTurnMemoryTainted(helperKey) }
+        let inheritedPlanMode = isPlanModeActive(for: key)
+        livePlanModeLedger.setDelegationParent(key, for: helperKey)
+        if inheritedPlanMode {
+            livePlanModeLedger.setInheritedReadOnly(true, for: helperKey)
+        }
         helping.insert(helperKey)
         defer {
+            livePlanModeLedger.setInheritedReadOnly(false, for: helperKey)
+            livePlanModeLedger.setDelegationParent(nil, for: helperKey)
             approvalReceipts.clear(executionChat: helperKey)
             helping.remove(helperKey)
             flushQueue(helperKey)
@@ -2648,11 +2815,15 @@ final class TeamModel: ObservableObject {
         append(askedEntry, to: helperKey)
         touch(helperKey, preview: nil)
         hostBindings.set(helperPlace.hostID, for: helperKey)
+        let helperPlanTail = inheritedPlanMode
+            ? "\n当前父对话处于「规划模式 · 只看不动」，你仅限只读调研与方案梳理，禁止写入文件、执行命令、修改记忆或调用外部扩展。"
+            : ""
         let (helperRefresher, helperRefresherToken) = registerLivePromptRefresher(
             for: helper,
             room: nil,
             memory: true,
-            extraTail: "这次是\(asker.name)替用户来请你帮忙，你做完后它会转告用户。把结果写完整、写清楚；不必寒暄。"
+            extraTail: companionPromptTail(for: helper, room: nil, helping: true,
+                                           extra: "这次是\(asker.name)替用户来请你帮忙，你做完后它会转告用户。把结果写完整、写清楚；不必寒暄。" + helperPlanTail)
         )
         defer { unregisterLivePromptRefresher(helperRefresherToken) }
         let helperPrompt = helperRefresher.currentPrompt()
@@ -2705,9 +2876,10 @@ final class TeamModel: ObservableObject {
             settleUsage(helperKey)
             notify(helperKey, .finished)
         }
+        let presentation = CompanionTurnPresentation(bot: helper)
         do {
             try await agent.run(history: [.user(asked)]) { [weak self] event in
-                await self?.hear(event, chat: helperKey, speaker: nil, epoch: helperEpoch)
+                await self?.hear(event, chat: helperKey, speaker: nil, epoch: helperEpoch, presentation: presentation)
                 if case .toolStarted(_, _, let label) = event { await self?.helping(key, "\(helperName)：\(label)") }
             }
         } catch is CancellationError {
@@ -2774,6 +2946,16 @@ final class TeamModel: ObservableObject {
 
     func pendingDecision(for approval: Approval) -> PendingApprovalDecision {
         guard let tool = approval.toolName else { return .wait }
+        if let authChat = approval.authChat, isPlanModeActive(for: authChat) {
+            let hostKind = place(of: authChat).code ?? "desk"
+            if tool == "ask_user" {
+                guard approval.planReadOnlySafe == true else { return .reject }
+            } else if tool == "view_image" {
+                guard approval.planReadOnlySafe == true || hostKind == "desk" else { return .reject }
+            } else if !PlanModeReadOnlyPolicy.evaluate(toolName: tool, hostKind: hostKind, arguments: .object([:])).isAllowed {
+                return .reject
+            }
+        }
         if let boundHost = approval.hostID, !boundHost.isEmpty,
            let authChat = approval.authChat,
            place(of: authChat).hostID != boundHost {
@@ -2834,7 +3016,7 @@ final class TeamModel: ObservableObject {
             hostID: isWorkspaceTool ? boundHostID : nil,
             boundGrant: boundGrant,
             tool: ask.title, toolName: tool, reason: ask.reason, detail: detail,
-            at: Now.ms, answerable: true, forced: ask.forced
+            at: Now.ms, answerable: true, forced: ask.forced, planReadOnlySafe: ask.planReadOnlySafe
         )
         let before = doing[chat]
         var announced = false

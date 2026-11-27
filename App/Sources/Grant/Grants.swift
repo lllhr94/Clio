@@ -393,21 +393,32 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
     /// The tools a companion gets: switched-off abilities left out, the rest wrapped in `LiveGatedTool`
     /// so permission changes made mid-turn take effect atomically.
     /// `workspace` names the ability for the eight workspace tools, which depends on where the conversation works.
+    /// When `planModeActive` is supplied, ALL three branches (`internalTools`, `Asking`, `LiveGatedTool`) are
+    /// enforced by `PlanGatedTool` plus inside `LiveGatedTool` right before execution.
     static func gate(
         _ tools: [AgentTool],
         workspace: [String: Grant] = [:],
         executionChat: String = "",
         hostID: String = "",
+        hostKind: String = "desk",
         hostBindings: HostBindingBook? = nil,
         receipts: ApprovalReceiptBook? = nil,
         policyRevision: (@Sendable () -> UInt64)? = nil,
+        planModeActive: (@Sendable () -> Bool)? = nil,
         reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
     ) -> [AgentTool] {
-        tools.compactMap { tool in
+        func wrapPlan(_ tool: AgentTool) -> AgentTool {
+            guard let planModeActive else { return tool }
+            return PlanGatedTool(inner: tool, hostKind: hostKind, isPlanModeActive: planModeActive)
+        }
+
+        return tools.compactMap { tool in
             let name = tool.spec.name
             guard let grant = workspace[name] ?? of(tool: name) else {
-                if internalTools.contains(name) { return tool }
-                return Asking(inner: tool, grant: nil)
+                // Branch 1: unmapped internal tools.
+                if internalTools.contains(name) { return wrapPlan(tool) }
+                // Branch 2: unmapped custom/unknown tools wrapped in Asking.
+                return wrapPlan(Asking(inner: tool, grant: nil))
             }
             if grant.policy == .off { return nil }
             let isWorkspaceTool = workspace[name] != nil
@@ -423,15 +434,28 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
             } else {
                 contextValid = nil
             }
-            return LiveGatedTool(
+            let planRefusal: (@Sendable (JSONValue) -> String?)? = planModeActive.map { isActive in
+                { args in
+                    guard isActive() else { return nil }
+                    if case .deny(let reason) = PlanModeReadOnlyPolicy.evaluate(toolName: name, hostKind: hostKind, arguments: args) {
+                        return reason
+                    }
+                    return nil
+                }
+            }
+            // Branch 3: mapped granted tools wrapped in LiveGatedTool + PlanGatedTool.
+            let gated = LiveGatedTool(
                 inner: tool,
                 context: context,
+                hostKind: hostKind,
                 receipts: receipts,
                 policyRevision: policyRevision,
                 isContextStillValid: contextValid,
+                planRefusal: planRefusal,
                 access: { grant.liveAccess(for: name) },
                 reconfirm: reconfirm
             )
+            return wrapPlan(gated)
         }
     }
 

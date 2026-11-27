@@ -217,7 +217,7 @@ struct SubConversationSheet: View {
     }
 
     static func planState(_ chat: String, team: TeamModel) -> Bool {
-        team.plans[chat]?.contains { $0.state != "done" } == true
+        team.isPlanModeActive(for: chat) || team.plans[chat]?.contains { $0.state != "done" } == true
     }
 
     static func taintState(_ origin: SubConversationOrigin, history: [Entry], team: TeamModel) -> Bool {
