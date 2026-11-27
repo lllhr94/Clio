@@ -833,11 +833,13 @@ final class TeamModel: ObservableObject {
         let bot: BotInfo? = bots.first { Self.key(bot: $0.id) == key }
             ?? rooms.first { Self.key(room: $0.id) == key }.flatMap { room in bots.first { $0.id == room.members?.first } }
         let ref = options(key).model ?? bot?.model ?? settings.defaultModel
-        guard let found = resolve(ref) ?? resolve(settings.defaultModel) else { return nil }
+        guard let found = resolve(ref) ?? resolve(settings.defaultModel), found.endpoint.isActiveProtocol else { return nil }
         var agent = Agent(provider: LazyKeyModelProvider(endpoint: found.endpoint), model: found.model, system: system)
-        agent.outputLimit = 60
-        // Small jobs (titles, summaries) do not need thinking, and with it a short answer can come back empty.
-        agent.thinking = .off
+        let resolved = resolvedThinking(for: key, endpoint: found.endpoint, model: found.model, intent: .preferLowLatency)
+        let canDisable = resolved.contract.isKnownContract && resolved.contract.canExplicitlyDisable
+        // Small jobs (titles, summaries) use `preferLowLatency`: disable thinking when confirmed, else omit and keep budget roomy.
+        agent.thinking = canDisable ? .off : .auto
+        agent.outputLimit = canDisable ? 60 : 400
         return agent
     }
 
@@ -846,11 +848,13 @@ final class TeamModel: ObservableObject {
             ?? rooms.first { Self.key(room: $0.id) == key }.flatMap { room in bots.first { $0.id == room.members?.first } }
         let ref = options(key).model ?? bot?.model ?? settings.defaultModel
         guard let found = resolve(ref) ?? resolve(settings.defaultModel),
+              found.endpoint.isActiveProtocol,
               let apiKey = await readAPIKey(for: found.endpoint.id), !apiKey.isEmpty else { return nil }
         var agent = Agent(provider: found.endpoint.provider(key: apiKey), model: found.model, system: system)
-        agent.outputLimit = 60
-        // Small jobs (titles, summaries) do not need thinking, and with it a short answer can come back empty.
-        agent.thinking = .off
+        let resolved = resolvedThinking(for: key, endpoint: found.endpoint, model: found.model, intent: .preferLowLatency)
+        let canDisable = resolved.contract.isKnownContract && resolved.contract.canExplicitlyDisable
+        agent.thinking = canDisable ? .off : .auto
+        agent.outputLimit = canDisable ? 60 : 400
         return agent
     }
 
@@ -1697,7 +1701,23 @@ final class TeamModel: ObservableObject {
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         agent.maxSteps = Pref.maxSteps
-        agent.thinking = options(key).thinking ?? .auto
+        let frozenCatalog = ModelsDev.currentSnapshot()
+        let thinkingResolution = resolvedThinking(
+            for: key,
+            endpoint: endpoint,
+            model: found.model,
+            intent: .userChat,
+            snapshot: frozenCatalog
+        )
+        switch thinkingResolution.fulfillment {
+        case .fulfilled(let effective, _, _):
+            agent.thinking = effective.approximateLegacyThinking
+        case .unfulfilledExplicitOff(let reason):
+            fail(key, reason)
+            return false
+        case .unfulfilledSelection:
+            agent.thinking = .auto
+        }
         agent.inbox = { [weak self] in await self?.takeInbox(key) ?? [] }
         agent.screen = Self.screen
         pulseSplitters[key] = nil
@@ -1754,7 +1774,7 @@ final class TeamModel: ObservableObject {
             guard epochs[key, default: 0] == epoch, !Task.isCancelled else { return false }
             // One switch to the backup model, said out loud, never a silent swap.
             let used = "\(endpoint.id)/\(found.model)"
-            if retries.allowsBackup(after: error), forced == nil, let backup = settings.backupModel,
+            if retries.allowsBackup(after: error), forced == nil, let backup = settings.effectiveBackupModels.first,
                backup != used, let other = resolve(backup) {
                 let advice = Explain.model(error, service: endpoint.name)
                 streamed[key] = nil
@@ -1904,11 +1924,10 @@ final class TeamModel: ObservableObject {
             append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant(words), note: true), to: key)
             Diag.note("回答不完整：\(short)")
         case .thinkingRefused(let level, let reason):
-            var kept = options(key)
-            kept.thinking = nil
-            setOptions(key, kept)
-            let said = reason.count > 80 ? String(reason.prefix(80)) + "…" : reason
-            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("这个模型不接受「\(level.title)」这个思考设置，这次按它默认的来，思考强度也改回了默认。\n服务说：\(said)"), note: true), to: key)
+            // Never destructively wipe the user's saved `ThinkingSelection` on a single-turn refusal.
+            let cleanReason = reason.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+            let said = cleanReason.count > 80 ? String(cleanReason.prefix(80)) + "…" : cleanReason
+            append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("本次请求不接受「\(level.title)」思考设置，已按模型默认继续；你的原设定仍保留。"), note: true), to: key)
             Diag.note("思考设置被拒：\(level.rawValue)；\(said)")
         case .toolWriting(let name, let characters):
             let now = ContinuousClock.now
@@ -2546,7 +2565,13 @@ final class TeamModel: ObservableObject {
         agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
-        agent.thinking = options(key).thinking ?? .auto
+        // Helper delegation never blindly forwards parent thinking onto a different model/contract.
+        let helperThinking = resolvedThinking(for: key, endpoint: found.endpoint, model: found.model, intent: .userChat)
+        if case .fulfilled(let effective, _, _) = helperThinking.fulfillment {
+            agent.thinking = effective.approximateLegacyThinking
+        } else {
+            agent.thinking = .auto
+        }
         agent.maxSteps = min(Pref.maxSteps, 24)
         let before = doing[key]
         let helperEpoch = epochs[helperKey, default: 0]

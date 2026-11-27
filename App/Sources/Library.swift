@@ -86,7 +86,130 @@ struct Later: Codable, Identifiable, Equatable, Sendable {
 
 /// A model service the user added: its address and which models it has. The key is in the Vault.
 struct Endpoint: Codable, Identifiable, Equatable, Sendable {
-    enum Kind: String, Codable, Sendable { case openai, anthropic }
+    enum Kind: Equatable, Hashable, Sendable, Codable {
+        case openai
+        case openaiResponses
+        case openaiCodex
+        case anthropic
+        case unknown(String)
+
+        var rawValue: String {
+            switch self {
+            case .openai: return "openai"
+            case .openaiResponses: return "openai_responses"
+            case .openaiCodex: return "openai_codex"
+            case .anthropic: return "anthropic"
+            case .unknown(let raw): return raw
+            }
+        }
+
+        init(rawValue: String) {
+            switch rawValue {
+            case "openai": self = .openai
+            case "openai_responses": self = .openaiResponses
+            case "openai_codex": self = .openaiCodex
+            case "anthropic": self = .anthropic
+            default: self = .unknown(rawValue)
+            }
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let raw = try container.decode(String.self)
+            self = Kind(rawValue: raw)
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
+
+        /// Whether this protocol kind is supported by this Clio build. Unknown kinds decode safely in disabled state.
+        var isSupportedProtocol: Bool {
+            switch self {
+            case .openai, .openaiResponses, .openaiCodex, .anthropic: return true
+            case .unknown: return false
+            }
+        }
+
+        var isAnthropic: Bool {
+            switch self {
+            case .anthropic: return true
+            case .openai, .openaiResponses, .openaiCodex, .unknown: return false
+            }
+        }
+
+        var isOpenAIFamily: Bool {
+            switch self {
+            case .openai, .openaiResponses, .openaiCodex: return true
+            case .anthropic, .unknown: return false
+            }
+        }
+
+        var usesResponsesAPI: Bool {
+            switch self {
+            case .openaiResponses, .openaiCodex: return true
+            case .openai, .anthropic, .unknown: return false
+            }
+        }
+
+        var supportsThinkingStyleSelection: Bool {
+            switch self {
+            case .openai: return true
+            case .openaiResponses, .openaiCodex, .anthropic, .unknown: return false
+            }
+        }
+
+        var supportsPromptCache: Bool {
+            switch self {
+            case .anthropic: return true
+            case .openai, .openaiResponses, .openaiCodex, .unknown: return false
+            }
+        }
+
+        var supportsImages: Bool {
+            switch self {
+            case .openai, .openaiResponses, .openaiCodex: return true
+            case .anthropic, .unknown: return false
+            }
+        }
+
+        var supportsStandardImagesAPI: Bool {
+            switch self {
+            case .openai, .openaiResponses: return true
+            case .openaiCodex, .anthropic, .unknown: return false
+            }
+        }
+
+        var defaultRoutePath: String {
+            switch self {
+            case .openai: return "/chat/completions"
+            case .openaiResponses, .openaiCodex: return "/responses"
+            case .anthropic: return "/v1/messages"
+            case .unknown: return ""
+            }
+        }
+
+        var addressHint: String {
+            switch self {
+            case .openai: return "一般以 /v1 结尾，比如 https://api.example.com/v1"
+            case .openaiResponses: return "一般以 /v1 结尾，将请求 /responses"
+            case .openaiCodex: return "Codex Responses 端点地址"
+            case .anthropic: return "填到 /v1 前面为止，比如 https://api.example.com"
+            case .unknown(let raw): return "未识别的协议类型（\(raw)），已暂停外发"
+            }
+        }
+
+        var displayTitle: String {
+            switch self {
+            case .openai: return L.t("servicePage.apiOpenAI")
+            case .openaiResponses: return "OpenAI Responses"
+            case .openaiCodex: return "OpenAI Codex"
+            case .anthropic: return L.t("servicePage.apiAnthropic")
+            case .unknown(let raw): return "未知协议（\(raw)）"
+            }
+        }
+    }
 
     var id: String
     var name: String
@@ -113,7 +236,14 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
     /// Context windows the service reported in its model list (tokens), by model.
     var windows: [String: Int]?
     /// How to ask it for thinking; nil: as its service does.
-    var style: ThinkingStyle?
+    var style: ThinkingStyle? {
+        didSet {
+            if style != nil { unknownStyleRaw = nil }
+        }
+    }
+    /// Preserves an unrecognized future `ThinkingStyle` raw value from disk/backup so decoding never fails
+    /// and the endpoint stays safely disabled until changed.
+    var unknownStyleRaw: String?
     /// The listed service it came from (`Service.id`).
     var service: String?
     /// Local Vault slot selected together with the service settings during restore.
@@ -122,7 +252,34 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
     var promptCache: Bool?
     /// Optional user-defined display names for models (`[modelID: customName]`).
     var modelNames: [String: String]?
+    /// Optional user-confirmed manual thinking rules keyed by model ID, bound to `(origin, protocol, route, model)`.
+    var manualThinkingRules: [String: ManualThinkingRule]?
     var credentialID: String { EndpointKeyCoordinator.credentialID(for: id, slot: credentialSlot) }
+
+    /// True when this endpoint carries an unrecognized `Kind` or `ThinkingStyle` and must remain disabled.
+    var isDisabledByUnknownProtocol: Bool {
+        !kind.isSupportedProtocol || unknownStyleRaw != nil
+    }
+
+    var isActiveProtocol: Bool {
+        !isDisabledByUnknownProtocol
+    }
+
+    var disabledProtocolReason: String? {
+        if case .unknown(let raw) = kind {
+            return "「\(name)」使用了当前版本不识别的协议（\(raw)），已禁用并停止发送凭据。"
+        }
+        if let rawStyle = unknownStyleRaw {
+            return "「\(name)」使用了当前版本不识别的思考格式（\(rawStyle)），已禁用并停止发送凭据。"
+        }
+        return nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, kind, baseURL, storedIdentityRevision, models, listed, imageModels
+        case overrides, windows, style, service, credentialSlot, promptCache, modelNames
+        case manualThinkingRules
+    }
 
     init(
         id: String,
@@ -142,15 +299,163 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
         self.promptCache = promptCache
     }
 
-    /// What a model can do: as the user set it, or else as its name suggests.
-    /// What `model` can do: the user's correction, else what the service reported and the models.dev catalog
-    /// say, else the guess from the name.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        baseURL = try c.decode(String.self, forKey: .baseURL)
+        storedIdentityRevision = try c.decodeIfPresent(UInt64.self, forKey: .storedIdentityRevision)
+        models = try c.decode([String].self, forKey: .models)
+        listed = try c.decodeIfPresent([String].self, forKey: .listed)
+        imageModels = try c.decodeIfPresent([String].self, forKey: .imageModels)
+        overrides = try c.decodeIfPresent([String: ModelTraits].self, forKey: .overrides)
+        windows = try c.decodeIfPresent([String: Int].self, forKey: .windows)
+        if let rawStyle = try c.decodeIfPresent(String.self, forKey: .style) {
+            if let known = ThinkingStyle(rawValue: rawStyle) {
+                style = known
+                unknownStyleRaw = nil
+            } else {
+                style = nil
+                unknownStyleRaw = rawStyle
+            }
+        } else {
+            style = nil
+            unknownStyleRaw = nil
+        }
+        service = try c.decodeIfPresent(String.self, forKey: .service)
+        credentialSlot = try c.decodeIfPresent(UUID.self, forKey: .credentialSlot)
+        promptCache = try c.decodeIfPresent(Bool.self, forKey: .promptCache)
+        modelNames = try c.decodeIfPresent([String: String].self, forKey: .modelNames)
+        manualThinkingRules = try c.decodeIfPresent([String: ManualThinkingRule].self, forKey: .manualThinkingRules)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(baseURL, forKey: .baseURL)
+        try c.encodeIfPresent(storedIdentityRevision, forKey: .storedIdentityRevision)
+        try c.encode(models, forKey: .models)
+        try c.encodeIfPresent(listed, forKey: .listed)
+        try c.encodeIfPresent(imageModels, forKey: .imageModels)
+        try c.encodeIfPresent(overrides, forKey: .overrides)
+        try c.encodeIfPresent(windows, forKey: .windows)
+        if let style {
+            try c.encode(style.rawValue, forKey: .style)
+        } else if let unknownStyleRaw {
+            try c.encode(unknownStyleRaw, forKey: .style)
+        }
+        try c.encodeIfPresent(service, forKey: .service)
+        try c.encodeIfPresent(credentialSlot, forKey: .credentialSlot)
+        try c.encodeIfPresent(promptCache, forKey: .promptCache)
+        try c.encodeIfPresent(modelNames, forKey: .modelNames)
+        try c.encodeIfPresent(manualThinkingRules, forKey: .manualThinkingRules)
+    }
+
+    /// Official `models.dev` provider key when `baseURL` belongs to a verified official host; nil for custom relays.
+    var officialCatalogProviderKey: String? {
+        ThinkingRuleResolver.officialProviderKey(forOrigin: baseURL)
+    }
+
+    func contractKey(for model: String) -> EndpointContractKey? {
+        guard isActiveProtocol, let identity = recipientIdentity else { return nil }
+        return EndpointContractKey(
+            origin: identity.canonicalOrigin,
+            protocolKind: identity.protocolKind,
+            route: identity.route,
+            modelID: model
+        )
+    }
+
+    func validatedManualThinkingRule(for model: String) -> ManualThinkingRule? {
+        guard let key = contractKey(for: model),
+              let rule = manualThinkingRules?[model],
+              rule.isValid(for: key) else { return nil }
+        return rule
+    }
+
+    /// Drops any manual thinking rules whose bound `(origin, protocol, route, model)` no longer matches this endpoint.
+    @discardableResult
+    mutating func revalidateManualThinkingRules() -> Int {
+        guard let existing = manualThinkingRules, !existing.isEmpty else { return 0 }
+        var kept: [String: ManualThinkingRule] = [:]
+        var removed = 0
+        for (model, rule) in existing {
+            if let key = contractKey(for: model), rule.isValid(for: key) {
+                kept[model] = rule
+            } else {
+                removed += 1
+            }
+        }
+        manualThinkingRules = kept.isEmpty ? nil : kept
+        return removed
+    }
+
+    func thinkingContract(for model: String, snapshot: ModelsDevCatalogSnapshot? = nil) -> ThinkingRuleResolver.ConfirmedContract {
+        let activeSnapshot = snapshot ?? ModelsDev.currentSnapshot()
+        guard let key = contractKey(for: model) else {
+            let fallbackKey = EndpointContractKey(
+                origin: baseURL,
+                protocolKind: kind.rawValue,
+                route: kind.defaultRoutePath,
+                modelID: model
+            )
+            return ThinkingRuleResolver.ConfirmedContract(
+                contractKey: fallbackKey,
+                catalogProviderKey: nil,
+                isConfirmedOfficialOrigin: false,
+                isKnownContract: false,
+                supportsThinking: false,
+                canExplicitlyDisable: false,
+                offeredSelections: [.inheritDefault],
+                effortAliases: [:],
+                mutualExclusionPolicy: nil,
+                echoesReasoning: false,
+                interleavedField: nil,
+                ruleGeneration: activeSnapshot.generation,
+                matchResult: .init(entry: nil, confidence: .ambiguousUnknown, matchedStage: 0, explanation: disabledProtocolReason ?? "端点未启用")
+            )
+        }
+        let effectiveStyle: ThinkingStyle? = kind.supportsThinkingStyleSelection ? style : nil
+        return ThinkingRuleResolver.contract(
+            for: key,
+            style: effectiveStyle,
+            manualRule: validatedManualThinkingRule(for: model),
+            snapshot: activeSnapshot
+        )
+    }
+
+    /// Resolves `model` capabilities against the validated catalog/contract baseline and reports
+    /// whether a legacy unattributed override conflicts with a confirmed contract.
+    func traitsResolution(
+        _ model: String,
+        snapshot: ModelsDevCatalogSnapshot? = nil
+    ) -> (traits: ModelTraits, baseline: ModelTraits, hasLegacyConflict: Bool) {
+        let activeSnapshot = snapshot ?? ModelsDev.currentSnapshot()
+        var baseline = ModelTraits.known(model, providerKey: officialCatalogProviderKey, snapshot: activeSnapshot)
+        if let reported = windows?[model] { baseline.window = reported }
+        let contract = thinkingContract(for: model, snapshot: activeSnapshot)
+        let hasConfirmedContract = contract.isKnownContract
+            && (contract.matchResult.confidence == .authoritative || contract.supportsThinking)
+        if contract.isKnownContract && contract.matchResult.confidence == .authoritative {
+            baseline.thinks = contract.supportsThinking
+            baseline.thinksSource = .catalog
+        }
+        if let corrected = overrides?[model] {
+            let resolved = corrected.resolvedAgainstCatalog(baseline, hasConfirmedContract: hasConfirmedContract)
+            return (resolved.traits, baseline, resolved.hasLegacyConflict)
+        }
+        return (baseline, baseline, false)
+    }
+
+    /// What `model` can do: validated user correction (never silently suppressed by legacy probe or unattributed
+    /// overrides against confirmed contracts), else what the service reported and the models.dev catalog say,
+    /// else the guess from the name.
     func traits(_ model: String, ignoringCorrection: Bool = false) -> ModelTraits {
-        if !ignoringCorrection, let corrected = overrides?[model] { return corrected }
-        var guessed = ModelTraits.known(model)
-        // What the service itself said about the window beats a guess from the name.
-        if let reported = windows?[model] { guessed.window = reported }
-        return guessed
+        let resolution = traitsResolution(model)
+        return ignoringCorrection ? resolution.baseline : resolution.traits
     }
 
     /// The user changed what this model can do (true), or it is still the guess.
@@ -158,8 +463,12 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
 
     var thinkingStyle: ThinkingStyle {
         if let style { return style }
-        if kind == .anthropic { return .none }
-        return Service.of(self)?.style ?? ThinkingStyle.guess(baseURL: baseURL)
+        switch kind {
+        case .anthropic, .unknown:
+            return .none
+        case .openai, .openaiResponses, .openaiCodex:
+            return Service.of(self)?.style ?? ThinkingStyle.guess(baseURL: baseURL)
+        }
     }
 
     /// Every model it knows of: in use first, then the rest of the list.
@@ -283,8 +592,12 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
     var usesPromptCache: Bool { promptCache ?? AnthropicProvider.caches(baseURL) }
 
     func provider(key: String, stableSystemPrefix: String? = nil) -> ModelProvider {
+        if let disabledReason = disabledProtocolReason {
+            return DisabledProtocolProvider(reason: disabledReason)
+        }
         switch kind {
-        case .openai: return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle, fixedRoute: true)
+        case .openai, .openaiResponses, .openaiCodex:
+            return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle, fixedRoute: true)
         case .anthropic:
             return AnthropicProvider(
                 baseURL: baseURL,
@@ -293,6 +606,8 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
                 stableSystemPrefix: stableSystemPrefix,
                 fixedRoute: true
             )
+        case .unknown(let raw):
+            return DisabledProtocolProvider(reason: "「\(name)」使用了当前版本不识别的协议（\(raw)），已禁用并停止发送凭据。")
         }
     }
 }
@@ -301,8 +616,12 @@ struct TeamSettings: Codable, Equatable, Sendable {
     var endpoints: [Endpoint] = []
     /// `endpointId/modelId`.
     var defaultModel: String?
-    /// Tried once when the chosen model fails before a turn is done. `endpointId/modelId`.
+    /// Legacy single backup model ref (`endpointId/modelId`) kept for JSON compatibility.
     var backupModel: String?
+    /// Ordered multi-level backup chain (`endpointId/modelId`).
+    /// `nil` = not explicitly configured yet (falls back to `[backupModel]` if present);
+    /// `[]` = explicitly cleared by user (never falls back to legacy `backupModel`).
+    var backupModels: [String]?
     /// Optional OpenAI-compatible images model, using the existing endpoint/model reference.
     var imageModel: String?
     var memoryModel: String?
@@ -312,6 +631,54 @@ struct TeamSettings: Codable, Equatable, Sendable {
     var mainBotId: String?
 
     var outboundConsentGeneration: UInt64 { outboundRevision ?? 0 }
+
+    /// Effective ordered backup model references respecting the distinction between `nil` (fallback to legacy
+    /// `backupModel`) and explicit empty `[]` (backups explicitly disabled).
+    var effectiveBackupModels: [String] {
+        if let backupModels {
+            return backupModels.filter { !$0.isEmpty }
+        }
+        if let backupModel, !backupModel.isEmpty {
+            return [backupModel]
+        }
+        return []
+    }
+
+    mutating func setBackupModelsList(_ refs: [String]?) {
+        guard let refs else {
+            backupModels = []
+            backupModel = nil
+            return
+        }
+        var seen: Set<String> = []
+        let cleaned = refs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        backupModels = cleaned
+        backupModel = cleaned.first
+    }
+
+    mutating func pruneBackupModels(removing shouldRemove: (String) -> Bool) {
+        if let legacy = backupModel, shouldRemove(legacy) {
+            backupModel = nil
+        }
+        if var list = backupModels {
+            list.removeAll(where: shouldRemove)
+            backupModels = list
+            backupModel = list.first
+        }
+    }
+
+    mutating func rewriteBackupModels(_ transform: (String) -> String) {
+        if let legacy = backupModel {
+            backupModel = transform(legacy)
+        }
+        if let list = backupModels {
+            let rewritten = list.map(transform)
+            backupModels = rewritten
+            backupModel = rewritten.first
+        }
+    }
 
     func allowsOutbound(_ recipient: RecipientIdentity, _ category: OutboundDataCategory) -> Bool {
         guard endpoints.contains(where: { $0.recipientIdentity == recipient }) else { return false }

@@ -173,7 +173,7 @@ struct DefaultModelsPage: View {
     }
 
     private var backupLabel: String {
-        guard let ref = team.settings.backupModel, team.resolveActive(ref) != nil else { return L.t("settings.unset") }
+        guard let ref = team.settings.effectiveBackupModels.first, team.resolveActive(ref) != nil else { return L.t("settings.unset") }
         return team.modelShort(ref)
     }
 
@@ -195,7 +195,7 @@ struct DefaultModelsPage: View {
     private func current(for role: Role) -> String? {
         let raw: String? = switch role {
         case .chat: team.settings.defaultModel
-        case .backup: team.settings.backupModel
+        case .backup: team.settings.effectiveBackupModels.first
         case .memory: team.settings.memoryModel
         case .vision: team.visionModelSelection == nil ? nil : team.settings.visionModel
         }

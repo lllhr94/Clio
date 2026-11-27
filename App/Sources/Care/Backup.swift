@@ -541,7 +541,13 @@ enum Backup {
                 } catch {
                     throw TeamError(message: "没能保存备份里的模型服务密钥。请解锁手机后再试，原来的密钥还在。")
                 }
-                settings.endpoints = preparedEndpoints
+                settings.endpoints = preparedEndpoints.map { endpoint in
+                    var validated = endpoint
+                    // Manual thinking rules restored from backup must revalidate against the restored
+                    // `(origin, protocol, route, model)` contract before being activated.
+                    validated.revalidateManualThinkingRules()
+                    return validated
+                }
                 // An older backup must not re-enable a permission revoked on this device.
                 settings.clearOutboundConsents()
                 try JSONEncoder().encode(settings).write(

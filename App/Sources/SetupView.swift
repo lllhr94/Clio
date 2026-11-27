@@ -302,8 +302,8 @@ struct SetupView: View {
 
     private func loadCatalog(for endpoint: Endpoint, secret: String) async throws -> (ids: [String], windows: [String: Int]) {
         let provider = endpoint.provider(key: secret)
-        if let openAI = provider as? OpenAIProvider {
-            let catalog = try await openAI.catalog()
+        if let catalogProvider = provider as? CatalogReportingProvider {
+            let catalog = try await catalogProvider.catalog()
             return (catalog.ids, catalog.windows)
         }
         return (try await provider.models(), [:])
@@ -423,7 +423,7 @@ struct SetupView: View {
             do {
                 let result = try await loadCatalog(for: endpoint, secret: secret)
                 let listed = TeamModel.keep(result.ids, for: endpoint)
-                if endpoint.kind == .openai { endpoint.imageModels = result.ids }
+                if endpoint.kind.supportsImages { endpoint.imageModels = result.ids }
                 endpoint.windows = result.windows.isEmpty ? nil : result.windows
                 var models = TeamModel.firstPicks(listed, service: service)
                 if !typed.isEmpty { models = [typed] + models.filter { $0 != typed } }
@@ -533,7 +533,7 @@ private struct SetupCustomAddressFields: View {
     private var finalURL: String {
         var base = address
         while base.hasSuffix("/") { base.removeLast() }
-        return base + (choice.kind == .anthropic ? "/v1/messages" : "/chat/completions")
+        return base + choice.kind.defaultRoutePath
     }
 
     var body: some View {
@@ -542,7 +542,7 @@ private struct SetupCustomAddressFields: View {
                 text: L.t("settings.serviceAddress"),
                 note: choice.keyless
                     ? "电脑的局域网地址加端口：Ollama 是 http://电脑IP:11434/v1，LM Studio 是 http://电脑IP:1234/v1。Ollama 要先设 OLLAMA_HOST=0.0.0.0 才让手机连"
-                    : (choice.kind == .anthropic ? "填到 /v1 前面为止，比如 https://api.example.com" : "一般以 /v1 结尾，比如 https://api.example.com/v1")
+                    : choice.kind.addressHint
             )
             TextField(choice.keyless ? "称呼，比如 我的 4090" : "称呼，比如 我的中转站", text: $draft.name)
                 .paperField()
@@ -755,7 +755,7 @@ private struct SetupFetchDriver: View {
             let result = try await loadCatalog(probe, secret)
             let listed = TeamModel.keep(result.ids, for: probe)
             guard !Task.isCancelled else { return }
-            let imageModels = probe.kind == .openai ? result.ids : nil
+            let imageModels = probe.kind.supportsImages ? result.ids : nil
             if listed.isEmpty {
                 onResult(Result(
                     fetched: nil,

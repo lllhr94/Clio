@@ -46,6 +46,14 @@ struct ServicePage: View {
         ScrollView {
             if let endpoint {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    if let disabledReason = endpoint.disabledProtocolReason {
+                        Text(disabledReason)
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.stop)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Ink.Space.l)
+                            .background(Ink.stop.opacity(0.08), in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
+                    }
                     if let subtitle = service?.note {
                         Text(subtitle)
                             .font(Ink.secondary)
@@ -281,11 +289,11 @@ struct ServicePage: View {
                             .font(.system(size: Ink.Size.sub))
                             .foregroundStyle(Ink.ink)
                         Spacer()
-                        Text(endpoint.kind == .anthropic ? L.t("servicePage.apiAnthropic") : L.t("servicePage.apiOpenAI"))
+                        Text(endpoint.kind.displayTitle)
                             .font(.system(size: Ink.Size.sub))
-                            .foregroundStyle(Ink.inkSoft)
+                            .foregroundStyle(endpoint.isActiveProtocol ? Ink.inkSoft : Ink.stop)
                     }
-                    if endpoint.kind == .anthropic {
+                    if endpoint.kind.supportsPromptCache {
                         Kit.rule(inset: 0)
                         promptCacheRow(endpoint)
                         Text(L.t("servicePage.promptCacheNote"))
@@ -293,13 +301,32 @@ struct ServicePage: View {
                             .foregroundStyle(Ink.inkSoft)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if endpoint.kind == .openai {
+                    if endpoint.kind.supportsThinkingStyleSelection {
                         Kit.rule(inset: 0)
                         thinkingStyleRow(endpoint)
                         Text(thinkingLevelsSummary(endpoint))
                             .font(Ink.footnote)
                             .foregroundStyle(Ink.inkSoft)
                             .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if endpoint.overrides?.isEmpty == false {
+                        Kit.rule(inset: 0)
+                        Button {
+                            Haptics.tick(0.5)
+                            team.resetAllTraitsToCatalog(for: endpoint.id)
+                            note = "已将此服务下所有模型的能力恢复为跟随目录。"
+                        } label: {
+                            HStack(spacing: Ink.Space.s) {
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                                Text("恢复跟随目录")
+                                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                                Spacer()
+                            }
+                            .foregroundStyle(Ink.accent)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(Ink.Space.l)
@@ -395,7 +422,7 @@ struct ServicePage: View {
     private func finalURL(_ endpoint: Endpoint) -> String {
         var base = address.trimmingCharacters(in: .whitespacesAndNewlines)
         while base.hasSuffix("/") { base.removeLast() }
-        return base + (endpoint.kind == .anthropic ? "/v1/messages" : "/chat/completions")
+        return base + endpoint.kind.defaultRoutePath
     }
 
     private var maskedKey: String {
@@ -935,6 +962,7 @@ struct ModelSheet: View {
     @State private var removingModel = false
     @State private var note: String?
     @State private var working = false
+    @State private var hasLegacyConflict = false
 
     private static let windows = [32_768, 65_536, 131_072, 200_000, 262_144, 400_000, 1_048_576, 2_097_152]
 
@@ -944,6 +972,9 @@ struct ModelSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                    if hasLegacyConflict {
+                        legacyConflictCard
+                    }
                     nameCard
                     capabilitiesCard
                     probeCard
@@ -968,7 +999,13 @@ struct ModelSheet: View {
             }
         }
         .onAppear {
-            traits = endpoint?.traits(model) ?? ModelTraits.known(model)
+            if let resolution = endpoint?.traitsResolution(model) {
+                traits = resolution.traits
+                hasLegacyConflict = resolution.hasLegacyConflict
+            } else {
+                traits = ModelTraits.known(model)
+                hasLegacyConflict = false
+            }
             customName = endpoint?.customName(for: model) ?? ""
             hasLoaded = true
         }
@@ -981,18 +1018,68 @@ struct ModelSheet: View {
         .onDisappear {
             commitCustomName()
         }
-        .onChange(of: traits.thinks) { _, thinks in
+        .onChange(of: traits.thinks) { oldValue, thinks in
+            guard hasLoaded, oldValue != thinks else { return }
+            traits.thinksSource = .userManual
+            hasLegacyConflict = false
             if !thinks && traits.levels != nil {
                 traits.levels = nil
+                traits.levelsSource = .userManual
             } else if thinks && traits.levels?.isEmpty == true {
                 traits.levels = nil
+                traits.levelsSource = .catalog
             }
         }
         .onChange(of: traits) { _, value in
-            guard value != endpoint?.traits(model) else { return }
+            guard hasLoaded, value != endpoint?.traits(model) else { return }
             let baseline = endpoint?.traits(model, ignoringCorrection: true) ?? ModelTraits.known(model)
-            team.setTraits(endpointId, model: model, value == baseline ? nil : value)
+            let isBaseline = value.hasSameCapabilities(as: baseline) && value.thinksSource != .userManual
+            team.setTraits(endpointId, model: model, isBaseline ? nil : value)
         }
+    }
+
+    private var legacyConflictCard: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            Text("旧版本留下的思考能力记录与权威目录不一致。当前运行已优先遵循目录；请确认要跟随目录还是手动覆写。")
+                .font(Ink.secondary)
+                .foregroundStyle(Ink.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: Ink.Space.s) {
+                Button("跟随目录（推荐）") {
+                    Haptics.tick(0.5)
+                    team.setTraits(endpointId, model: model, nil)
+                    if let resolution = endpoint?.traitsResolution(model) {
+                        traits = resolution.baseline
+                    }
+                    hasLegacyConflict = false
+                }
+                .font(.system(size: Ink.Size.small, weight: .semibold))
+                .foregroundStyle(Ink.paper)
+                .padding(.horizontal, Ink.Space.m)
+                .frame(height: 30 * UIScale.factor)
+                .background(Ink.accent, in: .capsule)
+
+                Button("保持手动关闭") {
+                    Haptics.tick(0.5)
+                    var manual = endpoint?.overrides?[model] ?? traits
+                    manual.thinks = false
+                    manual.thinksSource = .userManual
+                    manual.levels = nil
+                    manual.levelsSource = .userManual
+                    traits = manual
+                    hasLegacyConflict = false
+                    team.setTraits(endpointId, model: model, manual)
+                }
+                .font(.system(size: Ink.Size.small, weight: .medium))
+                .foregroundStyle(Ink.inkSoft)
+                .padding(.horizontal, Ink.Space.m)
+                .frame(height: 30 * UIScale.factor)
+                .background(Ink.mine, in: .capsule)
+            }
+        }
+        .padding(Ink.Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Ink.accentWash.opacity(0.6), in: .rect(cornerRadius: Ink.Radius.card, style: .continuous))
     }
 
     private var nameCard: some View {
@@ -1102,6 +1189,7 @@ struct ModelSheet: View {
                 Button(L.t("settings.clearTestedLevels")) {
                     Haptics.tick(0.5)
                     traits.levels = nil
+                    traits.levelsSource = .catalog
                 }
                 .font(.system(size: Ink.Size.small, weight: .semibold))
                 .foregroundStyle(Ink.accent)
@@ -1112,20 +1200,10 @@ struct ModelSheet: View {
     }
 
     private var displayedThinkingLevels: String {
-        guard traits.thinks else { return L.t("settings.thinkingLevelsOnlyAuto") }
-        if let rawLevels = traits.levels {
-            let parsed = rawLevels.compactMap(Thinking.init(rawValue:)).filter { $0 != .auto }
-            if parsed.isEmpty { return L.t("settings.thinkingLevelsOnlyAuto") }
-            return ([Thinking.auto] + parsed).map(\.title).joined(separator: " · ")
-        }
         guard let endpoint else { return L.t("settings.thinkingLevelsOnlyAuto") }
-        let levels: [Thinking]
-        if endpoint.kind == .anthropic {
-            levels = Thinking.allCases
-        } else {
-            levels = endpoint.thinkingStyle.levels(thinks: true)
-        }
-        return levels.map(\.title).joined(separator: " · ")
+        let offered = team.thinkingContract(for: endpoint, model: model).offeredSelections
+        guard offered.count > 1 else { return L.t("settings.thinkingLevelsOnlyAuto") }
+        return offered.map(\.title).joined(separator: " · ")
     }
 
     private var probeCard: some View {
@@ -1167,6 +1245,7 @@ struct ModelSheet: View {
                     Haptics.tick(0.5)
                     team.setTraits(endpointId, model: model, nil)
                     traits = endpoint.map { $0.traits(model, ignoringCorrection: true) } ?? ModelTraits.known(model)
+                    hasLegacyConflict = false
                 }
                 Kit.rule(inset: Ink.Space.l)
             }
@@ -1209,7 +1288,7 @@ struct ModelSheet: View {
     private var capabilitySource: String {
         if endpoint?.corrected(model) == true { return L.t("servicePage.sourceModified") }
         let hasAPIWindow = endpoint?.windows?[model] != nil
-        let hasCatalog = ModelsDev.lookup(model) != nil
+        let hasCatalog = ModelsDev.lookup(model, providerKey: endpoint?.officialCatalogProviderKey) != nil
         if hasAPIWindow && hasCatalog { return L.t("servicePage.sourceAPIAndCatalog") }
         if hasAPIWindow { return L.t("servicePage.sourceAPIAndName") }
         if hasCatalog { return L.t("servicePage.sourceCatalog") }
@@ -1220,8 +1299,9 @@ struct ModelSheet: View {
         capabilitySource + L.t("servicePage.capabilitiesFooter")
     }
 
-    /// Every ability in one go: answers at all, sees a picture, calls a tool, thinks (and can stop). What it finds
-    /// is set on the switches above, as if the user had set them.
+    /// Every ability in one go: answers at all, sees a picture, calls a tool, and observes thinking.
+    /// Vision and tool results can update switches; thinking probe is strictly observation-only and never
+    /// overwrites catalog/contract `thinks` or `levels`.
     private func testAll() {
         guard let endpoint else { return }
         working = true
@@ -1244,8 +1324,6 @@ struct ModelSheet: View {
             var found = traits
             if let sees = sight.sees { found.sees = sees }
             if let calls = tools.calls { found.tools = calls }
-            if let thinks = thinking.thinks { found.thinks = thinks }
-            if let levels = thinking.levels { found.levels = levels.map(\.rawValue) }
             if found != traits { traits = found }
             note = lines.joined(separator: "\n")
             working = false
@@ -1264,10 +1342,16 @@ struct ModelSheet: View {
 }
 
 extension TeamModel {
-    /// Asks one model once and returns its answer. Thinking is turned off when the model allows it, to be quick.
+    /// Asks one model once and returns its answer. Uses `preferLowLatency` intent so forced-thinking or
+    /// unconfirmed relays omit questionable thinking parameters cleanly.
     func quickAsk(_ endpoint: Endpoint, model: String, _ message: Message) async throws -> String {
+        if let disabledReason = endpoint.disabledProtocolReason {
+            throw TeamError(message: disabledReason)
+        }
         guard let key = await readAPIKey(for: endpoint), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
         let provider = endpoint.provider(key: key)
+        let contract = thinkingContract(for: endpoint, model: model)
+        let initialThinking: Thinking = (contract.isKnownContract && contract.canExplicitlyDisable) ? .off : .auto
         func once(_ thinking: Thinking) async throws -> String {
             let request = ModelRequest(model: model, system: "", messages: [message], outputLimit: 400, thinking: thinking)
             var text = ""
@@ -1277,8 +1361,8 @@ extension TeamModel {
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         do {
-            return try await once(.off)
-        } catch let failure as ProviderError where failure.status == 400 || failure.status == 422 {
+            return try await once(initialThinking)
+        } catch let failure as ProviderError where initialThinking != .auto && (failure.status == 400 || failure.status == 422) {
             return try await once(.auto)
         }
     }
@@ -1314,11 +1398,12 @@ extension TeamModel {
         }
     }
 
-    /// Asks the same small question at every thinking level: which ones the service takes, and whether it really
-    /// thinks less when told not to. `thinks` is nil when the test itself failed; `levels` is nil when nothing
-    /// could be told.
+    /// Observation-only thinking probe: reports what the endpoint accepted or returned without
+    /// overwriting catalog/contract `thinks` or `levels` (`200` on a relay never proves a contract).
     func probeThinking(_ endpoint: Endpoint, model: String) async -> (thinks: Bool?, note: String, levels: [Thinking]?) {
-        guard let key = await readAPIKey(for: endpoint), !key.isEmpty else { return (nil, "没试思考：没有密钥。", nil) }
+        guard endpoint.isActiveProtocol, let key = await readAPIKey(for: endpoint), !key.isEmpty else {
+            return (nil, "没试思考：没有密钥或协议未启用。", nil)
+        }
         let provider = endpoint.provider(key: key)
         func thought(_ level: Thinking) async -> (chars: Int, refused: Bool, failed: Bool) {
             let request = ModelRequest(model: model, system: "", messages: [.user("17 × 23 等于多少？只回答数字。")],
@@ -1335,19 +1420,19 @@ extension TeamModel {
                 return (0, false, true)
             }
         }
-        let styleCandidates: [Thinking] = endpoint.kind == .openai
+        let styleCandidates: [Thinking] = endpoint.kind.supportsThinkingStyleSelection
             ? endpoint.thinkingStyle.levels(thinks: true).filter { $0 != .auto }
             : [.off, .low, .medium, .high, .max]
         if styleCandidates.isEmpty {
             let autoRun = await thought(.auto)
-            if autoRun.failed { return (nil, "思考没试成：连不上。", nil) }
-            if autoRun.chars > 0 { return (true, "会思考（当前接口风格仅提供「默认」）。", nil) }
-            return (false, "没看到思考内容：已标成不会思考，思考菜单只留「默认」。", [])
+            if autoRun.failed { return (nil, "思考观察未完成：连不上。", nil) }
+            if autoRun.chars > 0 { return (true, "观察到思考输出（仅作参考，未改写目录规则）。", nil) }
+            return (false, "未观察到思考输出（仅作参考，未改写目录规则）。", nil)
         }
         let tried = styleCandidates
         var results: [Thinking: (chars: Int, refused: Bool, failed: Bool)] = [:]
         for level in tried { results[level] = await thought(level) }
-        if results.values.allSatisfy({ $0.failed }) { return (nil, "思考没试成：连不上。", nil) }
+        if results.values.allSatisfy({ $0.failed }) { return (nil, "思考观察未完成：连不上。", nil) }
         let taken = tried.filter { results[$0].map { !$0.refused && !$0.failed } ?? false }
         let refused = tried.filter { results[$0]?.refused == true }
         let anyThought = taken.contains { (results[$0]?.chars ?? 0) > 0 }
@@ -1355,16 +1440,17 @@ extension TeamModel {
         let off = results[.off].map { $0.refused || $0.failed ? -1 : $0.chars } ?? -1
         var words: [String] = []
         if !anyThought {
-            words.append(refused.count == tried.count ? "不会思考：服务不接受任何思考设置。" : "没看到思考内容：要么不会思考，要么这家服务不把思考发回来。")
-            words.append("已标成不会思考，思考菜单只留「默认」。")
-            return (false, words.joined(), [])
+            words.append(refused.count == tried.count ? "本次观察未接受思考参数" : "本次观察未返回思考文本")
+            words.append("（仅作参考，目录与手动规则保持不变）。")
+            return (false, words.joined(), nil)
         }
-        words.append("能用的档：" + taken.map(\.title).joined(separator: "、") + "。")
-        if !refused.isEmpty { words.append("服务不收：" + refused.map(\.title).joined(separator: "、") + "，菜单里不再出现。") }
-        if off == 0 { words.append("「不想」能真的关掉思考。") }
-        else if off > 0 && deep > off * 2 { words.append("「不想」关不掉，只是少想（\(off) 字，深的 \(deep) 字）。") }
-        else if off > 0 { words.append("各档想的差不多多（约 \(deep) 字），档位作用不大。") }
-        return (true, "会思考。" + words.joined(), taken)
+        words.append("本次接口接受：" + taken.map(\.title).joined(separator: "、") + "。")
+        if !refused.isEmpty { words.append("拒绝：" + refused.map(\.title).joined(separator: "、") + "。") }
+        if off == 0 { words.append("「不想」返回了 0 字思考。") }
+        else if off > 0 && deep > off * 2 { words.append("「不想」仍有少量思考（\(off) 字，深档 \(deep) 字）。") }
+        else if off > 0 { words.append("各档思考字数接近（约 \(deep) 字）。") }
+        words.append("（仅作观察，未改写目录档位）")
+        return (true, "观察到思考。" + words.joined(), nil)
     }
 
     /// Shows the model a red square and asks its colour. `sees` is nil when the test itself failed.

@@ -1,5 +1,18 @@
 import Foundation
 
+/// Where a stored model capability field came from, so legacy probe output or
+/// unattributed historical overrides never silently suppress a confirmed catalog/contract.
+public enum TraitFieldSource: String, Codable, Equatable, Hashable, Sendable {
+    /// Derived from the validated models.dev catalog or official endpoint contract.
+    case catalog
+    /// Written by the legacy `probeThinking` auto-probe (observation only; never overrides confirmed contracts).
+    case probedLegacy
+    /// Explicitly chosen or confirmed by the user.
+    case userManual
+    /// Legacy persisted override whose provenance cannot be distinguished (e.g. post-401e396 stripped `levels`).
+    case unknownLegacy
+}
+
 /// What a model can do. Services do not say, so it is guessed from the name; the user can set it right by hand.
 public struct ModelTraits: Codable, Equatable, Hashable, Sendable {
     /// Takes pictures.
@@ -13,12 +26,112 @@ public struct ModelTraits: Codable, Equatable, Hashable, Sendable {
     /// The thinking levels (raw values of `Thinking`) a test found this model's service takes; nil until tested.
     /// The chat's thinking menu offers only these.
     public var levels: [String]?
+    /// Provenance of `thinks`. Nil on legacy JSON archives predating per-field source tracking.
+    public var thinksSource: TraitFieldSource?
+    /// Provenance of `levels`. Nil on legacy JSON archives predating per-field source tracking.
+    public var levelsSource: TraitFieldSource?
 
-    public init(sees: Bool, tools: Bool = true, thinks: Bool = false, window: Int = 131_072) {
+    public init(
+        sees: Bool,
+        tools: Bool = true,
+        thinks: Bool = false,
+        window: Int = 131_072,
+        levels: [String]? = nil,
+        thinksSource: TraitFieldSource? = nil,
+        levelsSource: TraitFieldSource? = nil
+    ) {
         self.sees = sees
         self.tools = tools
         self.thinks = thinks
         self.window = window
+        self.levels = levels
+        self.thinksSource = thinksSource
+        self.levelsSource = levelsSource
+    }
+
+    /// Interprets missing provenance on legacy persisted overrides:
+    /// an override that also carries `levels` came from legacy `probeThinking` (`.probedLegacy`);
+    /// one without `levels` is `.unknownLegacy` (indistinguishable between stripped legacy probe and manual JSON).
+    public var effectiveThinksSource: TraitFieldSource {
+        if let thinksSource { return thinksSource }
+        return levels != nil ? .probedLegacy : .unknownLegacy
+    }
+
+    /// Interprets missing `levelsSource` on legacy persisted overrides.
+    public var effectiveLevelsSource: TraitFieldSource {
+        if let levelsSource { return levelsSource }
+        return levels != nil ? .probedLegacy : .unknownLegacy
+    }
+
+    /// Resolves a stored override against the current catalog/contract baseline.
+    /// - `.userManual` overrides are always honored.
+    /// - `.probedLegacy` overrides never suppress a confirmed catalog/contract.
+    /// - `.unknownLegacy` overrides never suppress a confirmed catalog/contract at runtime;
+    ///   when they disagree with the confirmed contract (such as historical `thinks = false`),
+    ///   runtime follows the confirmed baseline and sets `hasLegacyConflict = true` so the UI
+    ///   can offer "跟随目录（推荐）" or explicit re-confirmation as `.userManual`.
+    public func resolvedAgainstCatalog(
+        _ baseline: ModelTraits,
+        hasConfirmedContract: Bool
+    ) -> (traits: ModelTraits, hasLegacyConflict: Bool) {
+        var resolved = self
+        var hasLegacyConflict = false
+
+        let thinksOrigin = effectiveThinksSource
+        switch thinksOrigin {
+        case .userManual:
+            resolved.thinks = thinks
+            resolved.thinksSource = .userManual
+        case .catalog:
+            resolved.thinks = baseline.thinks
+            resolved.thinksSource = .catalog
+        case .probedLegacy:
+            if hasConfirmedContract || baseline.thinks != thinks {
+                resolved.thinks = baseline.thinks
+                resolved.thinksSource = .catalog
+            }
+        case .unknownLegacy:
+            if hasConfirmedContract, thinks != baseline.thinks {
+                resolved.thinks = baseline.thinks
+                resolved.thinksSource = .catalog
+                hasLegacyConflict = true
+            } else {
+                resolved.thinks = thinks
+                resolved.thinksSource = .unknownLegacy
+            }
+        }
+
+        let levelsOrigin = effectiveLevelsSource
+        switch levelsOrigin {
+        case .userManual:
+            resolved.levels = levels
+            resolved.levelsSource = .userManual
+        case .catalog:
+            resolved.levels = nil
+            resolved.levelsSource = .catalog
+        case .probedLegacy:
+            if hasConfirmedContract || levels != nil {
+                resolved.levels = nil
+                resolved.levelsSource = .catalog
+            }
+        case .unknownLegacy:
+            if hasConfirmedContract, levels != nil {
+                resolved.levels = nil
+                resolved.levelsSource = .catalog
+                hasLegacyConflict = true
+            }
+        }
+
+        return (resolved, hasLegacyConflict)
+    }
+
+    /// Whether two `ModelTraits` match on user-facing capability fields (ignoring internal source tags).
+    public func hasSameCapabilities(as other: ModelTraits) -> Bool {
+        sees == other.sees
+            && tools == other.tools
+            && thinks == other.thinks
+            && window == other.window
+            && levels == other.levels
     }
 
     /// 「看图 · 思考 · 1M」

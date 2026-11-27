@@ -15,7 +15,7 @@ struct ImageModelPage: View {
         let isImage: Bool
     }
 
-    private var endpoints: [Endpoint] { team.settings.endpoints.filter { $0.kind == .openai } }
+    private var endpoints: [Endpoint] { team.settings.endpoints.filter { $0.isActiveProtocol && $0.kind.supportsImages } }
 
     var body: some View {
         let openAI = endpoints

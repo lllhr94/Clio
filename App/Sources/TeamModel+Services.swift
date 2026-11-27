@@ -176,7 +176,7 @@ extension TeamModel {
             var candidate = snapshot
             candidate.endpoints.remove(at: index)
             let prefix = id + "/"
-            if candidate.backupModel?.hasPrefix(prefix) == true { candidate.backupModel = nil }
+            candidate.pruneBackupModels { $0.hasPrefix(prefix) }
             if candidate.imageModel?.hasPrefix(prefix) == true { candidate.imageModel = nil }
             if candidate.memoryModel?.hasPrefix(prefix) == true { candidate.memoryModel = nil }
             if candidate.visionModel?.hasPrefix(prefix) == true { candidate.visionModel = nil }
@@ -223,7 +223,7 @@ extension TeamModel {
     private func applyRemovedEndpoint(_ id: String) {
         let prefix = id + "/"
         settings.endpoints.removeAll { $0.id == id }
-        if settings.backupModel?.hasPrefix(prefix) == true { settings.backupModel = nil }
+        settings.pruneBackupModels { $0.hasPrefix(prefix) }
         if settings.imageModel?.hasPrefix(prefix) == true { settings.imageModel = nil }
         if settings.memoryModel?.hasPrefix(prefix) == true { settings.memoryModel = nil }
         if settings.visionModel?.hasPrefix(prefix) == true { settings.visionModel = nil }
@@ -240,12 +240,15 @@ extension TeamModel {
     func refreshModels(_ id: String) async throws -> Int {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return 0 }
         let endpoint = settings.endpoints[index]
+        if let disabledReason = endpoint.disabledProtocolReason {
+            throw TeamError(message: disabledReason)
+        }
         guard let key = await readAPIKey(for: endpoint), !key.isEmpty else { throw TeamError(message: "\(endpoint.name) 还没有密钥。") }
         let provider = endpoint.provider(key: key)
         var reported: [String: Int] = [:]
         let raw: [String]
-        if let openAI = provider as? OpenAIProvider {
-            let catalog = try await openAI.catalog()
+        if let catalogProvider = provider as? CatalogReportingProvider {
+            let catalog = try await catalogProvider.catalog()
             raw = catalog.ids
             reported = catalog.windows
         } else {
@@ -264,7 +267,7 @@ extension TeamModel {
 
     /// Refreshes a service's images candidates without changing its chat model selection.
     func refreshImageModels(_ id: String) async throws {
-        guard let endpoint = settings.endpoints.first(where: { $0.id == id && $0.kind == .openai }),
+        guard let endpoint = settings.endpoints.first(where: { $0.id == id && $0.isActiveProtocol && $0.kind.supportsImages }),
               let key = await readAPIKey(for: endpoint), !key.isEmpty else {
             throw TeamError(message: L.t("errors.invalidApiKey"))
         }
@@ -274,7 +277,7 @@ extension TeamModel {
     }
 
     func storeImageModels(_ listed: [String], for endpoint: Endpoint) {
-        guard endpoint.kind == .openai,
+        guard endpoint.isActiveProtocol, endpoint.kind.supportsImages,
               let index = settings.endpoints.firstIndex(where: { $0.id == endpoint.id && $0.baseURL == endpoint.baseURL }) else { return }
         settings.endpoints[index].imageModels = listed
         saveSettings()
@@ -284,7 +287,7 @@ extension TeamModel {
     static func keep(_ listed: [String], for endpoint: Endpoint) -> [String] {
         if let service = Service.of(endpoint) { return service.keep(listed) }
         var models = listed.filter(ModelTraits.isChat)
-        if endpoint.kind == .anthropic { models = models.filter { $0.hasPrefix("claude") } }
+        if endpoint.kind.isAnthropic { models = models.filter { $0.hasPrefix("claude") } }
         return models
     }
 
@@ -308,7 +311,7 @@ extension TeamModel {
             let removedFromService: @Sendable (String) -> Bool = { ref in
                 ref.hasPrefix(prefix) && !activeRefs.contains(ref)
             }
-            if let backup = settings.backupModel, removedFromService(backup) { settings.backupModel = nil }
+            settings.pruneBackupModels(removing: removedFromService)
             if let vision = settings.visionModel, removedFromService(vision) { settings.visionModel = nil }
             if let memory = settings.memoryModel, removedFromService(memory) { settings.memoryModel = nil }
             pruneUnavailableModelRefs(removedFromService)
@@ -452,14 +455,17 @@ extension TeamModel {
         let oldStyle = candidate.endpoints[idx].style
         candidate.endpoints[idx].baseURL = nextURL
         candidate.endpoints[idx].style = style
-        if candidate.endpoints[idx].baseURL != oldURL || candidate.endpoints[idx].style != oldStyle,
-           var overrides = candidate.endpoints[idx].overrides {
-            for (model, var custom) in overrides where custom.levels != nil {
-                custom.levels = nil
-                let baseline = candidate.endpoints[idx].traits(model, ignoringCorrection: true)
-                overrides[model] = (custom == baseline) ? nil : custom
+        if candidate.endpoints[idx].baseURL != oldURL || candidate.endpoints[idx].style != oldStyle {
+            candidate.endpoints[idx].revalidateManualThinkingRules()
+            if var overrides = candidate.endpoints[idx].overrides {
+                for (model, var custom) in overrides where custom.levels != nil {
+                    custom.levels = nil
+                    custom.levelsSource = .catalog
+                    let baseline = candidate.endpoints[idx].traits(model, ignoringCorrection: true)
+                    overrides[model] = custom.hasSameCapabilities(as: baseline) ? nil : custom
+                }
+                candidate.endpoints[idx].overrides = overrides.isEmpty ? nil : overrides
             }
-            candidate.endpoints[idx].overrides = overrides.isEmpty ? nil : overrides
         }
         if targetID != id {
             let oldPrefix = id + "/"
@@ -469,7 +475,9 @@ extension TeamModel {
                 return newPrefix + String(ref.dropFirst(oldPrefix.count))
             }
             candidate.defaultModel = rewrite(candidate.defaultModel)
-            candidate.backupModel = rewrite(candidate.backupModel)
+            candidate.rewriteBackupModels { ref in
+                ref.hasPrefix(oldPrefix) ? newPrefix + String(ref.dropFirst(oldPrefix.count)) : ref
+            }
             candidate.memoryModel = rewrite(candidate.memoryModel)
             candidate.imageModel = rewrite(candidate.imageModel)
             candidate.visionModel = rewrite(candidate.visionModel)
@@ -764,7 +772,24 @@ extension TeamModel {
     }
 
     func setBackupModel(_ ref: String?) {
-        settings.backupModel = ref
+        if let ref, !ref.isEmpty {
+            settings.setBackupModelsList([ref])
+        } else {
+            settings.setBackupModelsList(nil)
+        }
+        saveSettings()
+    }
+
+    func setBackupModels(_ refs: [String]?) {
+        settings.setBackupModelsList(refs)
+        saveSettings()
+    }
+
+    /// Resets all per-model capability overrides on one service back to catalog/contract defaults.
+    func resetAllTraitsToCatalog(for endpointID: String) {
+        guard let index = settings.endpoints.firstIndex(where: { $0.id == endpointID }) else { return }
+        guard settings.endpoints[index].overrides != nil else { return }
+        settings.endpoints[index].overrides = nil
         saveSettings()
     }
 
@@ -793,20 +818,25 @@ extension TeamModel {
     }
 
     var imageModelSelection: (endpoint: Endpoint, model: String)? {
-        guard let selected = resolve(settings.imageModel), selected.endpoint.kind == .openai else { return nil }
+        guard let selected = resolve(settings.imageModel),
+              selected.endpoint.isActiveProtocol,
+              selected.endpoint.kind.supportsImages else { return nil }
         return selected
     }
 
     func setImageModel(_ ref: String?) {
         if let ref {
-            guard let selected = resolve(ref), selected.endpoint.kind == .openai else { return }
+            guard let selected = resolve(ref),
+                  selected.endpoint.isActiveProtocol,
+                  selected.endpoint.kind.supportsImages else { return }
         }
         settings.imageModel = ref
         saveSettings()
     }
 
     static func preferred(_ endpoint: Endpoint) -> String? {
-        endpoint.models.first { $0 == "deepseek-flash" }
+        guard endpoint.isActiveProtocol else { return nil }
+        return endpoint.models.first { $0 == "deepseek-flash" }
             ?? endpoint.models.first { $0 == "deepseek-v4-flash" }
             ?? endpoint.models.first { $0 == "deepseek-chat" }
             ?? endpoint.models.first { $0.contains("sonnet") }
@@ -814,7 +844,7 @@ extension TeamModel {
     }
 
     static func firstPreferredModel(in endpoints: [Endpoint]) -> String? {
-        for endpoint in endpoints {
+        for endpoint in endpoints where endpoint.isActiveProtocol {
             if let pick = preferred(endpoint) { return "\(endpoint.id)/\(pick)" }
         }
         return nil
@@ -829,7 +859,9 @@ extension TeamModel {
     }
 
     nonisolated static func resolveActive(_ ref: String?, in endpoints: [Endpoint]) -> (endpoint: Endpoint, model: String)? {
-        guard let found = resolve(ref, in: endpoints), found.endpoint.models.contains(found.model) else { return nil }
+        guard let found = resolve(ref, in: endpoints),
+              found.endpoint.isActiveProtocol,
+              found.endpoint.models.contains(found.model) else { return nil }
         return found
     }
 
