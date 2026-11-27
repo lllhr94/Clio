@@ -61,10 +61,7 @@ enum SkillInstaller {
             willPerformHTTPRedirection response: HTTPURLResponse,
             newRequest request: URLRequest
         ) async -> URLRequest? {
-            guard let next = request.url, next.scheme?.lowercased() == "https", !LocalAddress.isLocal(next) else {
-                return nil
-            }
-            if await LocalAddress.resolvesToLocal(next) { return nil }
+            guard let next = request.url, await URLAccessPurpose.skillDownload.allows(next) else { return nil }
             return request
         }
     }
@@ -115,7 +112,7 @@ enum SkillInstaller {
         guard let url = URL(string: trimmed), url.scheme?.lowercased() == "https", url.host != nil else {
             throw Problem.message("请输入完整的 https:// 链接（支持 GitHub 目录链接、zip 链接或 SKILL.md 链接）。")
         }
-        guard !(await LocalAddress.resolvesToLocal(url)) else {
+        guard await URLAccessPurpose.skillDownload.allows(url) else {
             throw Problem.message("不能从本机或局域网地址安装技能，请使用公网 https 链接。")
         }
 
@@ -331,7 +328,7 @@ enum SkillInstaller {
                     guard let downloadString = item["download_url"] as? String,
                           let downloadURL = URL(string: downloadString),
                           downloadURL.scheme?.lowercased() == "https",
-                          !(await LocalAddress.resolvesToLocal(downloadURL)) else { continue }
+                          await URLAccessPurpose.skillDownload.allows(downloadURL) else { continue }
                     let remaining = maxUncompressedBytes - totalBytes
                     guard remaining > 0 else { throw Problem.message("技能总大小超过了 32 MB。") }
                     let data = try await downloadBytes(from: downloadURL, limit: remaining)
@@ -616,7 +613,7 @@ enum SkillInstaller {
     }
 
     private static func downloadBytes(from url: URL, limit: Int, accept: String? = nil) async throws -> Data {
-        guard url.scheme?.lowercased() == "https", !(await LocalAddress.resolvesToLocal(url)) else {
+        guard await URLAccessPurpose.skillDownload.allows(url) else {
             throw Problem.message("只允许从公网 https 链接下载。")
         }
         let session = makeSession()
@@ -631,7 +628,7 @@ enum SkillInstaller {
         guard (200..<300).contains(http.statusCode) else {
             throw Problem.message("下载失败（HTTP \(http.statusCode)）。请确认链接是公开可访问的。")
         }
-        if let finalURL = http.url, await LocalAddress.resolvesToLocal(finalURL) {
+        if let finalURL = http.url, !(await URLAccessPurpose.skillDownload.allows(finalURL)) {
             throw Problem.message("链接跳转到了本机或局域网地址，已中止。")
         }
         var out = Data()
@@ -646,7 +643,7 @@ enum SkillInstaller {
     }
 
     private static func downloadToFile(from url: URL, to destination: URL, limit: Int) async throws {
-        guard url.scheme?.lowercased() == "https", !(await LocalAddress.resolvesToLocal(url)) else {
+        guard await URLAccessPurpose.skillDownload.allows(url) else {
             throw Problem.message("只允许从公网 https 链接下载。")
         }
         let session = makeSession()
@@ -660,7 +657,7 @@ enum SkillInstaller {
         guard (200..<300).contains(http.statusCode) else {
             throw Problem.message("下载失败（HTTP \(http.statusCode)）。请确认链接是公开可访问的。")
         }
-        if let finalURL = http.url, await LocalAddress.resolvesToLocal(finalURL) {
+        if let finalURL = http.url, !(await URLAccessPurpose.skillDownload.allows(finalURL)) {
             throw Problem.message("链接跳转到了本机或局域网地址，已中止。")
         }
         let fm = FileManager.default

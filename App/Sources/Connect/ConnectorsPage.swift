@@ -1,3 +1,4 @@
+import AgentKit
 import SwiftUI
 import UIKit
 
@@ -222,11 +223,14 @@ final class ConnectorWork: ObservableObject {
 
     /// Connects by signing in (`token` nil, for a service that signs in), or with a key or token.
     /// Returns nil when connected, or what went wrong.
-    func connect(_ connector: Connector, token typed: String? = nil) async -> String? {
+    func connect(_ connector: Connector, token typed: String? = nil, options: MCPLoginOptions? = nil) async -> String? {
+        guard !busy.contains(connector.id) else { return nil }
         busy.insert(connector.id)
         defer { busy.remove(connector.id) }
         let hills = Hills.shared
-        var entry = server(of: connector) ?? Hills.Server(name: connector.name, url: connector.url)
+        let existing = server(of: connector)
+        var entry = existing ?? Hills.Server(name: connector.name, url: connector.url)
+        if let options { options.save(server: entry.id, url: entry.url) }
         if connector.serverId == nil { entry.connector = connector.id }
         entry.enabled = true
         var token: String?
@@ -252,7 +256,8 @@ final class ConnectorWork: ObservableObject {
             return nil
         }
         // A first connect that failed leaves nothing half-done behind.
-        if hills.tools(of: entry).isEmpty {
+        if existing == nil, hills.tools(of: entry).isEmpty,
+           !(await Task.detached(priority: .userInitiated) { MCPAuth.hasSavedCredential(serverID) }.value) {
             await Task.detached(priority: .userInitiated) {
                 MCPAuth.forget(serverID)
                 Vault.remove("mcp.\(serverID)")
@@ -289,6 +294,7 @@ private struct ConnectorDetail: View {
     @Environment(\.openURL) private var openURL
     @State private var token = ""
     @State private var problem: String?
+    @State private var options = MCPLoginOptions()
     @State private var confirming = false
     @State private var googleOpen = false
     @ObservedObject private var google = Google.shared
@@ -310,10 +316,6 @@ private struct ConnectorDetail: View {
 
                 if server == nil { connectArea } else { connectedArea }
                 details
-
-                if let problem = problem ?? server.flatMap({ hills.lastError[$0.id] }) {
-                    Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop).multilineTextAlignment(.center)
-                }
             }
             .padding(.horizontal, Ink.Space.page)
             .padding(.bottom, Ink.Space.xxl)
@@ -321,6 +323,9 @@ private struct ConnectorDetail: View {
         .background(Ink.paper.ignoresSafeArea())
         .navigationTitle(connector.name)
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            if let server { options = MCPLoginOptions.load(server: server.id, url: server.url) }
+        }
         .sheet(isPresented: $googleOpen) { GoogleSheet() }
         .confirmationDialog(L.format("connectors.disconnectConfirm", connector.name), isPresented: $confirming, titleVisibility: .visible) {
             Button(L.t("actions.disconnect"), role: .destructive) { work.disconnect(connector); dismiss() }
@@ -402,17 +407,27 @@ private struct ConnectorDetail: View {
     }
 
     @ViewBuilder
+    private var connectionProblem: some View {
+        if let problem = problem ?? server.flatMap({ hills.lastError[$0.id] }) {
+            Text(problem).font(Ink.footnote).foregroundStyle(Ink.stop).multilineTextAlignment(.center)
+        }
+    }
+
+    @ViewBuilder
     private var connectArea: some View {
         switch connector.auth {
         case .oauth:
             VStack(spacing: Ink.Space.s) {
                 bigButton(L.format("actions.signInWithProvider", connector.name)) { go(token: nil) }
+                connectionProblem
                 Text(L.format("connectors.signInNote", connector.name)).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             }
+            MCPLoginOptionsFields(options: $options)
             tokenBox(title: "或者粘贴令牌", placeholder: "访问令牌（Access Token）", page: connector.tokenPage)
         case .open:
             VStack(spacing: Ink.Space.s) {
                 bigButton(L.t("actions.connect")) { go(token: nil) }
+                connectionProblem
                 Text(L.t("connectors.publicAccessNote")).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
             }
         case .google:
@@ -423,6 +438,7 @@ private struct ConnectorDetail: View {
                 } else {
                     bigButton(L.t("actions.connect")) { go(token: nil) }
                 }
+                connectionProblem
                 Text(L.t("connectors.googleOfficialNote"))
                     .font(Ink.footnote).foregroundStyle(Ink.inkSoft).multilineTextAlignment(.center)
             }
@@ -452,6 +468,7 @@ private struct ConnectorDetail: View {
             .padding(Ink.Space.l)
             .paperCard()
             tokenBox(title: title, placeholder: "粘贴\(title)", page: nil)
+            connectionProblem
         }
     }
 
@@ -518,6 +535,8 @@ private struct ConnectorDetail: View {
     @ViewBuilder
     private var connectedArea: some View {
         if let server {
+            connectionProblem
+            if connector.auth == .oauth { MCPLoginOptionsFields(options: $options) }
             if connector.auth == .google {
                 googleAccountCard
             }
@@ -559,7 +578,7 @@ private struct ConnectorDetail: View {
     private func go(token: String?) {
         problem = nil
         Task {
-            problem = await work.connect(connector, token: token)
+            problem = await work.connect(connector, token: token, options: connector.auth == .oauth ? options : nil)
             if problem == nil { self.token = "" }
         }
     }
@@ -716,6 +735,7 @@ private struct CustomSheet: View {
     @State private var name = ""
     @State private var url = "https://"
     @State private var token = ""
+    @State private var options = MCPLoginOptions()
     @State private var busy = false
     @State private var result: String?
 
@@ -733,6 +753,9 @@ private struct CustomSheet: View {
                         .autocorrectionDisabled()
                 } footer: {
                     Text(result ?? L.t("connectors.customTransportNote"))
+                }
+                if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Section { MCPLoginOptionsFields(options: $options) }
                 }
             }
             .paperForm()
@@ -768,12 +791,14 @@ private struct CustomSheet: View {
                 Vault.save(typed, as: "mcp.\(serverID)")
             }.value
         }
+        options.save(server: entry.id, url: entry.url)
         hills.save(entry, token: nil)
         result = await Connecting.connect(entry, signIn: typed.isEmpty)
         if hills.lastError[entry.id] == nil {
             Haptics.grab()
             dismiss()
-        } else if hills.tools(of: entry).isEmpty {
+        } else if hills.tools(of: entry).isEmpty,
+                  !(await Task.detached(priority: .userInitiated) { MCPAuth.hasSavedCredential(serverID) }.value) {
             await Task.detached(priority: .userInitiated) {
                 MCPAuth.forget(serverID)
                 Vault.remove("mcp.\(serverID)")
@@ -788,23 +813,79 @@ private struct CustomSheet: View {
 enum Connecting {
     static func connect(_ server: Hills.Server, signIn: Bool) async -> String {
         let hills = Hills.shared
-        var count = await hills.refresh(server)
-        let refused = hills.lastError[server.id].map { $0.contains("401") || $0.contains("403") || $0.lowercased().contains("unauthorized") } ?? false
-        let serverID = server.id
-        let alreadySignedIn = count < 0 && signIn && !refused
-            ? await Task.detached(priority: .userInitiated) { MCPAuth.signedIn(serverID) }.value
-            : false
-        if count < 0, signIn, refused || !alreadySignedIn {
-            do {
-                try await MCPAuth.shared.login(server: server.id, url: server.url)
-                count = await hills.refresh(server)
-            } catch {
-                hills.lastError[server.id] = error.localizedDescription
-                return "没登录上：\(error.localizedDescription)"
+        let options = MCPLoginOptions.load(server: server.id, url: server.url)
+        do {
+            var changeOptions = false
+            if signIn {
+                _ = try MCPAuth.configuredRedirect(MCPLoginOptions.optional(options.redirectURI))
+                let id = server.id
+                changeOptions = await Task.detached(priority: .userInitiated) {
+                    MCPAuth.needsNewOptions(options, server: id)
+                }.value
             }
+            var count = -1
+            if !changeOptions { count = await hills.refresh(server) }
+            let initialError = hills.lastError[server.id] ?? "连接失败，请重试。"
+            if count < 0, signIn, changeOptions || needsOAuthProbe(initialError) {
+                // Hills.refresh returns a display string. Recheck the HTTP status before opening OAuth.
+                let challenge = try await MCPAuth.challenge(at: server.url)
+                guard hills.servers.contains(where: { $0.id == server.id && $0.url == server.url }) else {
+                    throw MCPAuth.LoginError.sessionChanged
+                }
+                if let challenge {
+                    try await MCPAuth.shared.login(server: server.id, url: server.url, options: options, challenge: challenge)
+                    count = await hills.refresh(server)
+                } else if changeOptions {
+                    count = await hills.refresh(server)
+                }
+            }
+            if count >= 0 { return L.format("connectors.connectedWithTools", count) }
+            let message = visibleError(hills.lastError[server.id] ?? initialError, oauth: signIn)
+            hills.lastError[server.id] = message
+            return message
+        } catch {
+            let message = error is CancellationError ? "登录已取消。" : error.localizedDescription
+            hills.lastError[server.id] = message
+            return message
         }
-        if count >= 0 { return L.format("connectors.connectedWithTools", count) }
-        return "没连上：\(hills.lastError[server.id] ?? "不明原因")"
+    }
+
+    static func needsOAuthProbe(_ message: String) -> Bool {
+        message.hasPrefix(MCPClient.MCPError.http(401, "").localizedDescription)
+            || message == MCPAuth.LoginError.reauthRequired.localizedDescription
+            || message == MCPAuth.LoginError.accessRejected.localizedDescription
+    }
+
+    private static func visibleError(_ message: String, oauth: Bool) -> String {
+        guard oauth else { return message }
+        for status in 400...599 where message.hasPrefix(MCPClient.MCPError.http(status, "").localizedDescription) {
+            return "服务返回 HTTP \(status)。"
+        }
+        return message
+    }
+}
+
+struct MCPLoginOptionsFields: View {
+    @Binding var options: MCPLoginOptions
+
+    var body: some View {
+        DisclosureGroup("登录选项") {
+            VStack(alignment: .leading, spacing: Ink.Space.m) {
+                field("客户端 ID（选填）", text: $options.clientID)
+                field("最小授权范围（选填）", text: $options.scope)
+                field("回调地址（选填）", text: $options.redirectURI)
+                Text("留空时自动使用本机回调。预先登记的客户端请填写服务商登记的回调地址。")
+                    .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
+            }
+            .padding(.vertical, Ink.Space.s)
+        }
+    }
+
+    private func field(_ label: String, text: Binding<String>) -> some View {
+        TextField(label, text: text)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .font(Ink.mono(Ink.Size.sub))
     }
 }
 
