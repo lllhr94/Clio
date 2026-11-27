@@ -255,7 +255,16 @@ extension TeamModel {
             raw = try await provider.models()
         }
         let listed = Self.keep(raw, for: endpoint)
-        storeImageModels(raw, for: endpoint)
+        if endpoint.kind == .openaiCodex, let responses = provider as? OpenAIResponsesProvider {
+            let probe = await responses.probeCodexImageCapabilities()
+            if probe.supported, !probe.supportedModels.isEmpty {
+                storeImageModels(probe.supportedModels, for: endpoint)
+            } else {
+                storeImageModels([], for: endpoint)
+            }
+        } else {
+            storeImageModels(raw, for: endpoint)
+        }
         guard !listed.isEmpty else { throw TeamError(message: "\(endpoint.name) 没给出模型列表，原来的先留着。") }
         guard let again = settings.endpoints.firstIndex(where: { $0.id == id }) else { return listed.count }
         settings.endpoints[again].listed = listed
@@ -271,7 +280,14 @@ extension TeamModel {
               let key = await readAPIKey(for: endpoint), !key.isEmpty else {
             throw TeamError(message: L.t("errors.invalidApiKey"))
         }
-        let listed = try await endpoint.provider(key: key).models()
+        let provider = endpoint.provider(key: key)
+        if endpoint.kind == .openaiCodex, let responses = provider as? OpenAIResponsesProvider {
+            let probe = await responses.probeCodexImageCapabilities()
+            try Task.checkCancellation()
+            storeImageModels(probe.supportedModels, for: endpoint)
+            return
+        }
+        let listed = try await provider.models()
         try Task.checkCancellation()
         storeImageModels(listed, for: endpoint)
     }
@@ -819,7 +835,7 @@ extension TeamModel {
 
     var imageModelSelection: (endpoint: Endpoint, model: String)? {
         guard let selected = resolve(settings.imageModel),
-              selected.endpoint.isActiveProtocol,
+              selected.endpoint.isDispatchable,
               selected.endpoint.kind.supportsImages else { return nil }
         return selected
     }
@@ -827,7 +843,7 @@ extension TeamModel {
     func setImageModel(_ ref: String?) {
         if let ref {
             guard let selected = resolve(ref),
-                  selected.endpoint.isActiveProtocol,
+                  selected.endpoint.isDispatchable,
                   selected.endpoint.kind.supportsImages else { return }
         }
         settings.imageModel = ref
@@ -835,7 +851,7 @@ extension TeamModel {
     }
 
     static func preferred(_ endpoint: Endpoint) -> String? {
-        guard endpoint.isActiveProtocol else { return nil }
+        guard endpoint.isDispatchable else { return nil }
         return endpoint.models.first { $0 == "deepseek-flash" }
             ?? endpoint.models.first { $0 == "deepseek-v4-flash" }
             ?? endpoint.models.first { $0 == "deepseek-chat" }
@@ -844,10 +860,23 @@ extension TeamModel {
     }
 
     static func firstPreferredModel(in endpoints: [Endpoint]) -> String? {
-        for endpoint in endpoints where endpoint.isActiveProtocol {
+        for endpoint in endpoints where endpoint.isDispatchable {
             if let pick = preferred(endpoint) { return "\(endpoint.id)/\(pick)" }
         }
         return nil
+    }
+
+    /// Ordered dispatchable backup candidates (up to 3 levels), excluding already-tried refs and paused/disabled endpoints.
+    func backupCandidates(excluding tried: Set<String>, maxLevels: Int = 3) -> [(ref: String, endpoint: Endpoint, model: String)] {
+        var result: [(ref: String, endpoint: Endpoint, model: String)] = []
+        var seen = tried
+        for ref in settings.effectiveBackupModels {
+            guard result.count < maxLevels else { break }
+            guard seen.insert(ref).inserted else { continue }
+            guard let found = resolveActive(ref) else { continue }
+            result.append((ref: ref, endpoint: found.endpoint, model: found.model))
+        }
+        return result
     }
 
     nonisolated static func resolve(_ ref: String?, in endpoints: [Endpoint]) -> (endpoint: Endpoint, model: String)? {
@@ -860,7 +889,7 @@ extension TeamModel {
 
     nonisolated static func resolveActive(_ ref: String?, in endpoints: [Endpoint]) -> (endpoint: Endpoint, model: String)? {
         guard let found = resolve(ref, in: endpoints),
-              found.endpoint.isActiveProtocol,
+              found.endpoint.isDispatchable,
               found.endpoint.models.contains(found.model) else { return nil }
         return found
     }

@@ -7,24 +7,51 @@ public struct ProtocolAtomicUnit: Equatable, Sendable {
     /// The original index for each message. A synthesized tool result has no source.
     public let sourceIndices: [Int?]
 
-    /// The text budget used by the conversation window, including tool arguments and visual content.
+    /// The text budget used by the conversation window, including tool arguments, continuation payloads, and visual content.
     private var characterCost: Int {
         messages.reduce(0) { total, message in
-            let reasoning = (message.reasoning?.count ?? 0) + (message.reasoningSignature?.count ?? 0)
+            let payloadChars = (message.continuationPayloads ?? []).reduce(0) { $0 + $1.opaqueData.count }
+            let reasoning = (message.reasoning?.count ?? 0) + (message.reasoningSignature?.count ?? 0) + payloadChars
             let arguments = message.toolCalls.reduce(0) { $0 + $1.arguments.count }
             return total + message.text.count + reasoning + arguments + message.images.count * 2000
         }
     }
 
-    /// Groups adjacent assistant reasoning continuations, calls and matching results. A damaged history can
-    /// contain unowned or duplicate results, which are ignored, or a missing result, which gets an error.
-    public static func group(_ history: [Message]) -> [ProtocolAtomicUnit] {
+    /// Groups adjacent assistant reasoning continuations, tool calls + matching results, and (when
+    /// `preserveNonToolReasoningTurns` is enabled) non-tool reasoning turns that a target protocol requires
+    /// intact as indivisible atomic units (e.g. DeepSeek prior reasoning turns with tools or Responses stateless items).
+    public static func group(
+        _ history: [Message],
+        preserveNonToolReasoningTurns: Bool = false
+    ) -> [ProtocolAtomicUnit] {
         var units: [ProtocolAtomicUnit] = []
         var index = 0
         while index < history.count {
             let start = index
             guard history[index].role != .tool else {
                 index += 1
+                continue
+            }
+
+            // When preserving non-tool reasoning turns, keep a user message paired with its immediate
+            // non-tool assistant reasoning response if that assistant reply carries protocol continuation state.
+            if preserveNonToolReasoningTurns,
+               history[index].role == .user,
+               index + 1 < history.count,
+               isRequiredNonToolReasoningReply(history[index + 1]) {
+                let userMsg = history[index]
+                var messages: [Message] = [userMsg]
+                var sourceIndices: [Int?] = [index]
+                index += 1
+                while index < history.count,
+                      history[index].role == .assistant,
+                      history[index].toolCalls.isEmpty,
+                      hasProtocolReasoningState(history[index]) {
+                    messages.append(history[index])
+                    sourceIndices.append(index)
+                    index += 1
+                }
+                units.append(ProtocolAtomicUnit(sourceRange: start..<index, messages: messages, sourceIndices: sourceIndices))
                 continue
             }
 
@@ -62,13 +89,18 @@ public struct ProtocolAtomicUnit: Equatable, Sendable {
         return units
     }
 
-    public static func paired(_ history: [Message]) -> [Message] {
-        group(history).flatMap(\.messages)
+    public static func paired(_ history: [Message], preserveNonToolReasoningTurns: Bool = false) -> [Message] {
+        group(history, preserveNonToolReasoningTurns: preserveNonToolReasoningTurns).flatMap(\.messages)
     }
 
     /// The newest whole units within the budget, starting at a user message when there is one.
-    public static func windowStart(_ history: [Message], maxChars: Int, maxCount: Int) -> Int {
-        let units = group(history)
+    public static func windowStart(
+        _ history: [Message],
+        maxChars: Int,
+        maxCount: Int,
+        preserveNonToolReasoningTurns: Bool = false
+    ) -> Int {
+        let units = group(history, preserveNonToolReasoningTurns: preserveNonToolReasoningTurns)
         guard let last = units.last else { return history.isEmpty ? 0 : history.startIndex }
         var start = last.sourceRange.lowerBound
         var size = 0
@@ -86,9 +118,21 @@ public struct ProtocolAtomicUnit: Equatable, Sendable {
             ?? units.first?.sourceRange.lowerBound ?? start
     }
 
+    private static func hasProtocolReasoningState(_ message: Message) -> Bool {
+        if let payloads = message.continuationPayloads, !payloads.isEmpty { return true }
+        if let sig = message.reasoningSignature, !sig.isEmpty { return true }
+        if let reasoning = message.reasoning, !reasoning.isEmpty { return true }
+        return false
+    }
+
+    private static func isRequiredNonToolReasoningReply(_ message: Message) -> Bool {
+        message.role == .assistant && message.toolCalls.isEmpty && hasProtocolReasoningState(message)
+    }
+
     private static func isReasoningContinuation(_ message: Message) -> Bool {
         message.role == .assistant && message.toolCalls.isEmpty
             && (message.reasoningSignature != nil
+                || (message.continuationPayloads?.isEmpty == false)
                 || (message.text.isEmpty && message.images.isEmpty && message.reasoning != nil))
     }
 }

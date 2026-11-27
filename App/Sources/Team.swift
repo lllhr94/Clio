@@ -1614,14 +1614,26 @@ final class TeamModel: ObservableObject {
 
     /// One Bot speaks once. False when the group should not go on.
     @discardableResult
-    func turn(_ bot: BotInfo, in key: String, room: RoomInfo?, using forced: String? = nil, experienceSource: ExperienceWriteSource = .mainChat) async -> Bool {
+    func turn(
+        _ bot: BotInfo,
+        in key: String,
+        room: RoomInfo?,
+        using forced: String? = nil,
+        experienceSource: ExperienceWriteSource = .mainChat,
+        triedBackups: Set<String> = [],
+        sharedRetries: WholeTurnRetryArbiter? = nil
+    ) async -> Bool {
         runs[key]?.companion = bot.id
         let picked = forced ?? options(key).model ?? bot.model ?? settings.defaultModel
-        guard let found = resolve(picked) ?? resolve(settings.defaultModel) else {
+        guard let found = resolveActive(picked) ?? resolveActive(settings.defaultModel) ?? resolve(picked) ?? resolve(settings.defaultModel) else {
             fail(key, "还没有可用的模型\n到调弦里添一家模型服务。", next: .tuning)
             return false
         }
         let endpoint = found.endpoint
+        if endpoint.isPaused {
+            fail(key, "「\(endpoint.name)」已暂停使用，请先在服务详情页恢复或切换到其他模型。", next: .tuning)
+            return false
+        }
         let epoch = epochs[key, default: 0]
         #if DEBUG
         let overrideProvider = turnProviderOverrideForTesting?(endpoint, found.model, experienceSource)
@@ -1755,18 +1767,24 @@ final class TeamModel: ObservableObject {
             intent: .userChat,
             snapshot: frozenCatalog
         )
+        agent.contractKey = endpoint.contractKey(for: found.model)
+        agent.speakerOrThreadID = room == nil ? key : bot.id
+        agent.customHeaders = endpoint.customNonSecretHeaders
+        agent.isExplicitOff = thinkingResolution.requested.isExplicitOff
+        agent.preserveNonToolReasoningTurns = endpoint.thinkingStyle == .deepseek || endpoint.kind.usesResponsesAPI
         switch thinkingResolution.fulfillment {
         case .fulfilled(let effective, _, _):
             agent.thinking = effective.approximateLegacyThinking
-            if endpoint.kind == .openai {
+            if endpoint.kind.isOpenAIFamily {
                 agent.thinkingBodyFields = thinkingResolution.bodyFields
             }
         case .unfulfilledExplicitOff(let reason):
+            sharedRetries?.recordExplicitOffRejected()
             fail(key, reason)
             return false
         case .unfulfilledSelection:
             agent.thinking = .auto
-            if endpoint.kind == .openai {
+            if endpoint.kind.isOpenAIFamily {
                 agent.thinkingBodyFields = thinkingResolution.bodyFields
             }
         }
@@ -1789,7 +1807,7 @@ final class TeamModel: ObservableObject {
         }
         defer { watch.cancel() }
         cutShort[key] = nil
-        let retries = WholeTurnRetryArbiter()
+        let retries = sharedRetries ?? WholeTurnRetryArbiter()
         do {
             try await agent.run(history: messages, retryArbiter: retries) { [weak self] event in
                 await self?.hear(event, chat: key, speaker: speaker, epoch: epoch)
@@ -1824,18 +1842,30 @@ final class TeamModel: ObservableObject {
             Diag.note("\(endpoint.name)：\(error.localizedDescription)")
             // A page cleared or turned meanwhile hears nothing more from this turn.
             guard epochs[key, default: 0] == epoch, !Task.isCancelled else { return false }
-            // One switch to the backup model, said out loud, never a silent swap.
+            // Up to 3-level backup handoff governed by the shared WholeTurnRetryArbiter (blocked on explicitOff
+            // terminal rejection, any delivered output/continuation, any side effect, or unknown tool outcome).
             let used = "\(endpoint.id)/\(found.model)"
-            if retries.allowsBackup(after: error), forced == nil, let backup = settings.effectiveBackupModels.first,
-               backup != used, let other = resolve(backup) {
+            let nextTried = triedBackups.union([used])
+            if !retries.isExplicitOffTerminal,
+               retries.allowsBackup(after: error),
+               triedBackups.count < 3,
+               let next = backupCandidates(excluding: nextTried, maxLevels: 3).first {
                 let advice = Explain.model(error, service: endpoint.name)
                 streamed[key] = nil
                 pulseSplitters[key] = nil
                 notify(key, .streamReset)
                 append(Entry(id: UUID().uuidString, at: Now.ms,
-                             message: .assistant("\(found.model) 没答上来（\(advice.displayTitle)），换备用模型 \(other.model) 接着答。"),
+                             message: .assistant("\(found.model) 没答上来（\(advice.displayTitle)），换备用模型 \(next.model) 接着答。"),
                              note: true), to: key)
-                return await turn(bot, in: key, room: room, using: backup, experienceSource: experienceSource)
+                return await turn(
+                    bot,
+                    in: key,
+                    room: room,
+                    using: next.ref,
+                    experienceSource: experienceSource,
+                    triedBackups: nextTried,
+                    sharedRetries: retries
+                )
             }
             let advice = Explain.model(error, service: endpoint.name)
             guard epochs[key, default: 0] == epoch else { return false }
@@ -2494,11 +2524,18 @@ final class TeamModel: ObservableObject {
             recordPreRead: { path, preRead in await Snapshots.shared.keepPreRead(key, place: WorkPlace.desk.code, path: path, preRead: preRead) }
         )
         if phase != .demo, let selected = imageModelSelection {
-            all.append(GenerateImage(baseURL: selected.endpoint.baseURL, model: selected.model,
-                                     apiKey: imageAPIKey))
+            let selectedEndpointID = selected.endpoint.id
+            all.append(GenerateImage(
+                baseURL: selected.endpoint.baseURL,
+                model: selected.model,
+                apiKey: imageAPIKey,
+                endpointKind: selected.endpoint.kind,
+                customHeaders: selected.endpoint.customNonSecretHeaders,
+                isEndpointDispatchable: { !UserDefaults.standard.bool(forKey: "clio.endpoint.paused.\(selectedEndpointID)") }
+            ))
         }
         all += Phone.tools()
-        all += Hills.shared.tools(canSee: canSee)
+        all += Hills.shared.sshTools()
         all += GoogleTools.all()
         all.append(Self.planTool(key: key, team: self))
         all += SecretTools.all(botName: bot.name, chat: key)
@@ -2512,29 +2549,48 @@ final class TeamModel: ObservableObject {
         let queue = approvalQueue
         let bindings = hostBindings
         // Keep TaintGuard inside Grant.gate so turning a grant off mid-turn immediately blocks execution without prompting.
-        let guarded = all.map {
-            TaintGuard(
-                $0,
-                key: key,
-                optInKey: approvalChat,
-                book: taintBook,
-                isInside: { host.isInside($0) },
-                allowAfterWeb: { Grant.followPolicyAfterWeb }
+        func wrap(_ rawTools: [AgentTool]) -> [AgentTool] {
+            let guarded = rawTools.map {
+                TaintGuard(
+                    $0,
+                    key: key,
+                    optInKey: approvalChat,
+                    book: taintBook,
+                    isInside: { host.isInside($0) },
+                    allowAfterWeb: { Grant.followPolicyAfterWeb }
+                )
+            }
+            return Grant.gate(
+                guarded,
+                workspace: grants,
+                executionChat: key,
+                hostID: boundHostID,
+                hostBindings: bindings,
+                receipts: receipts,
+                policyRevision: { queue.currentRevision },
+                reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: approvalChat, executionChat: key, workplace: workplace) ?? false }
+            ).filter { tool in
+                guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
+                return !off.contains(grant.rawValue)
+            }
+        }
+        let residentBuiltIns = wrap(all)
+        let rawMCPEntries = Hills.shared.mcpToolEntries(canSee: canSee)
+        let gatedMCPEntries: [DeferredMCPTools.Entry] = rawMCPEntries.compactMap { entry in
+            guard let gatedTool = wrap([entry.tool]).first else { return nil }
+            return DeferredMCPTools.Entry(
+                stableID: entry.stableID,
+                serverID: entry.serverID,
+                serverName: entry.serverName,
+                tool: gatedTool
             )
         }
-        return Grant.gate(
-            guarded,
-            workspace: grants,
-            executionChat: key,
-            hostID: boundHostID,
-            hostBindings: bindings,
-            receipts: receipts,
-            policyRevision: { queue.currentRevision },
-            reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: approvalChat, executionChat: key, workplace: workplace) ?? false }
-        ).filter { tool in
-            guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
-            return !off.contains(grant.rawValue)
-        }
+        let mcpPolicy = Hills.shared.deferredMCPPolicy(disabledGrants: off)
+        return DeferredMCPTools.assemble(
+            builtInTools: residentBuiltIns,
+            mcpEntries: gatedMCPEntries,
+            policy: mcpPolicy
+        )
     }
 
     // MARK: 派活
@@ -2628,7 +2684,10 @@ final class TeamModel: ObservableObject {
             intent: .userChat
         )
         agent.thinking = .auto
-        if found.endpoint.kind == .openai {
+        agent.contractKey = found.endpoint.contractKey(for: found.model)
+        agent.speakerOrThreadID = helperKey
+        agent.customHeaders = found.endpoint.customNonSecretHeaders
+        if found.endpoint.kind.isOpenAIFamily {
             agent.thinkingBodyFields = helperResolution.bodyFields
         }
         agent.maxSteps = min(Pref.maxSteps, 24)

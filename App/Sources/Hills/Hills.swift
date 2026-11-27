@@ -53,11 +53,92 @@ final class Hills: ObservableObject {
     @Published private(set) var borrowed: [Borrowed] = []
     @Published var lastError: [String: String] = [:]
 
+    /// Thread-safe atomic connector state & generation for `DeferredMCPTools` schema/execution re-checks
+    /// and pre-send URL/credential binding validation.
+    final class ConnectorAccessBox: @unchecked Sendable {
+        struct ServerSnapshot: Equatable, Sendable {
+            let enabled: Bool
+            let url: String
+            let tunnelHost: String?
+        }
+
+        private let lock = NSLock()
+        private var _generation: UInt64 = 1
+        private var _servers: [String: ServerSnapshot] = [:]
+
+        var generation: UInt64 {
+            lock.withLock { _generation }
+        }
+
+        func snapshotGenerationAndCheck(expectedGeneration: UInt64, serverID: String) -> String? {
+            lock.withLock {
+                guard _generation == expectedGeneration else {
+                    return "连接器配置已变更（代次已失效），请重新检索工具后再试。"
+                }
+                guard let srv = _servers[serverID], srv.enabled else {
+                    return "连接器权限已关闭或当前工具未被授权。"
+                }
+                return nil
+            }
+        }
+
+        func verifyExecution(
+            expectedGeneration: UInt64,
+            serverID: String,
+            expectedURL: String,
+            expectedTunnelHost: String?
+        ) -> Bool {
+            lock.withLock {
+                guard _generation == expectedGeneration,
+                      let srv = _servers[serverID],
+                      srv.enabled,
+                      srv.url == expectedURL,
+                      srv.tunnelHost == expectedTunnelHost else {
+                    return false
+                }
+                return true
+            }
+        }
+
+        func update(servers: [String: ServerSnapshot], bumpGeneration: Bool) {
+            lock.withLock {
+                _servers = servers
+                if bumpGeneration { _generation &+= 1 }
+            }
+        }
+    }
+
+    nonisolated let connectorAccess = ConnectorAccessBox()
+
     init() {
         hosts = Disk.load([Host].self, "hills.json") ?? []
         for host in hosts { hostRevisions[host.id] = UUID() }
         servers = Disk.load([Server].self, "mcp.json") ?? []
         borrowed = Disk.load([Borrowed].self, "mcp-tools.json") ?? []
+        syncConnectorAccess(bumpGeneration: false)
+    }
+
+    private func syncConnectorAccess(bumpGeneration: Bool) {
+        let map = Dictionary(uniqueKeysWithValues: servers.map {
+            ($0.id, ConnectorAccessBox.ServerSnapshot(enabled: $0.enabled, url: $0.url, tunnelHost: $0.tunnelHost))
+        })
+        connectorAccess.update(servers: map, bumpGeneration: bumpGeneration)
+    }
+
+    func deferredMCPPolicy(disabledGrants: Set<String>) -> DeferredMCPTools.Policy {
+        let box = connectorAccess
+        let capturedGen = box.generation
+        return DeferredMCPTools.Policy(
+            connectorGeneration: capturedGen,
+            isGenerationCurrent: { box.generation == capturedGen },
+            atomicCheck: { serverID, _ in
+                guard !disabledGrants.contains(Grant.mcp.rawValue),
+                      Grant.mcp.policy != .off else {
+                    return "连接器权限已关闭或当前工具未被授权。"
+                }
+                return box.snapshotGenerationAndCheck(expectedGeneration: capturedGen, serverID: serverID)
+            }
+        )
     }
 
     // MARK: Hosts
@@ -407,6 +488,7 @@ final class Hills: ObservableObject {
         if let index = servers.firstIndex(where: { $0.id == server.id }) { servers[index] = server } else { servers.append(server) }
         if let token { Vault.save(token, as: "mcp.\(server.id)") }
         Disk.save(servers, "mcp.json")
+        syncConnectorAccess(bumpGeneration: true)
     }
 
     func remove(_ server: Server) {
@@ -416,6 +498,7 @@ final class Hills: ObservableObject {
         borrowed.removeAll { $0.server == server.id }
         Disk.save(servers, "mcp.json")
         Disk.save(borrowed, "mcp-tools.json")
+        syncConnectorAccess(bumpGeneration: true)
     }
 
     /// Asks a server for its tools again. Returns how many it offered.
@@ -439,6 +522,7 @@ final class Hills: ObservableObject {
             borrowed.removeAll { $0.server == server.id }
             borrowed += tools.map { Borrowed(server: server.id, name: $0.name, description: $0.description, schema: $0.schema, readOnly: $0.readOnly) }
             Disk.save(borrowed, "mcp-tools.json")
+            syncConnectorAccess(bumpGeneration: true)
             lastError[server.id] = nil
             return tools.count
         } catch {
@@ -452,9 +536,11 @@ final class Hills: ObservableObject {
     // MARK: Tools
 
     func tools(canSee: Bool = true) -> [AgentTool] {
+        sshTools() + mcpToolEntries(canSee: canSee).map(\.tool)
+    }
+
+    func sshTools() -> [AgentTool] {
         var tools: [AgentTool] = []
-        let turnBudget = MCPImageTurnBudget()
-        let snapshotHosts = hosts
         if !hosts.isEmpty {
             let names = hosts.map { "\($0.name)（\($0.user)@\($0.address)）" }.joined(separator: "、")
             let snapshot = hosts
@@ -504,6 +590,16 @@ final class Hills: ObservableObject {
                 }
             })
         }
+        return tools
+    }
+
+    func mcpToolEntries(canSee: Bool = true) -> [DeferredMCPTools.Entry] {
+        var entries: [DeferredMCPTools.Entry] = []
+        let turnBudget = MCPImageTurnBudget()
+        let snapshotHosts = hosts
+        let box = connectorAccess
+        let capturedGen = box.generation
+        var usedNames: Set<String> = []
         for server in servers where server.enabled {
             let serverId = server.id
             // A name with no Latin letters or digits ("香港的浏览器") would slug to underscores only; the id keeps tools apart.
@@ -527,10 +623,29 @@ final class Hills: ObservableObject {
                         return ApprovalAsk(title: askTitle, reason: reason, detail: nil, code: compact == "{}" || compact == "null" ? nil : compact)
                     }
                 }
-                let toolName = String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64))
+                let baseName = String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64))
+                let toolName: String
+                if usedNames.insert(baseName).inserted {
+                    toolName = baseName
+                } else {
+                    let digest = SHA256.hash(data: Data("\(serverId):\(remote)".utf8))
+                        .prefix(4).map { String(format: "%02x", $0) }.joined()
+                    let disambiguated = String(baseName.prefix(55)) + "_" + digest
+                    usedNames.insert(disambiguated)
+                    toolName = disambiguated
+                }
                 let where_ = server.connector == nil ? Words.t("远山 MCP") : Words.t("连接器")
-                tools.append(DeskTool(name: toolName, description: "（来自\(where_)「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }, approval: ask) { arguments in
+                let wrapped = DeskTool(name: toolName, description: "（来自\(where_)「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }, approval: ask) { arguments in
                     do {
+                        guard Grant.mcp.policy != .off,
+                              box.verifyExecution(
+                                  expectedGeneration: capturedGen,
+                                  serverID: serverId,
+                                  expectedURL: url,
+                                  expectedTunnelHost: tunnelHostId
+                              ) else {
+                            return ToolOutput("「\(title)」的配置或权限已变更，已取消本次调用。", isError: true)
+                        }
                         let tunnelHost: Host?
                         if let tunnelHostId {
                             guard let found = snapshotHosts.first(where: { $0.id == tunnelHostId }) else {
@@ -543,16 +658,32 @@ final class Hills: ObservableObject {
                         let address = try await Hills.address(url, through: tunnelHost)
                         let isTunneled = tunnelHost != nil
                         return try await Hills.withCredential(serverId) { token in
-                            try await MCPClient(url: address, token: token, tunneled: isTunneled)
+                            // Re-verify atomic binding right before dispatching credential + URL to prevent TOCTOU swaps.
+                            guard Grant.mcp.policy != .off,
+                                  box.verifyExecution(
+                                      expectedGeneration: capturedGen,
+                                      serverID: serverId,
+                                      expectedURL: url,
+                                      expectedTunnelHost: tunnelHostId
+                                  ) else {
+                                throw ProviderError("「\(title)」的配置或权限在发送前已变更，已阻止外发凭据。")
+                            }
+                            return try await MCPClient(url: address, token: token, tunneled: isTunneled)
                                 .call(remote, arguments: arguments, canSee: canSee, turnBudget: turnBudget)
                         }
                     } catch {
                         return ToolOutput("「\(title)」出错：\(error.localizedDescription)", isError: true)
                     }
-                })
+                }
+                entries.append(DeferredMCPTools.Entry(
+                    stableID: toolName,
+                    serverID: serverId,
+                    serverName: title,
+                    tool: wrapped
+                ))
             }
         }
-        return tools
+        return entries
     }
 
     /// Runs a request with the service's credential: the token from its sign-in (renewed and tried once more

@@ -76,10 +76,10 @@ final class ProviderTests: XCTestCase {
             ],
             tools: [WebSearchTool().spec]
         )
-        // A service that does not keep thoughts gets them back only inside the running turn.
+        // A service with `echoesReasoning == false` must never receive `reasoning_content`, even inside the running turn.
         let plain = try XCTUnwrap(OpenAIProvider.body(request, style: .gemini)["messages"] as? [[String: Any]])
         XCTAssertNil(plain[2]["reasoning_content"])
-        XCTAssertEqual(plain[4]["reasoning_content"] as? String, "要搜")
+        XCTAssertNil(plain[4]["reasoning_content"])
         // DeepSeek wants every earlier thought back once tools are in play.
         let body = OpenAIProvider.body(request, style: .deepseek)
         let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
