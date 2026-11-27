@@ -16,7 +16,7 @@ public struct StorageBreakdown: Equatable, Sendable {
     public var orphanMediaBytes: Int64
     public var docCacheCount: Int
     public var docCacheBytes: Int64
-    /// True if any chat file could not be read, in which case orphan media detection fails closed (0 orphans).
+    /// True if the reference scan was skipped or could not verify all manifests.
     public var scanSkippedOrphans: Bool
 
     public var cleanableBytes: Int64 { orphanMediaBytes + docCacheBytes }
@@ -67,6 +67,8 @@ public struct CleanupResult: Equatable, Sendable {
 /// Measures Clio's storage and safely reclaims unreferenced `media/` images and regenerable `doccache/` text extracts.
 /// Never touches conversation JSONs, memories, notes, or referenced photos; fails closed if any chat file is unreadable.
 public enum StorageCleanup {
+    public static let mediaGraceSeconds: TimeInterval = 30 * 24 * 60 * 60
+
     private struct FileIdentity: Hashable {
         let device: UInt64
         let inode: UInt64
@@ -80,13 +82,19 @@ public enum StorageCleanup {
         let identity: FileIdentity
     }
 
+    private struct OrphanScan {
+        var orphans: [FileInfo] = []
+        var skipped = false
+        var references = ReferenceScan()
+    }
+
     /// Inspects storage breakdown under `appSupportRoot` and `teamRoot` without deleting anything.
     public static func inspect(
         appSupportRoot: URL,
         teamRoot: URL,
         extraReferencedMedia: Set<String> = [],
         skipOrphanMedia: Bool = false,
-        graceSeconds: TimeInterval = 60,
+        graceSeconds: TimeInterval = mediaGraceSeconds,
         now: Date = Date(),
         workspaceRoot: URL? = nil
     ) -> StorageBreakdown {
@@ -97,13 +105,13 @@ public enum StorageCleanup {
 
         let mediaFiles = regularFiles(in: mediaDir)
 
-        let orphanScan: (orphans: [FileInfo], skipped: Bool)
+        let orphanScan: OrphanScan
         if skipOrphanMedia {
-            orphanScan = ([], true)
+            orphanScan = OrphanScan(skipped: true)
         } else {
             orphanScan = findOrphanMedia(
                 mediaFiles: mediaFiles,
-                chatsDir: chatsDir,
+                teamRoot: teamRoot,
                 extraReferenced: extraReferencedMedia,
                 graceSeconds: graceSeconds,
                 now: now
@@ -175,7 +183,7 @@ public enum StorageCleanup {
         teamRoot: URL,
         extraReferencedMedia: Set<String> = [],
         skipOrphanMedia: Bool = false,
-        graceSeconds: TimeInterval = 60,
+        graceSeconds: TimeInterval = mediaGraceSeconds,
         now: Date = Date(),
         abortIf: @Sendable () -> Bool = { false }
     ) -> CleanupResult {
@@ -186,19 +194,21 @@ public enum StorageCleanup {
         let mediaDir = teamRoot.appendingPathComponent("media", isDirectory: true)
         let mediaIdentity = directoryIdentity(mediaDir)
         let mediaFiles = mediaIdentity != nil ? regularFiles(in: mediaDir) : []
-        let orphanScan: (orphans: [FileInfo], skipped: Bool)
+        let orphanScan: OrphanScan
         if skipOrphanMedia || mediaFiles.isEmpty {
-            orphanScan = ([], skipOrphanMedia)
+            orphanScan = OrphanScan(skipped: skipOrphanMedia)
         } else {
             orphanScan = findOrphanMedia(
                 mediaFiles: mediaFiles,
-                chatsDir: teamRoot.appendingPathComponent("chats", isDirectory: true),
+                teamRoot: teamRoot,
                 extraReferenced: extraReferencedMedia,
                 graceSeconds: graceSeconds,
                 now: now,
                 abortIf: abortIf
             )
         }
+
+        guard skipOrphanMedia || !orphanScan.skipped else { return CleanupResult() }
 
         var removedMedia = 0
         var removedDocCache = 0
@@ -216,7 +226,11 @@ public enum StorageCleanup {
                         freedBytes: freed
                     )
                 }
-                guard regularFileIdentity(file.url) == file.identity else { continue }
+                guard orphanScan.references.isCurrent else {
+                    return CleanupResult(removedMediaCount: removedMedia, freedBytes: freed)
+                }
+                guard regularFileIdentity(file.url) == file.identity,
+                      let modified = modificationDate(file.url), modified == file.modified else { continue }
                 if (try? fm.removeItem(at: file.url)) != nil {
                     removedMedia += 1
                     freed += file.bytes
@@ -253,119 +267,107 @@ public enum StorageCleanup {
 
     private static func findOrphanMedia(
         mediaFiles: [FileInfo],
-        chatsDir: URL,
+        teamRoot: URL,
         extraReferenced: Set<String>,
         graceSeconds: TimeInterval,
         now: Date,
         abortIf: @Sendable () -> Bool = { false }
-    ) -> (orphans: [FileInfo], skipped: Bool) {
+    ) -> OrphanScan {
         let cutoff = now.addingTimeInterval(-max(0, graceSeconds))
         let eligible = mediaFiles.filter { !extraReferenced.contains($0.name) && $0.modified <= cutoff }
-        guard !eligible.isEmpty else { return ([], false) }
+        guard !eligible.isEmpty else { return OrphanScan() }
 
         var remaining = Set(eligible.map(\.name))
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        var dirStat = stat()
-        if lstat(chatsDir.path, &dirStat) == 0 {
-            if (dirStat.st_mode & S_IFMT) == S_IFLNK {
-                return ([], true)
-            }
-        }
-        if fm.fileExists(atPath: chatsDir.path, isDirectory: &isDir), isDir.boolValue {
-            guard let items = try? fm.contentsOfDirectory(
-                at: chatsDir,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            ) else {
-                // Fail closed: cannot verify chat references safely.
-                return ([], true)
-            }
-            for item in items where item.pathExtension.lowercased() == "json" {
-                if abortIf() || Task.isCancelled {
-                    return ([], true)
-                }
-                var itemStat = stat()
-                guard lstat(item.path, &itemStat) == 0 else {
-                    return ([], true)
-                }
-                if (itemStat.st_mode & S_IFMT) == S_IFLNK {
-                    return ([], true)
-                }
-                guard let values = try? item.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey]),
-                      values.isSymbolicLink != true else {
-                    return ([], true)
-                }
-                if values.isDirectory == true { continue }
-                guard values.isRegularFile == true, let data = try? Data(contentsOf: item) else {
-                    // Fail closed: an unreadable chat file might still reference media files.
-                    return ([], true)
-                }
-                markReferencedStrings(in: data, remaining: &remaining)
-                if remaining.isEmpty { break }
-            }
-        }
+        guard let references = scanReferences(teamRoot: teamRoot, remaining: &remaining, abortIf: abortIf),
+              references.isCurrent else { return OrphanScan(skipped: true) }
 
         let orphans = eligible.filter { remaining.contains($0.name) }
-        return (orphans, false)
+        return OrphanScan(orphans: orphans, references: references)
     }
 
-    /// Scans JSON double-quoted string slices in O(bytes) to eliminate every referenced filename.
-    /// Falls back to substring scan for any filename containing quotes or backslashes.
-    private static func markReferencedStrings(in data: Data, remaining: inout Set<String>) {
-        guard !remaining.isEmpty, !data.isEmpty else { return }
-        var simple = Set<String>()
-        var complex: [String] = []
-        var minBytes = Int.max
-        var maxBytes = 0
-        for name in remaining {
-            if name.contains("\"") || name.contains("\\") {
-                complex.append(name)
-            } else {
-                simple.insert(name)
-                let count = name.utf8.count
-                if count < minBytes { minBytes = count }
-                if count > maxBytes { maxBytes = count }
+    private struct DirectoryStamp: Equatable {
+        let identity: FileIdentity
+        let modified: Date
+    }
+
+    private struct ReferenceScan {
+        var directories: [URL: DirectoryStamp] = [:]
+        var absentRoots: [URL] = []
+
+        var isCurrent: Bool {
+            directories.allSatisfy { StorageCleanup.directoryStamp($0.key) == $0.value } && absentRoots.allSatisfy {
+                var info = stat()
+                return lstat($0.path, &info) != 0 && errno == ENOENT
             }
         }
+    }
 
-        if !simple.isEmpty {
-            let quote = UInt8(ascii: "\"")
-            data.withUnsafeBytes { raw in
-                let bytes = raw.bindMemory(to: UInt8.self)
-                let n = bytes.count
-                var i = 0
-                while i < n && !simple.isEmpty {
-                    if bytes[i] == quote {
-                        let start = i + 1
-                        var end = start
-                        while end < n && bytes[end] != quote {
-                            if bytes[end] == UInt8(ascii: "\\"), end + 1 < n {
-                                end += 2
-                            } else {
-                                end += 1
-                            }
-                        }
-                        let length = end - start
-                        if end < n, length >= minBytes, length <= maxBytes {
-                            let slice = UnsafeBufferPointer(rebasing: bytes[start..<end])
-                            let token = String(decoding: slice, as: UTF8.self)
-                            if simple.remove(token) != nil {
-                                remaining.remove(token)
-                            }
-                        }
-                        i = end + 1
-                    } else {
-                        i += 1
-                    }
-                }
+    private static func directoryStamp(_ url: URL) -> DirectoryStamp? {
+        guard let identity = directoryIdentity(url), let modified = modificationDate(url) else { return nil }
+        return DirectoryStamp(identity: identity, modified: modified)
+    }
+
+    private static func modificationDate(_ url: URL) -> Date? {
+        // A fresh URL avoids the resource-value cache populated by directory enumeration.
+        let fresh = URL(fileURLWithPath: url.path)
+        return (try? fresh.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    }
+
+    private static func scanReferences(
+        teamRoot: URL, remaining: inout Set<String>, abortIf: @Sendable () -> Bool
+    ) -> ReferenceScan? {
+        let appSupportRoot = teamRoot.deletingLastPathComponent()
+        // Active chats, archived leaves and undoable folds share chats/. Snapshot and queue
+        // metadata also cover interrupted branches, and drafts have their own sibling store.
+        let teamRoots = ["chats", "snapshots"].map { teamRoot.appendingPathComponent($0, isDirectory: true) }
+        let siblingRoots = ["ClioDrafts", "ClioQueued", "ClioQueuedIsolated"].map {
+            appSupportRoot.appendingPathComponent($0, isDirectory: true)
+        }
+        let roots = Set(teamRoots + siblingRoots)
+        var pending = teamRoots + siblingRoots
+        var scan = ReferenceScan()
+        let fm = FileManager.default
+        while let item = pending.popLast() {
+            guard !Task.isCancelled else { return nil }
+            var info = stat()
+            if lstat(item.path, &info) != 0 {
+                guard errno == ENOENT, roots.contains(item) else { return nil }
+                scan.absentRoots.append(item)
+                continue
+            }
+            switch info.st_mode & S_IFMT {
+            case S_IFDIR:
+                guard let stamp = directoryStamp(item), let children = try? fm.contentsOfDirectory(
+                    at: item, includingPropertiesForKeys: nil, options: []
+                ) else { return nil }
+                scan.directories[item] = stamp
+                pending.append(contentsOf: children)
+            case S_IFREG:
+                guard !roots.contains(item) else { return nil }
+                guard item.pathExtension.lowercased() == "json" else { continue }
+                guard !abortIf(), !Task.isCancelled,
+                      let data = try? Data(contentsOf: item),
+                      let json = try? JSONSerialization.jsonObject(with: data) else { return nil }
+                markReferencedStrings(in: json, remaining: &remaining)
+            default:
+                // A reference directory or manifest must never be reached through a symlink.
+                return nil
             }
         }
+        return scan
+    }
 
-        if !complex.isEmpty {
-            let text = String(decoding: data, as: UTF8.self)
-            for name in complex where text.contains(name) {
-                remaining.remove(name)
+    private static func markReferencedStrings(in json: Any, remaining: inout Set<String>) {
+        var pending: [Any] = [json]
+        while !remaining.isEmpty, let value = pending.popLast() {
+            if let string = value as? String {
+                remaining.remove(string)
+                if string.hasPrefix("media/") { remaining.remove(String(string.dropFirst("media/".count))) }
+            } else if let array = value as? [Any] {
+                pending.append(contentsOf: array)
+            } else if let dictionary = value as? [String: Any] {
+                remaining.subtract(dictionary.keys)
+                pending.append(contentsOf: dictionary.values)
             }
         }
     }
@@ -388,7 +390,7 @@ public enum StorageCleanup {
                 continue
             }
             let size = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
-            let modified = values.contentModificationDate ?? .distantPast
+            let modified = values.contentModificationDate ?? .distantFuture
             result.append(FileInfo(url: url, name: url.lastPathComponent, bytes: size, modified: modified, identity: identity))
         }
         return result

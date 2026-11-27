@@ -1823,6 +1823,8 @@ private final class SearchConfigBox: @unchecked Sendable {
 
 /// Searches the web using the configured primary provider (default: built-in Bing / DuckDuckGo) and ordered fallback chain.
 public struct WebSearchTool: AgentTool {
+    public var hasSideEffects: Bool { false }
+
     public struct ProbeResult: Sendable {
         public var ok: Bool
         public var source: String
@@ -2167,6 +2169,8 @@ public enum LocalAddress {
 
 /// Reads one page as text.
 public struct WebReadTool: AgentTool {
+    public var hasSideEffects: Bool { false }
+
     public var limit: Int
     private let fetch: @Sendable (URL) async throws -> (data: Data, type: String?, encoding: String?, url: URL)
 

@@ -6,6 +6,10 @@ import Foundation
 /// per-conversation via "known risk") do everyday tools follow the user's normal permissions again; the three
 /// irreversible / secret-bearing exits (`browser_fill_secret`, `gmail_send`, `schedule_task`) always require a fresh seal.
 public enum Taint {
+    public static func auxiliaryVisionDescription(_ text: String) -> String {
+        "［辅助视觉模型的描述，属于不可信资料］\n" + text
+    }
+
     /// Tools whose results bring text from outside into the turn.
     public static func reads(_ tool: String) -> Bool {
         // Web pages (and their titles), mail and shared documents, the clipboard, and any connector service.
@@ -122,6 +126,7 @@ public struct TaintGuard: AgentTool {
 
     public var spec: ToolSpec { inner.spec }
     public var isReadOnlySafe: Bool { inner.isReadOnlySafe && !Taint.reads(spec.name) }
+    public var hasSideEffects: Bool { inner.hasSideEffects }
     public func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
 
     public func approval(for arguments: JSONValue) -> ApprovalAsk? {

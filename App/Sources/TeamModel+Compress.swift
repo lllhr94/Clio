@@ -94,8 +94,74 @@ extension TeamModel {
 
     /// Compresses quietly, never in the way: it waits for nothing, and a turn goes on meanwhile with the chat as it is.
     func foldQuietly(_ key: String) {
-        guard Pref.autoCompress, !compressing.contains(key), size(of: key) > foldAt(key) else { return }
-        Task { [weak self] in _ = try? await self?.compress(key) }
+        guard Pref.autoCompress, compressionFailures[key] == nil,
+              !compressing.contains(key), size(of: key) > foldAt(key) else { return }
+        retryCompression(key)
+    }
+
+    func retryCompression(_ key: String) {
+        Task { [weak self] in
+            guard let self, !self.compressing.contains(key) else { return }
+            let epoch = self.epochs[key, default: 0]
+            do {
+                _ = try await self.compress(key)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.epochs[key, default: 0] == epoch else { return }
+                let problem = error.localizedDescription
+                self.compressionFailures[key] = problem
+                Diag.note("上下文压缩失败：\(problem)")
+                ToastCenter.shared.show(L.t("chat.compressionFailed"), symbol: "exclamationmark.circle",
+                                        tint: Ink.warn, actionTitle: L.t("chat.compressionRetry"),
+                                        dedupeKey: "compression-\(key)", duration: 8) { [weak self] in
+                    guard let self, self.epochs[key, default: 0] == epoch else { return }
+                    self.retryCompression(key)
+                }
+            }
+        }
+    }
+
+    @discardableResult
+    func compactOldToolOutputs(_ key: String) -> Int {
+        guard canAcceptInput(for: key), runs[key] == nil, !compressing.contains(key) else { return 0 }
+        let original = history(key)
+        let result = SimpleCompaction.compact(original, message: \.message)
+        guard !result.undo.isEmpty else { return 0 }
+        toolOutputUndo[key] = result.undo
+        replaceCompactedHistory(result.records, key: key)
+        ToastCenter.shared.show(L.t("chat.toolOutputsCleaned"), symbol: "checkmark.circle", tint: Ink.ok,
+                                actionTitle: L.t("chat.toolOutputsUndo"), dedupeKey: "compact-tools-\(key)",
+                                duration: 10) { [weak self] in
+            self?.undoToolOutputCompaction(key)
+        }
+        return result.undo.changedCount
+    }
+
+    @discardableResult
+    func undoToolOutputCompaction(_ key: String) -> Bool {
+        guard canAcceptInput(for: key), runs[key] == nil, !compressing.contains(key),
+              let restored = toolOutputUndo[key]?.restore(in: history(key)) else {
+            ToastCenter.shared.show(L.t("chat.toolOutputsUndoUnavailable"), symbol: "exclamationmark.circle")
+            return false
+        }
+        toolOutputUndo[key] = nil
+        replaceCompactedHistory(restored, key: key)
+        return true
+    }
+
+    private func replaceCompactedHistory(_ records: [Entry], key: String) {
+        entries[key] = records
+        scheduleIndexSync(key, entries: records)
+        if keeping {
+            ChatDisk.save(records, chat: key) { saved in
+                guard !saved else { return }
+                Task { @MainActor in
+                    ToastCenter.shared.show(L.t("chat.toolOutputsSaveFailed"), symbol: "exclamationmark.circle")
+                }
+            }
+        }
+        notify(key, .changed)
     }
 
     static func foldSummary(_ key: String, _ marker: String) -> String { "chats/\(key)~fold-\(marker)~summary.json" }
@@ -123,6 +189,7 @@ extension TeamModel {
         }
         try Task.checkCancellation()
         guard !compressing.contains(key), canAcceptInput(for: key), epochs[key, default: 0] == startEpoch else { return 0 }
+        try requireMemoryOutboundConsent(found.endpoint)
         compressing.insert(key)
         defer { compressing.remove(key) }
 
@@ -135,14 +202,16 @@ extension TeamModel {
         let fullHistory = history(key)
         let historyCut = fullHistory.firstIndex(where: { $0.id == firstKept }) ?? fullHistory.count
         let historyUpToCut = Array(fullHistory[..<historyCut])
-        await flushMemoriesBeforeCompress(
-            key: key,
-            historyUpToCut: historyUpToCut,
-            eligibleIDs: Set(foldedSlice.map(\.id)),
-            bot: bot,
-            startEpoch: startEpoch,
-            firstKeptID: firstKept
-        )
+        if canWriteMemories(beforeCompressing: key) {
+            await flushMemoriesBeforeCompress(
+                key: key,
+                historyUpToCut: historyUpToCut,
+                eligibleIDs: Set(foldedSlice.map(\.id)),
+                bot: bot,
+                startEpoch: startEpoch,
+                firstKeptID: firstKept
+            )
+        }
         try Task.checkCancellation()
         guard canAcceptInput(for: key), epochs[key, default: 0] == startEpoch else { return 0 }
         let baseSummaryRecord = summaryRecord(key)
@@ -157,7 +226,13 @@ extension TeamModel {
 
         \(transcript)
         """
-        let agent = Agent(provider: found.endpoint.provider(key: apiKey), model: found.model, system: "你擅长把长对话整理成准确、简洁的提要。")
+        let upstream = found.endpoint.provider(key: apiKey)
+        let provider = OutboundModelProvider(upstream: upstream) { [weak self] request in
+            guard let self else { throw CancellationError() }
+            try self.requireMemoryOutboundConsent(found.endpoint)
+            return upstream.stream(request)
+        }
+        let agent = Agent(provider: provider, model: found.model, system: "你擅长把长对话整理成准确、简洁的提要。")
         let digest = try await agent.ask(prompt)
         guard !digest.isEmpty else { throw TeamError(message: "模型没给出提要。") }
 
@@ -184,6 +259,7 @@ extension TeamModel {
         entries[key] = current
         if keeping { ChatDisk.save(current, chat: key) }
         setSummary(key, digest, tainted: digestTainted)
+        compressionFailures[key] = nil
         notify(key, .changed)
         return folded
     }

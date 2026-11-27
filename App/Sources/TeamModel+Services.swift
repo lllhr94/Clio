@@ -150,6 +150,7 @@ extension TeamModel {
 
     private func applyAddedEndpoint(_ endpoint: Endpoint) {
         settings.endpoints.removeAll { $0.id == endpoint.id }
+        settings.pruneOutboundConsents()
         settings.endpoints.append(endpoint)
         if resolveActive(settings.defaultModel) == nil, let pick = Self.preferred(endpoint) {
             settings.defaultModel = "\(endpoint.id)/\(pick)"
@@ -178,6 +179,8 @@ extension TeamModel {
             if candidate.backupModel?.hasPrefix(prefix) == true { candidate.backupModel = nil }
             if candidate.imageModel?.hasPrefix(prefix) == true { candidate.imageModel = nil }
             if candidate.memoryModel?.hasPrefix(prefix) == true { candidate.memoryModel = nil }
+            if candidate.visionModel?.hasPrefix(prefix) == true { candidate.visionModel = nil }
+            candidate.pruneOutboundConsents()
             if Self.resolveActive(candidate.defaultModel, in: candidate.endpoints) == nil {
                 candidate.defaultModel = Self.firstPreferredModel(in: candidate.endpoints)
             }
@@ -223,6 +226,8 @@ extension TeamModel {
         if settings.backupModel?.hasPrefix(prefix) == true { settings.backupModel = nil }
         if settings.imageModel?.hasPrefix(prefix) == true { settings.imageModel = nil }
         if settings.memoryModel?.hasPrefix(prefix) == true { settings.memoryModel = nil }
+        if settings.visionModel?.hasPrefix(prefix) == true { settings.visionModel = nil }
+        settings.pruneOutboundConsents()
         pruneUnavailableModelRefs { $0.hasPrefix(prefix) }
         if resolveActive(settings.defaultModel) == nil {
             settings.defaultModel = Self.firstPreferredModel(in: settings.endpoints)
@@ -304,6 +309,7 @@ extension TeamModel {
                 ref.hasPrefix(prefix) && !activeRefs.contains(ref)
             }
             if let backup = settings.backupModel, removedFromService(backup) { settings.backupModel = nil }
+            if let vision = settings.visionModel, removedFromService(vision) { settings.visionModel = nil }
             if let memory = settings.memoryModel, removedFromService(memory) { settings.memoryModel = nil }
             pruneUnavailableModelRefs(removedFromService)
         }
@@ -466,7 +472,9 @@ extension TeamModel {
             candidate.backupModel = rewrite(candidate.backupModel)
             candidate.memoryModel = rewrite(candidate.memoryModel)
             candidate.imageModel = rewrite(candidate.imageModel)
+            candidate.visionModel = rewrite(candidate.visionModel)
         }
+        candidate.pruneOutboundConsents()
         return (candidate, targetID)
     }
 
@@ -762,6 +770,25 @@ extension TeamModel {
 
     func setMemoryModel(_ ref: String?) {
         settings.memoryModel = ref
+        saveSettings()
+    }
+
+    var visionModelSelection: (endpoint: Endpoint, model: String)? {
+        guard let selected = resolveActive(settings.visionModel),
+              selected.endpoint.traits(selected.model).sees else { return nil }
+        return selected
+    }
+
+    func setVisionModel(_ ref: String?) {
+        if let ref {
+            guard let selected = resolveActive(ref), selected.endpoint.traits(selected.model).sees else { return }
+        }
+        settings.visionModel = ref
+        saveSettings()
+    }
+
+    func setOutboundConsent(_ allowed: Bool, for recipient: RecipientIdentity, category: OutboundDataCategory) {
+        settings.setOutboundConsent(allowed, for: recipient, category: category)
         saveSettings()
     }
 

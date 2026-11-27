@@ -3,7 +3,7 @@ import SwiftUI
 
 /// 用量: how full the next request's context is, what this conversation has used, and what is left on the service's account.
 struct UsageSheet: View {
-    let team: TeamModel
+    @ObservedObject var team: TeamModel
     let key: String
     @Environment(\.dismiss) private var dismiss
     @State private var estimate: TeamModel.ContextEstimate?
@@ -102,6 +102,26 @@ struct UsageSheet: View {
                     Spacer()
                 }
                 .padding(.top, Ink.Space.xs)
+                Button(L.t("chat.toolOutputsClean"), systemImage: "sparkles") { cleanToolOutputs() }
+                    .font(.system(size: Ink.Size.sub, weight: .medium))
+                    .foregroundStyle(Ink.accent)
+                    .buttonStyle(TapStyle())
+                    .disabled(folding || team.compressing.contains(key) || team.runs[key] != nil)
+                if team.toolOutputUndo[key] != nil {
+                    Button(L.t("chat.toolOutputsUndo")) {
+                        _ = team.undoToolOutputCompaction(key)
+                        Task { estimate = await team.contextEstimate(key) }
+                    }
+                    .font(Ink.footnote)
+                    .buttonStyle(TapStyle())
+                }
+                if let problem = team.compressionFailures[key] {
+                    Text(problem).font(Ink.footnote).foregroundStyle(Ink.warn)
+                    Button(L.t("chat.compressionRetry")) { team.retryCompression(key) }
+                        .font(Ink.footnote)
+                        .buttonStyle(TapStyle())
+                        .disabled(team.compressing.contains(key))
+                }
                 if let note {
                     Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft)
                 }
@@ -134,6 +154,12 @@ struct UsageSheet: View {
             }
             folding = false
         }
+    }
+
+    private func cleanToolOutputs() {
+        let count = team.compactOldToolOutputs(key)
+        note = count > 0 ? L.t("chat.toolOutputsCleaned") : L.t("chat.toolOutputsNothingToClean")
+        Task { estimate = await team.contextEstimate(key) }
     }
 
     // MARK: 本对话

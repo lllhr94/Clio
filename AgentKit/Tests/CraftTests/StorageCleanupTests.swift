@@ -78,7 +78,7 @@ final class StorageCleanupTests: XCTestCase {
         )
 
         func inspect(_ workspace: URL) -> StorageBreakdown {
-            StorageCleanup.inspect(appSupportRoot: box.appSupport, teamRoot: box.team, now: now, workspaceRoot: workspace)
+            StorageCleanup.inspect(appSupportRoot: box.appSupport, teamRoot: box.team, graceSeconds: 60, now: now, workspaceRoot: workspace)
         }
 
         let separate = inspect(external)
@@ -168,7 +168,7 @@ final class StorageCleanupTests: XCTestCase {
             .write(to: box.chats.appendingPathComponent("bot-a.json"))
         try Data("[{\"photos\":[\"\(leafPhoto)\"]}]".utf8)
             .write(to: box.chats.appendingPathComponent("bot-a~leaf1.json"))
-        try Data("{\"truncated\":\"\(brokenPhoto)\"".utf8)
+        try Data("{\"recoverable\":\"\(brokenPhoto)\"}".utf8)
             .write(to: box.chats.appendingPathComponent("bot-a.broken-123.json"))
 
         // Doccache entry
@@ -220,6 +220,63 @@ final class StorageCleanupTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
     }
 
+    func testDefaultGraceAndReferencesOutsideActiveChats() throws {
+        let box = try makeSandbox()
+        let fm = FileManager.default
+        defer { try? fm.removeItem(at: box.appSupport) }
+        let now = Date()
+        let old = StorageCleanup.mediaGraceSeconds + 10
+        let manifests = [
+            box.chats.appendingPathComponent("branch/archive.json"),
+            box.team.appendingPathComponent("snapshots/by-chat/turns.json"),
+            box.appSupport.appendingPathComponent("ClioDrafts/by-chat/draft.json"),
+            box.appSupport.appendingPathComponent("ClioQueued/by-chat/queue.json"),
+            box.appSupport.appendingPathComponent("ClioQueuedIsolated/by-chat/queue.json"),
+        ]
+        var kept = [String]()
+        for (index, manifest) in manifests.enumerated() {
+            let name = "photo-from-\(index).jpg"
+            kept.append(name)
+            try writeFile(box.media.appendingPathComponent(name), contents: Data("image".utf8), ageSeconds: old, now: now)
+            try fm.createDirectory(at: manifest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(["photos": ["media/\(name)"]]).write(to: manifest)
+        }
+        let young = box.media.appendingPathComponent("young.jpg")
+        let orphan = box.media.appendingPathComponent("old-unreferenced.jpg")
+        try writeFile(young, contents: Data("image".utf8), ageSeconds: old - 20, now: now)
+        try writeFile(orphan, contents: Data("image".utf8), ageSeconds: old, now: now)
+
+        let breakdown = StorageCleanup.inspect(appSupportRoot: box.appSupport, teamRoot: box.team, now: now)
+        XCTAssertFalse(breakdown.scanSkippedOrphans)
+        XCTAssertEqual(breakdown.orphanMediaCount, 1)
+        let result = StorageCleanup.clean(teamRoot: box.team, now: now)
+        XCTAssertEqual(result.removedMediaCount, 1)
+        XCTAssertFalse(fm.fileExists(atPath: orphan.path))
+        XCTAssertTrue(fm.fileExists(atPath: young.path))
+        for name in kept { XCTAssertTrue(fm.fileExists(atPath: box.media.appendingPathComponent(name).path)) }
+    }
+
+    func testInvalidReferenceManifestFailsClosedEvenInQueue() throws {
+        let box = try makeSandbox()
+        let fm = FileManager.default
+        defer { try? fm.removeItem(at: box.appSupport) }
+        let queue = box.appSupport.appendingPathComponent("ClioQueued/by-chat", isDirectory: true)
+        try fm.createDirectory(at: queue, withIntermediateDirectories: true)
+        try Data("{\"photos\":[".utf8).write(to: queue.appendingPathComponent("queue.json"))
+        let now = Date()
+        let oldPhoto = box.media.appendingPathComponent("unknown-reference.jpg")
+        try writeFile(oldPhoto, contents: Data("photo".utf8), ageSeconds: 600, now: now)
+        try writeFile(box.doccache.appendingPathComponent("cache.txt"), contents: Data("cache".utf8), now: now)
+
+        let breakdown = StorageCleanup.inspect(appSupportRoot: box.appSupport, teamRoot: box.team, graceSeconds: 60, now: now)
+        XCTAssertTrue(breakdown.scanSkippedOrphans)
+        XCTAssertEqual(breakdown.orphanMediaCount, 0)
+        let result = StorageCleanup.clean(teamRoot: box.team, graceSeconds: 60, now: now)
+        XCTAssertEqual(result.removedMediaCount, 0)
+        XCTAssertEqual(result.removedDocCacheCount, 1)
+        XCTAssertTrue(fm.fileExists(atPath: oldPhoto.path))
+    }
+
     func testFailClosedWhenChatFileIsUnreadable() throws {
         // Root user ignores chmod 000; skip only if running as root.
         guard geteuid() != 0 else { return }
@@ -231,6 +288,8 @@ final class StorageCleanupTests: XCTestCase {
         try writeFile(box.media.appendingPathComponent(photo), contents: Data(repeating: 0x11, count: 1024), ageSeconds: 600, now: now)
         let unreadable = box.chats.appendingPathComponent("bot-locked.json")
         try Data("[]".utf8).write(to: unreadable)
+        let cached = box.doccache.appendingPathComponent("cache.txt")
+        try Data("cache".utf8).write(to: cached)
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: unreadable.path) }
 
@@ -240,6 +299,8 @@ final class StorageCleanupTests: XCTestCase {
 
         let cleaned = StorageCleanup.clean(teamRoot: box.team, graceSeconds: 60, now: now)
         XCTAssertEqual(cleaned.removedMediaCount, 0)
+        XCTAssertEqual(cleaned.removedDocCacheCount, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: box.media.appendingPathComponent(photo).path))
     }
 

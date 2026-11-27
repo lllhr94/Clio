@@ -641,11 +641,13 @@ final class AgentConcurrencyTests: XCTestCase {
         try await agent.run(history: [.user("循环测试")]) { await recorder.add($0) }
 
         XCTAssertEqual(provider.requests.count, 3)
+        XCTAssertFalse(provider.requests[1].messages.last?.text.contains(ToolLoopDetector.nudgeMessage) ?? true)
+        XCTAssertTrue(provider.requests[2].messages.last?.text.contains(ToolLoopDetector.nudgeMessage) ?? false)
         let finishedCount = await tracker.snapshot().finished.count
         XCTAssertEqual(finishedCount, 3)
 
         let messages = await recorder.messages
-        XCTAssertEqual(messages.last, .assistant(Agent.repeatedLoopStopMessage))
+        XCTAssertEqual(messages.last, .assistant(ToolLoopDetector.stopMessage))
         // Ensure every emitted assistant tool_calls message has its matching tool result before the circuit-breaker message.
         for index in messages.indices where messages[index].role == .assistant && !messages[index].toolCalls.isEmpty {
             XCTAssertLessThan(index + 1, messages.count)
@@ -676,7 +678,7 @@ final class AgentConcurrencyTests: XCTestCase {
         try await multiAgent.run(history: [.user("多步重复")]) { await multiRecorder.add($0) }
         XCTAssertEqual(multiProvider.requests.count, 3)
         let multiMessages = await multiRecorder.messages
-        XCTAssertEqual(multiMessages.last, .assistant(Agent.repeatedLoopStopMessage))
+        XCTAssertEqual(multiMessages.last, .assistant(ToolLoopDetector.stopMessage))
 
         let emptyProvider = ScriptedConcurrencyProvider([
             makeCalls([("e1", "read_item", "")]),
@@ -690,7 +692,7 @@ final class AgentConcurrencyTests: XCTestCase {
         try await emptyAgent.run(history: [.user("空参重复")]) { await emptyRecorder.add($0) }
         XCTAssertEqual(emptyProvider.requests.count, 3)
         let emptyMessages = await emptyRecorder.messages
-        XCTAssertEqual(emptyMessages.last, .assistant(Agent.repeatedLoopStopMessage))
+        XCTAssertEqual(emptyMessages.last, .assistant(ToolLoopDetector.stopMessage))
 
         let badProvider = ScriptedConcurrencyProvider([
             makeCalls([("m1", "read_item", "{bad")]),
@@ -704,7 +706,7 @@ final class AgentConcurrencyTests: XCTestCase {
         try await badAgent.run(history: [.user("坏 JSON 重复")]) { await badRecorder.add($0) }
         XCTAssertEqual(badProvider.requests.count, 3)
         let badMessages = await badRecorder.messages
-        XCTAssertEqual(badMessages.last, .assistant(Agent.repeatedLoopStopMessage))
+        XCTAssertEqual(badMessages.last, .assistant(ToolLoopDetector.stopMessage))
     }
 
     func testCircuitBreakerDoesNotTripOnDistinctMixedOrInterruptedCalls() async throws {
@@ -1035,6 +1037,6 @@ final class AgentConcurrencyTests: XCTestCase {
         // Turn 0 -> "10%" (streak 1), Turn 1 -> "20%" (streak 1), Turn 2 -> "20%" (streak 2), Turn 3 -> "20%" (streak 3 -> trip!).
         XCTAssertEqual(stalledProvider.requests.count, 4)
         let stalledMessages = await stalledRecorder.messages
-        XCTAssertEqual(stalledMessages.last, .assistant(Agent.repeatedLoopStopMessage))
+        XCTAssertEqual(stalledMessages.last, .assistant(ToolLoopDetector.stopMessage))
     }
 }

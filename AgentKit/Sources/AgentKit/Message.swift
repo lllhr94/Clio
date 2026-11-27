@@ -30,6 +30,10 @@ public struct Message: Codable, Equatable, Sendable {
     public var role: Role
     public var text: String
     public var images: [ImagePart]
+    /// Opaque names for tool images saved by the host. Older transcripts do not have this field.
+    public var mediaReferences: [String]?
+    /// The tool that originally supplied a reopened image.
+    public var mediaSourceTool: String?
     /// What a thinking model thought before it answered.
     public var reasoning: String?
     /// Claude's signature over `reasoning`; only Claude reads it.

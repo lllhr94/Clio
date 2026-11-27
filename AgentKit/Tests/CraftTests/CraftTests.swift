@@ -397,6 +397,27 @@ final class WorkspaceToolTests: XCTestCase {
         XCTAssertTrue(picture.text.contains("10×20"))
     }
 
+    func testViewImageRefModeNeverFallsBackToPath() async throws {
+        let host = MockHost(["a.png": "png"])
+        let reference = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA.jpg"
+        let kit = WorkspaceKit(canSee: true, reloadImage: { supplied in
+            guard supplied == reference else { return ToolOutput("not owned", isError: true) }
+            return ToolOutput("reopened", loadedMediaReference: reference)
+        })
+        let view = try XCTUnwrap(WorkspaceTools.all(host: host, kit: kit).first { $0.spec.name == "view_image" })
+        XCTAssertFalse(view.hasSideEffects)
+        let reopened = try await view.run(["ref": .string(reference)])
+        XCTAssertEqual(reopened.loadedMediaReference, reference)
+
+        let invalid = try await view.run(["ref": "foreign", "path": "a.png"])
+        XCTAssertTrue(invalid.isError)
+        XCTAssertTrue(invalid.images.isEmpty)
+        let foreign = try await view.run(["ref": "foreign"])
+        XCTAssertTrue(foreign.isError)
+        let normal = try await view.run(["path": "a.png"])
+        XCTAssertEqual(normal.images.count, 1)
+    }
+
     func testShellHostDefaultsReadAndWriteThroughBase64() async throws {
         let host = MockHost()
         let raw = Data("你好".utf8)

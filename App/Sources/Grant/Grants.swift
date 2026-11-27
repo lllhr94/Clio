@@ -548,6 +548,7 @@ struct Asking: AgentTool {
 
     var spec: ToolSpec { inner.spec }
     var isReadOnlySafe: Bool { false }
+    var hasSideEffects: Bool { inner.hasSideEffects }
     func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
     func approval(for arguments: JSONValue) -> ApprovalAsk? {
         if let existing = inner.approval(for: arguments) {

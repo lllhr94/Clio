@@ -9,7 +9,7 @@ struct DefaultModelsPage: View {
     @State private var picking: Role?
 
     enum Role: String, Identifiable {
-        case chat, backup, memory
+        case chat, backup, memory, vision
         var id: String { rawValue }
 
         var title: String {
@@ -17,6 +17,7 @@ struct DefaultModelsPage: View {
             case .chat: L.t("settings.defaultChatModel")
             case .backup: L.t("settings.backupModelTitle")
             case .memory: L.t("settings.memoryModelTitle")
+            case .vision: L.t("settings.visionModelTitle")
             }
         }
 
@@ -25,6 +26,7 @@ struct DefaultModelsPage: View {
             case .chat: nil
             case .backup: L.t("settings.noBackupModel")
             case .memory: L.t("settings.followDefault")
+            case .vision: L.t("settings.visionModelOff")
             }
         }
     }
@@ -137,6 +139,31 @@ struct DefaultModelsPage: View {
                 )
             }
             .buttonStyle(PressStyle())
+
+            Button {
+                picking = .vision
+            } label: {
+                RowLabel(
+                    "eye",
+                    tint: Ink.Tile.dai,
+                    title: L.t("settings.visionModelTitle"),
+                    line: L.t("settings.visionModelLine"),
+                    end: .valueChevron(visionLabel)
+                )
+            }
+            .buttonStyle(PressStyle())
+
+            if let endpoint = team.visionModelSelection?.endpoint, let recipient = endpoint.recipientIdentity {
+                OutboundConsentRows(team: team, recipient: recipient, categories: OutboundDataCategory.imageCategories)
+            }
+
+            NavigationLink {
+                OutboundConsentPage(team: team)
+            } label: {
+                RowLabel("lock.shield", tint: Ink.Tile.dai, title: L.t("settings.outboundTitle"),
+                         line: L.t("settings.outboundLine"))
+            }
+            .buttonStyle(PressStyle())
         }
     }
 
@@ -160,11 +187,17 @@ struct DefaultModelsPage: View {
         return team.modelShort(team.settings.imageModel)
     }
 
+    private var visionLabel: String {
+        guard team.visionModelSelection != nil else { return L.t("settings.visionModelOff") }
+        return team.modelShort(team.settings.visionModel)
+    }
+
     private func current(for role: Role) -> String? {
         let raw: String? = switch role {
         case .chat: team.settings.defaultModel
         case .backup: team.settings.backupModel
         case .memory: team.settings.memoryModel
+        case .vision: team.visionModelSelection == nil ? nil : team.settings.visionModel
         }
         guard let raw, team.resolveActive(raw) != nil else { return nil }
         return raw
@@ -178,7 +211,57 @@ struct DefaultModelsPage: View {
             team.setBackupModel(ref)
         case .memory:
             team.setMemoryModel(ref)
+        case .vision:
+            team.setVisionModel(ref)
         }
+    }
+}
+
+private struct OutboundConsentRows: View {
+    @ObservedObject var team: TeamModel
+    let recipient: RecipientIdentity
+    let categories: [OutboundDataCategory]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            Text(recipient.canonicalOrigin + recipient.route)
+                .font(Ink.mono(Ink.Size.small))
+                .foregroundStyle(Ink.inkSoft)
+                .textSelection(.enabled)
+            ForEach(categories, id: \.self) { category in
+                Toggle(L.t(category.titleKey), isOn: Binding(
+                    get: { team.settings.allowsOutbound(recipient, category) },
+                    set: { team.setOutboundConsent($0, for: recipient, category: category) }
+                ))
+                .font(Ink.body(Double(Ink.Size.body), bold: false))
+                .tint(Ink.accent)
+            }
+        }
+        .padding(Ink.Space.l)
+    }
+}
+
+private struct OutboundConsentPage: View {
+    @ObservedObject var team: TeamModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Ink.Space.l) {
+                ForEach(team.settings.endpoints) { endpoint in
+                    if let recipient = endpoint.recipientIdentity {
+                        RowCard(title: endpoint.name) {
+                            OutboundConsentRows(team: team, recipient: recipient,
+                                                categories: OutboundDataCategory.imageCategories + [.memoryCompress])
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.vertical, Ink.Space.l)
+        }
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle(L.t("settings.outboundTitle"))
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -196,8 +279,9 @@ private struct ModelPickerSheet: View {
     private var filteredEndpoints: [(endpoint: Endpoint, models: [String])] {
         let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return team.settings.endpoints.compactMap { endpoint in
+            let candidates = role == .vision ? endpoint.models.filter { endpoint.traits($0).sees } : endpoint.models
             let matchesProvider = search.isEmpty || endpoint.name.localizedCaseInsensitiveContains(search)
-            let models = matchesProvider ? endpoint.models : endpoint.models.filter { model in
+            let models = matchesProvider ? candidates : candidates.filter { model in
                 model.localizedCaseInsensitiveContains(search)
                     || endpoint.displayName(for: model).localizedCaseInsensitiveContains(search)
             }

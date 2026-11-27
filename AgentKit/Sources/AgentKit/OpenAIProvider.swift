@@ -6,11 +6,13 @@ public struct OpenAIProvider: ModelProvider {
     public var apiKey: String
     /// How this service wants to hear about thinking.
     public var style: ThinkingStyle
+    private var fixedRoute: Bool
 
-    public init(baseURL: String, apiKey: String, style: ThinkingStyle? = nil) {
+    public init(baseURL: String, apiKey: String, style: ThinkingStyle? = nil, fixedRoute: Bool = false) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.style = style ?? ThinkingStyle.guess(baseURL: baseURL)
+        self.fixedRoute = fixedRoute
     }
 
     public func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
@@ -20,7 +22,8 @@ public struct OpenAIProvider: ModelProvider {
             http.setValue("application/json", forHTTPHeaderField: "Content-Type")
             http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             http.httpBody = try HTTP.json(Self.body(request, style: style))
-            return Self.splittingThoughts(HTTP.stream(http, acceptsJSON: true, decode: Self.decode))
+            let session = fixedRoute ? FixedModelRoute.session : HTTP.session
+            return Self.splittingThoughts(HTTP.stream(http, acceptsJSON: true, session: session, decode: Self.decode))
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }

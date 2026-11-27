@@ -2,6 +2,19 @@ import AgentKit
 import Craft
 import Foundation
 
+extension Endpoint {
+    var recipientIdentity: RecipientIdentity? {
+        let base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parts = URLComponents(string: base), parts.query == nil, parts.fragment == nil,
+              parts.user == nil, parts.password == nil,
+              let origin = EndpointAddressPolicy.rawOrigin(base) else { return nil }
+        let prefix = parts.percentEncodedPath.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+        let route = prefix + (kind == .openai ? "/chat/completions" : "/v1/messages")
+        return RecipientIdentity(endpointID: id, canonicalOrigin: origin, protocolKind: kind.rawValue,
+                                 route: route, identityRevision: identityRevision)
+    }
+}
+
 /// A model service Clio knows how to reach: its address, where its keys are made, and how it spells thinking.
 /// Anything not listed still works through 自定义, as long as it speaks the OpenAI or the Claude way.
 struct Service: Identifiable, Equatable {

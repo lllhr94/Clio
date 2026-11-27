@@ -377,7 +377,7 @@ enum Workspace {
         while cleaned.hasPrefix("/") { cleaned.removeFirst() }
         if cleaned.hasPrefix("书案/") { cleaned.removeFirst(3) }
         let parts = cleaned.split(separator: "/").map(String.init).filter { !$0.isEmpty && $0 != "." }
-        if parts.contains("..") { return nil }
+        if parts.contains("..") || parts.contains(where: DeskTrash.isReservedName) { return nil }
         return parts
     }
 
@@ -385,9 +385,17 @@ enum Workspace {
     static func isInsideRealRoot(_ url: URL, root: URL) -> Bool {
         let base = root.resolvingSymlinksInPath().standardizedFileURL.path
         func contained(_ path: String) -> Bool { path == base || path.hasPrefix(base + "/") }
+        func entersTrash(_ path: String, below prefix: String) -> Bool {
+            guard path.hasPrefix(prefix + "/") else { return false }
+            return path.dropFirst(prefix.count + 1).split(separator: "/").contains {
+                DeskTrash.isReservedName(String($0))
+            }
+        }
 
         let resolvedTarget = url.resolvingSymlinksInPath().standardizedFileURL.path
-        guard contained(resolvedTarget) else { return false }
+        guard contained(resolvedTarget),
+              !entersTrash(resolvedTarget, below: base),
+              !entersTrash(url.standardizedFileURL.path, below: root.standardizedFileURL.path) else { return false }
 
         // Walk upward to verify every existing prefix (catches intermediate symlinks before non-existent write targets
         // and dangling symlinks pointing outside the root).
@@ -400,7 +408,7 @@ enum Workspace {
                 let isLink = (st.st_mode & S_IFMT) == S_IFLNK
                 if isLink {
                     let linkResolved = current.resolvingSymlinksInPath().standardizedFileURL.path
-                    guard contained(linkResolved) else { return false }
+                    guard contained(linkResolved), !entersTrash(linkResolved, below: base) else { return false }
                     if let dest = try? fm.destinationOfSymbolicLink(atPath: current.path) {
                         let destURL: URL
                         if dest.hasPrefix("/") {
@@ -408,7 +416,8 @@ enum Workspace {
                         } else {
                             destURL = current.deletingLastPathComponent().appendingPathComponent(dest).standardizedFileURL
                         }
-                        guard contained(destURL.resolvingSymlinksInPath().standardizedFileURL.path) else { return false }
+                        let destResolved = destURL.resolvingSymlinksInPath().standardizedFileURL.path
+                        guard contained(destResolved), !entersTrash(destResolved, below: base) else { return false }
                     }
                 } else {
                     guard contained(current.resolvingSymlinksInPath().standardizedFileURL.path) else { return false }
@@ -582,7 +591,7 @@ enum Workspace {
     ) -> [AgentTool] {
         let pathParameter: JSONValue = ["type": "string", "description": "书案里的相对路径，比如 notes/旅行.md 或 挂载/Obsidian/笔记.md"]
         var tools: [AgentTool] = []
-        tools.append(DeskTool(name: "desk_delete", description: "删掉书案（或挂载文件夹）里的文件或子文件夹。", parameters: ["type": "object", "properties": ["path": pathParameter], "required": ["path"]], label: { "书案：删 \($0["path"]?.string ?? "")" }, approval: { arguments in
+        tools.append(DeskTool(name: "desk_delete", description: "将书案（或挂载文件夹）里的文件或子文件夹移到回收站。", parameters: ["type": "object", "properties": ["path": pathParameter], "required": ["path"]], label: { "书案：删 \($0["path"]?.string ?? "")" }, approval: { arguments in
             ApprovalAsk(title: Words.t("删掉书案里的东西"), reason: arguments["path"]?.string ?? "")
         }) { arguments in
             let target: Target
@@ -597,8 +606,12 @@ enum Workspace {
                 var isDir: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir) else { return ToolOutput("没有这个：\(rel)", isError: true) }
                 if !isDir.boolValue { await beforeChange?(rel) }
-                try FileManager.default.removeItem(at: file)
-                return ToolOutput("删掉了 \(rel)")
+                do {
+                    _ = try DeskTrash.shared.move(deskItem: file)
+                    return ToolOutput("已移到回收站：\(rel)")
+                } catch {
+                    return ToolOutput(error.localizedDescription, isError: true)
+                }
             case .mountsRoot:
                 return ToolOutput("不能删挂载目录；要取消挂载请在文件页面移除书签。", isError: true)
             case .mounted(let mount, let inner, let rel):
@@ -619,11 +632,8 @@ enum Workspace {
                 }
                 if existsAndIsFile { await beforeChange?(rel) }
                 do {
-                    return try MountedFolders.withAccess(mount, innerParts: inner) { _, file in
-                        guard FileManager.default.fileExists(atPath: file.path) else { return ToolOutput("没有这个：\(rel)", isError: true) }
-                        try FileManager.default.removeItem(at: file)
-                        return ToolOutput("删掉了 \(rel)")
-                    }
+                    _ = try DeskTrash.shared.move(mount: mount, relativePath: inner.joined(separator: "/"))
+                    return ToolOutput("已移到回收站：\(rel)")
                 } catch {
                     return ToolOutput(error.localizedDescription, isError: true)
                 }
