@@ -1275,23 +1275,22 @@ public enum ThinkingRuleResolver {
 
         // 1. Validated manual rule bound strictly to `(origin, protocolKind, route, modelID)` takes explicit precedence.
         if let manualRule, manualRule.isValid(for: key) {
+            let effectiveStyle = manualRule.wireStyle ?? style ?? ThinkingStyle.guess(baseURL: key.origin)
+            let wireDisabled = (key.protocolKind != "anthropic") && (effectiveStyle == ThinkingStyle.none)
+            let effectiveCanDisable = !wireDisabled && manualRule.canDisable && (key.protocolKind == "anthropic" || effectiveStyle.canStop)
+            let effectiveEfforts = wireDisabled ? [] : canonicalSortEfforts(manualRule.supportedEfforts)
             var offered: [ThinkingSelection] = [.inheritDefault]
-            if manualRule.canDisable { offered.append(.explicitOff) }
-            if manualRule.supportedEfforts.isEmpty && !manualRule.canDisable {
-                // Manual rule specifies no efforts and cannot disable -> default only.
-            } else {
-                for effort in canonicalSortEfforts(manualRule.supportedEfforts) {
-                    offered.append(.effort(effort))
-                }
+            if effectiveCanDisable { offered.append(.explicitOff) }
+            for effort in effectiveEfforts {
+                offered.append(.effort(effort))
             }
-            let effectiveStyle = manualRule.wireStyle ?? style ?? .effort
             return ConfirmedContract(
                 contractKey: key,
                 catalogProviderKey: officialKey,
                 isConfirmedOfficialOrigin: officialKey != nil,
-                isKnownContract: true,
-                supportsThinking: manualRule.canDisable || !manualRule.supportedEfforts.isEmpty,
-                canExplicitlyDisable: manualRule.canDisable,
+                isKnownContract: !wireDisabled,
+                supportsThinking: effectiveCanDisable || !effectiveEfforts.isEmpty,
+                canExplicitlyDisable: effectiveCanDisable,
                 offeredSelections: offered,
                 effortAliases: [:],
                 mutualExclusionPolicy: nil,
@@ -1516,17 +1515,21 @@ public enum ThinkingRuleResolver {
         let hintThinks = match.entry?.thinks ?? false
         let relayStyle = style ?? .effort
         var hintOffered: [ThinkingSelection] = [.inheritDefault]
-        if style != .none {
+        let styleIsExplicitlyNone: Bool = {
+            if let explicit = style, explicit == ThinkingStyle.none { return true }
+            return false
+        }()
+        if !styleIsExplicitlyNone {
             if let entry = match.entry, !entry.supportedEfforts.isEmpty {
                 let efforts = canonicalSortEfforts(entry.supportedEfforts).filter { $0 != "none" }
                 hintOffered += efforts.map { .effort($0) }
             } else if key.protocolKind == "anthropic", hintThinks {
                 hintOffered += [.effort("low"), .effort("medium"), .effort("high"), .effort("max")]
-            } else if let explicitStyle = style, explicitStyle != .none {
+            } else if let explicitStyle = style, explicitStyle != ThinkingStyle.none {
                 // User explicitly picked a ThinkingStyle on this relay, still not a verified off-contract unless manual rule exists.
                 let efforts = explicitStyle.levels(thinks: true).filter { $0 != .auto && $0 != .off }
                 hintOffered += efforts.map { ThinkingSelection.fromLegacy($0) }
-            } else if hintThinks, relayStyle != .none {
+            } else if hintThinks, relayStyle != ThinkingStyle.none {
                 let efforts = relayStyle.levels(thinks: true).filter { $0 != .auto && $0 != .off }
                 hintOffered += efforts.map { ThinkingSelection.fromLegacy($0) }
             }
@@ -1605,12 +1608,24 @@ public enum ThinkingRuleResolver {
                     bodyFields: [:]
                 )
             }
+            let offFields = wireFields(for: .explicitOff, contract: contract, style: style)
+            if contract.contractKey.protocolKind != "anthropic" && offFields.isEmpty {
+                return Resolution(
+                    contract: contract,
+                    requested: selection,
+                    intent: intent,
+                    fulfillment: .unfulfilledExplicitOff(
+                        reason: "当前服务的思考参数格式无法下发关闭思考指令，已保留你的设定，未发起请求。"
+                    ),
+                    bodyFields: [:]
+                )
+            }
             return Resolution(
                 contract: contract,
                 requested: selection,
                 intent: intent,
                 fulfillment: .fulfilled(effective: .explicitOff, migratedFrom: nil, note: nil),
-                bodyFields: wireFields(for: .explicitOff, contract: contract, style: style)
+                bodyFields: offFields
             )
 
         case .explicitOn:

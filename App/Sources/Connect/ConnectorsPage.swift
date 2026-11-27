@@ -829,10 +829,16 @@ enum Connecting {
                     MCPAuth.needsNewOptions(options, server: id)
                 }.value
             }
-            var count = -1
-            if !changeOptions { count = await hills.refresh(server) }
-            let initialError = hills.lastError[server.id] ?? "连接失败，请重试。"
-            if count < 0, signIn, changeOptions || needsOAuthProbe(initialError) {
+            var outcome: Hills.RefreshOutcome = .failed("连接失败，请重试。")
+            if !changeOptions { outcome = await hills.refreshWithOutcome(server) }
+            if case .stale = outcome {
+                return "连接器配置已变更，已取消本次连接。"
+            }
+            let initialError: String = {
+                if case .failed(let err) = outcome { return err }
+                return hills.lastError[server.id] ?? "连接失败，请重试。"
+            }()
+            if case .failed = outcome, signIn, changeOptions || needsOAuthProbe(initialError) {
                 // Hills.refresh returns a display string. Recheck the HTTP status before opening OAuth.
                 let challenge = try await MCPAuth.challenge(at: server.url)
                 guard hills.servers.contains(where: { $0.id == server.id && $0.url == server.url }) else {
@@ -840,15 +846,23 @@ enum Connecting {
                 }
                 if let challenge {
                     try await MCPAuth.shared.login(server: server.id, url: server.url, options: options, challenge: challenge)
-                    count = await hills.refresh(server)
+                    outcome = await hills.refreshWithOutcome(server)
                 } else if changeOptions {
-                    count = await hills.refresh(server)
+                    outcome = await hills.refreshWithOutcome(server)
                 }
             }
-            if count >= 0 { return L.format("connectors.connectedWithTools", count) }
-            let message = visibleError(hills.lastError[server.id] ?? initialError, oauth: signIn)
-            hills.lastError[server.id] = message
-            return message
+            switch outcome {
+            case .updated(let count):
+                return L.format("connectors.connectedWithTools", count)
+            case .stale:
+                return "连接器配置已变更，已取消本次连接。"
+            case .failed(let rawError):
+                let message = visibleError(hills.lastError[server.id] ?? rawError, oauth: signIn)
+                if hills.servers.contains(where: { $0.id == server.id }) {
+                    hills.lastError[server.id] = message
+                }
+                return message
+            }
         } catch {
             let message = error is CancellationError ? "登录已取消。" : error.localizedDescription
             hills.lastError[server.id] = message

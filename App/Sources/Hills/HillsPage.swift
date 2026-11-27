@@ -349,10 +349,15 @@ struct HillsPage: View {
                 server.tunnelHost = host.id
                 server.enabled = true
                 hills.save(server, token: nil)
-                let count = await hills.refresh(server)
-                tested[host.id] = count > 0
-                    ? "浏览器装好了，借来 \(count) 件工具，已经接进 MCP 服务（经 SSH 隧道）。"
-                    : "装好了，但经隧道还连不上：\(hills.lastError[server.id] ?? "原因不明")。过一会儿在下面点「连接」再试。"
+                let outcome = await hills.refreshWithOutcome(server)
+                switch outcome {
+                case .updated(let count) where count > 0:
+                    tested[host.id] = "浏览器装好了，借来 \(count) 件工具，已经接进 MCP 服务（经 SSH 隧道）。"
+                case .stale:
+                    tested[host.id] = "配置在连接过程中已变更，请在下方重新点「连接」。"
+                default:
+                    tested[host.id] = "装好了，但经隧道还连不上：\(hills.lastError[server.id] ?? "原因不明")。过一会儿在下面点「连接」再试。"
+                }
                 Haptics.thud()
                 return
             } catch {

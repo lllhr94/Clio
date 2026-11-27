@@ -163,6 +163,12 @@ final class Hills: ObservableObject {
         hostChanges.send((old: old, new: hostBindingID(id)))
     }
 
+    enum RefreshOutcome: Equatable, Sendable {
+        case updated(Int)
+        case stale
+        case failed(String)
+    }
+
     func save(_ host: Host, password: String?) {
         let dependents = dependentHosts(of: host.id)
         changeHostBinding(host.id, to: UUID())
@@ -170,6 +176,7 @@ final class Hills: ObservableObject {
         if let index = hosts.firstIndex(where: { $0.id == host.id }) { hosts[index] = host } else { hosts.append(host) }
         if let password, !password.isEmpty { Vault.save(password, as: "hill.\(host.id)") }
         Disk.save(hosts, "hills.json")
+        invalidateTunneledServers(affectedHostIDs: Set([host.id] + dependents.map(\.id)), clearBorrowedTools: true)
         // Kept connections and tunnels were to the host as it was: close them, so the next command goes to the
         // address, account and password just saved (the review, #5).
         Self.forget(host)
@@ -186,8 +193,32 @@ final class Hills: ObservableObject {
             hosts[index].jumpHostID = nil
         }
         Disk.save(hosts, "hills.json")
+        invalidateTunneledServers(affectedHostIDs: Set([host.id] + dependents.map(\.id)), clearBorrowedTools: true)
         Self.forget(host)
         for dep in dependents { Self.forget(dep) }
+    }
+
+    private func invalidateTunneledServers(affectedHostIDs: Set<String>, clearBorrowedTools: Bool) {
+        let affectedServers = servers.filter { server in
+            guard let tunnelHost = server.tunnelHost else { return false }
+            return affectedHostIDs.contains(tunnelHost)
+        }
+        guard !affectedServers.isEmpty else { return }
+        let affectedServerIDs = Set(affectedServers.map(\.id))
+        for id in affectedServerIDs {
+            serverMutationVersions[id] = nextServerMutationVersion
+            nextServerMutationVersion &+= 1
+            latestRefreshTokens.removeValue(forKey: id)
+            lastError.removeValue(forKey: id)
+        }
+        if clearBorrowedTools {
+            let before = borrowed.count
+            borrowed.removeAll { affectedServerIDs.contains($0.server) }
+            if borrowed.count != before {
+                Disk.save(borrowed, "mcp-tools.json")
+            }
+        }
+        syncConnectorAccess(bumpGeneration: true)
     }
 
     private func dependentHosts(of rootID: String) -> [Host] {
@@ -517,15 +548,26 @@ final class Hills: ObservableObject {
         syncConnectorAccess(bumpGeneration: true)
     }
 
-    /// Asks a server for its tools again. Returns how many it offered, or 0 if the server was removed/reconfigured mid-flight.
+    /// Asks a server for its tools again. Returns how many it offered, or -1 if failed/stale.
     @discardableResult
     func refresh(_ server: Server) async -> Int {
+        switch await refreshWithOutcome(server) {
+        case .updated(let count):
+            return count
+        case .stale, .failed:
+            return -1
+        }
+    }
+
+    /// Asks a server for its tools again, distinguishing valid completion from stale/superseded runs.
+    func refreshWithOutcome(_ server: Server) async -> RefreshOutcome {
         guard let liveAtStart = servers.first(where: { $0.id == server.id }),
               liveAtStart.url == server.url,
               liveAtStart.tunnelHost == server.tunnelHost,
               let startVersion = serverMutationVersions[server.id] else {
-            return 0
+            return .stale
         }
+        let startTunnelBinding: String? = server.tunnelHost.map { hostBindingID($0) }
         let refreshToken = UUID()
         latestRefreshTokens[server.id] = refreshToken
         func isStillCurrent() -> Bool {
@@ -535,6 +577,12 @@ final class Hills: ObservableObject {
                   live.url == server.url,
                   live.tunnelHost == server.tunnelHost else {
                 return false
+            }
+            if let tunnelHostId = server.tunnelHost {
+                guard hosts.contains(where: { $0.id == tunnelHostId }),
+                      hostBindingID(tunnelHostId) == startTunnelBinding else {
+                    return false
+                }
             }
             return true
         }
@@ -576,20 +624,21 @@ final class Hills: ObservableObject {
             }
             #endif
             guard isStillCurrent() else {
-                return 0
+                return .stale
             }
             borrowed.removeAll { $0.server == server.id }
             borrowed += tools.map { Borrowed(server: server.id, name: $0.name, description: $0.description, schema: $0.schema, readOnly: $0.readOnly) }
             Disk.save(borrowed, "mcp-tools.json")
             syncConnectorAccess(bumpGeneration: true)
             lastError[server.id] = nil
-            return tools.count
+            return .updated(tools.count)
         } catch {
             guard isStillCurrent() else {
-                return 0
+                return .stale
             }
-            lastError[server.id] = error.localizedDescription
-            return -1
+            let description = error.localizedDescription
+            lastError[server.id] = description
+            return .failed(description)
         }
     }
 

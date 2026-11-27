@@ -1219,8 +1219,24 @@ struct ModelSheet: View {
     }
 
     private var editableThinkingOptions: [ThinkingSelection] {
-        var options: [ThinkingSelection] = [.explicitOff]
-        var effortSet: Set<String> = ["low", "medium", "high", "max"]
+        guard let endpoint else { return [] }
+        if endpoint.kind.supportsThinkingStyleSelection && endpoint.thinkingStyle == .none {
+            return []
+        }
+        var options: [ThinkingSelection] = []
+        if endpoint.kind == .anthropic || endpoint.thinkingStyle.canStop {
+            options.append(.explicitOff)
+        }
+        var effortSet: Set<String> = []
+        if endpoint.kind == .anthropic {
+            effortSet.formUnion(["low", "medium", "high", "max"])
+        } else {
+            let styleEfforts = endpoint.thinkingStyle
+                .levels(thinks: true)
+                .filter { $0 != .auto && $0 != .off }
+                .compactMap { ThinkingSelection.fromLegacy($0).effortName }
+            effortSet.formUnion(styleEfforts)
+        }
         if let offered = currentThinkingContract?.offeredSelections {
             for selection in offered {
                 if let name = selection.effortName {
@@ -1241,6 +1257,7 @@ struct ModelSheet: View {
     private var thinkingLevelsRow: some View {
         let isCustomized = hasManualThinkingRule || traits.levels != nil
         let activeOffered = currentThinkingContract?.offeredSelections ?? [.inheritDefault]
+        let editable = editableThinkingOptions
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
             HStack(alignment: .center, spacing: Ink.Space.m) {
                 VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
@@ -1274,10 +1291,15 @@ struct ModelSheet: View {
                     .foregroundStyle(Ink.accent)
                 }
             }
-            if endpoint?.contractKey(for: model) != nil {
+            if endpoint?.kind.supportsThinkingStyleSelection == true && endpoint?.thinkingStyle == .none {
+                Text("当前服务的思考参数格式为「不设置」，请先在服务页选择对应思考格式后再配置档位。")
+                    .font(.system(size: Ink.Size.micro))
+                    .foregroundStyle(Ink.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if endpoint?.contractKey(for: model) != nil, !editable.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: Ink.Space.s) {
-                        ForEach(editableThinkingOptions, id: \.stableID) { option in
+                        ForEach(editable, id: \.stableID) { option in
                             let selected = activeOffered.contains(option)
                             Button {
                                 Haptics.tick(0.4)
@@ -1312,11 +1334,14 @@ struct ModelSheet: View {
 
     private func toggleEditableThinkingOption(_ option: ThinkingSelection) {
         guard let endpoint, let key = endpoint.contractKey(for: model) else { return }
+        guard !(endpoint.kind.supportsThinkingStyleSelection && endpoint.thinkingStyle == .none) else { return }
+        let allowDisable = endpoint.kind == .anthropic || endpoint.thinkingStyle.canStop
         let current = team.thinkingContract(for: endpoint, model: model)
-        var canDisable = current.canExplicitlyDisable && current.offeredSelections.contains(.explicitOff)
+        var canDisable = allowDisable && current.canExplicitlyDisable && current.offeredSelections.contains(.explicitOff)
         var efforts = current.offeredSelections.compactMap(\.effortName)
         switch option {
         case .explicitOff:
+            guard allowDisable else { return }
             canDisable.toggle()
         case .effort(let name, _):
             let normalized = name.lowercased()
@@ -1476,28 +1501,36 @@ struct ModelSheet: View {
             if let sees = sight.sees { found.sees = sees }
             if let calls = tools.calls { found.tools = calls }
             let existingContract = team.thinkingContract(for: endpoint, model: model)
+            let hasExistingManualRule = endpoint.validatedManualThinkingRule(for: model) != nil
             let isUnconfirmedRelayOrModel = !existingContract.isConfirmedOfficialOrigin || !existingContract.isKnownContract
             var markThinksManual = false
-            if isUnconfirmedRelayOrModel, thinking.thinks == true {
+            if isUnconfirmedRelayOrModel, !hasExistingManualRule, thinking.thinks == true {
                 if found.effectiveThinksSource != .userManual || found.thinks {
                     found.thinks = true
                     markThinksManual = true
                 }
-                if let probedLevels = thinking.levels,
-                   !probedLevels.isEmpty,
+                // Persist ONLY verified non-off efforts on unconfirmed relays; never auto-promote `canDisable: true`
+                // from a single probe (user can explicitly confirm `不想` in the level chips above).
+                if let probedEfforts = thinking.levels?
+                    .filter({ $0 != .off && $0 != .auto })
+                    .compactMap({ ThinkingSelection.fromLegacy($0).effortName }),
+                   !probedEfforts.isEmpty,
                    let key = endpoint.contractKey(for: model) {
-                    let canDisable = probedLevels.contains(.off)
-                    let efforts = probedLevels
-                        .filter { $0 != .off && $0 != .auto }
-                        .compactMap { ThinkingSelection.fromLegacy($0).effortName }
-                    let rule = ManualThinkingRule(
-                        contract: key,
-                        canDisable: canDisable,
-                        supportedEfforts: efforts,
-                        wireStyle: endpoint.kind.supportsThinkingStyleSelection ? endpoint.thinkingStyle : nil
-                    )
-                    team.setManualThinkingRule(rule, for: model, in: endpointId)
-                    lines.append("已按实测结果更新本模型可用思考档位。")
+                    let wireStyle: ThinkingStyle? = endpoint.kind.supportsThinkingStyleSelection ? endpoint.thinkingStyle : nil
+                    let wireStyleIsDisabled: Bool = {
+                        if let wireStyle, wireStyle == ThinkingStyle.none { return true }
+                        return false
+                    }()
+                    if !wireStyleIsDisabled {
+                        let rule = ManualThinkingRule(
+                            contract: key,
+                            canDisable: false,
+                            supportedEfforts: probedEfforts,
+                            wireStyle: wireStyle
+                        )
+                        team.setManualThinkingRule(rule, for: model, in: endpointId)
+                        lines.append("已按实测结果更新本模型思考档位（如需关闭思考请在上方手动勾选「不想」）。")
+                    }
                 }
             }
             if found != traits || markThinksManual {
@@ -1617,26 +1650,52 @@ extension TeamModel {
         }
     }
 
-    /// Observation-only thinking probe: reports what the endpoint accepted or returned without
-    /// overwriting catalog/contract `thinks` or `levels` (`200` on a relay never proves a contract).
+    /// Probes thinking using the same wire-field compilation path as real chat turns.
+    /// Requires non-empty visible text to count a level as accepted and never returns `.off` as auto-confirmed.
     func probeThinking(_ endpoint: Endpoint, model: String) async -> (thinks: Bool?, note: String, levels: [Thinking]?) {
         guard endpoint.isActiveProtocol, let key = await readAPIKey(for: endpoint), !key.isEmpty else {
             return (nil, "没试思考：没有密钥或协议未启用。", nil)
         }
         let provider = endpoint.provider(key: key)
-        func thought(_ level: Thinking) async -> (chars: Int, refused: Bool, failed: Bool) {
-            let request = ModelRequest(model: model, system: "", messages: [.user("17 × 23 等于多少？只回答数字。")],
-                                       outputLimit: 2000, thinking: level)
-            var chars = 0
+        let style: ThinkingStyle? = endpoint.kind.supportsThinkingStyleSelection ? endpoint.thinkingStyle : nil
+        let contractKey = endpoint.contractKey(for: model) ?? EndpointContractKey(
+            origin: endpoint.baseURL,
+            protocolKind: endpoint.kind.rawValue,
+            route: endpoint.kind.defaultRoutePath,
+            modelID: model
+        )
+        func thought(_ level: Thinking) async -> (chars: Int, textChars: Int, refused: Bool, failed: Bool) {
+            let selection = ThinkingSelection.fromLegacy(level)
+            var bodyFields: [String: ThinkingWireValue]? = nil
+            if endpoint.kind.isOpenAIFamily, level != .auto {
+                let probeRule = ManualThinkingRule(
+                    contract: contractKey,
+                    canDisable: level == .off,
+                    supportedEfforts: selection.effortName.map { [$0] } ?? [],
+                    wireStyle: style
+                )
+                let probeContract = ThinkingRuleResolver.contract(for: contractKey, style: style, manualRule: probeRule)
+                let resolved = ThinkingRuleResolver.resolve(selection: selection, contract: probeContract, style: style)
+                bodyFields = resolved.bodyFields
+            }
+            let request = ModelRequest(
+                model: model,
+                system: "",
+                messages: [.user("17 × 23 等于多少？只回答数字。")],
+                outputLimit: 2000,
+                thinking: level,
+                thinkingBodyFields: bodyFields
+            )
             do {
-                for try await event in provider.stream(request) {
-                    if case .reasoning(let piece) = event { chars += piece.count }
+                let collected = try await Self.collectProbeStream(provider.stream(request))
+                if collected.text.isEmpty && collected.reasoningChars == 0 {
+                    return (0, 0, false, true)
                 }
-                return (chars, false, false)
+                return (collected.reasoningChars, collected.text.count, false, false)
             } catch let failure as ProviderError where failure.status == 400 || failure.status == 422 {
-                return (0, true, false)
+                return (0, 0, true, false)
             } catch {
-                return (0, false, true)
+                return (0, 0, false, true)
             }
         }
         let styleCandidates: [Thinking] = endpoint.kind.supportsThinkingStyleSelection
@@ -1644,40 +1703,40 @@ extension TeamModel {
             : [.off, .low, .medium, .high, .max]
         if styleCandidates.isEmpty {
             let autoRun = await thought(.auto)
-            if autoRun.failed { return (nil, "思考观察未完成：连不上。", nil) }
+            if autoRun.failed { return (nil, "思考观察未完成：连不上或返回空内容。", nil) }
             if autoRun.chars > 0 { return (true, "观察到思考输出（仅作参考，未改写目录规则）。", nil) }
             return (false, "未观察到思考输出（仅作参考，未改写目录规则）。", nil)
         }
         let tried = styleCandidates
-        var results: [Thinking: (chars: Int, refused: Bool, failed: Bool)] = [:]
+        var results: [Thinking: (chars: Int, textChars: Int, refused: Bool, failed: Bool)] = [:]
         for level in tried { results[level] = await thought(level) }
-        if results.values.allSatisfy({ $0.failed }) { return (nil, "思考观察未完成：连不上。", nil) }
-        let taken = tried.filter { results[$0].map { !$0.refused && !$0.failed } ?? false }
+        if results.values.allSatisfy({ $0.failed }) { return (nil, "思考观察未完成：连不上或返回空内容。", nil) }
+        let taken = tried.filter {
+            guard let r = results[$0] else { return false }
+            return !r.refused && !r.failed && r.textChars > 0
+        }
         let refused = tried.filter { results[$0]?.refused == true }
-        let anyThought = taken.contains { (results[$0]?.chars ?? 0) > 0 }
+        let anyThought = tried.contains {
+            guard let r = results[$0] else { return false }
+            return !r.refused && !r.failed && r.chars > 0
+        }
         let deep = taken.filter { $0 != .off }.map { results[$0]?.chars ?? 0 }.max() ?? 0
-        let off = results[.off].map { $0.refused || $0.failed ? -1 : $0.chars } ?? -1
+        let off = results[.off].map { ($0.refused || $0.failed || $0.textChars == 0) ? -1 : $0.chars } ?? -1
         var words: [String] = []
         if !anyThought {
             words.append(refused.count == tried.count ? "本次观察未接受思考参数" : "本次观察未返回思考文本")
-            words.append("（仅作参考，目录与手动规则保持不变）。")
+            words.append("（目录与手动规则保持不变）。")
             return (false, words.joined(), nil)
         }
-        var observedLevels: [Thinking] = []
-        if off == 0 && deep > 0 {
-            observedLevels.append(.off)
+        let observedEfforts = taken.filter { $0 != .off }
+        if !taken.isEmpty {
+            words.append("本次接口接受并正常回复：" + taken.map(\.title).joined(separator: "、") + "。")
         }
-        for level in taken where level != .off {
-            if !observedLevels.contains(level) {
-                observedLevels.append(level)
-            }
-        }
-        words.append("本次接口接受：" + taken.map(\.title).joined(separator: "、") + "。")
         if !refused.isEmpty { words.append("拒绝：" + refused.map(\.title).joined(separator: "、") + "。") }
-        if off == 0 { words.append("「不想」返回了 0 字思考。") }
+        if off == 0 { words.append("「不想」正常回复且返回 0 字思考。") }
         else if off > 0 && deep > off * 2 { words.append("「不想」仍有少量思考（\(off) 字，深档 \(deep) 字）。") }
         else if off > 0 { words.append("各档思考字数接近（约 \(deep) 字）。") }
-        return (true, "观察到思考。" + words.joined(), observedLevels.isEmpty ? nil : observedLevels)
+        return (true, "观察到思考。" + words.joined(), observedEfforts.isEmpty ? nil : observedEfforts)
     }
 
     /// Shows the model a red square and asks its colour. `sees` is nil when the test itself failed.

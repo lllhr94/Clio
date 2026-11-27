@@ -7,7 +7,6 @@ import XCTest
 final class R1CUIFixesAppTests: XCTestCase {
     override func tearDown() {
         ModelsDev.resetForTesting()
-        Hills.shared.fetchMCPToolsOverrideForTesting = nil
         super.tearDown()
     }
 
@@ -188,14 +187,14 @@ final class R1CUIFixesAppTests: XCTestCase {
             ]
         }
 
-        let refreshTask = Task { await hills.refresh(server) }
+        let refreshTask = Task { await hills.refreshWithOutcome(server) }
         await gate.waitUntilStarted()
         // Delete server while async MCP tool discovery is still in flight.
         hills.remove(server)
         gate.release()
 
-        let count = await refreshTask.value
-        XCTAssertEqual(count, 0)
+        let outcome = await refreshTask.value
+        XCTAssertEqual(outcome, .stale)
         XCTAssertTrue(hills.tools(of: server).isEmpty, "Deleted MCP server tools must never be written back")
         XCTAssertNil(hills.lastError[server.id])
 
@@ -213,16 +212,51 @@ final class R1CUIFixesAppTests: XCTestCase {
                 ),
             ]
         }
-        let refreshTask2 = Task { await hills.refresh(server) }
+        let refreshTask2 = Task { await hills.refreshWithOutcome(server) }
         await gate2.waitUntilStarted()
         var reconfigured = server
         reconfigured.url = "https://other-mcp.example.com/mcp"
         hills.save(reconfigured, token: nil)
         gate2.release()
 
-        let count2 = await refreshTask2.value
-        XCTAssertEqual(count2, 0)
+        let outcome2 = await refreshTask2.value
+        XCTAssertEqual(outcome2, .stale)
         XCTAssertTrue(hills.tools(of: reconfigured).isEmpty, "Stale refresh after server URL update must be discarded")
+
+        // Verify modifying the SSH tunnel host mid-refresh also returns `.stale` and invalidates old tools.
+        let hostID = "test-tunnel-host-\(UUID().uuidString)"
+        let host = Hills.Host(id: hostID, name: "TempHost", address: "10.0.0.1", port: 22, user: "root", useKey: true)
+        let tunneledID = "test-tunneled-mcp-\(UUID().uuidString)"
+        let tunneled = Hills.Server(id: tunneledID, name: "TunneledMCP", url: "http://127.0.0.1:8931/mcp", tunnelHost: hostID)
+        hills.save(host, password: nil)
+        hills.save(tunneled, token: nil)
+        defer {
+            hills.remove(tunneled)
+            hills.remove(host)
+        }
+
+        let gate3 = Gate()
+        hills.fetchMCPToolsOverrideForTesting = { _ in
+            await gate3.markStartedAndWaitRelease()
+            return [
+                MCPClient.Tool(
+                    name: "stale_tunnel_tool",
+                    description: "Should not survive SSH tunnel host change",
+                    schema: .object(["type": .string("object")]),
+                    readOnly: true
+                ),
+            ]
+        }
+        let refreshTask3 = Task { await hills.refreshWithOutcome(tunneled) }
+        await gate3.waitUntilStarted()
+        var editedHost = host
+        editedHost.address = "10.0.0.2"
+        hills.save(editedHost, password: nil)
+        gate3.release()
+
+        let outcome3 = await refreshTask3.value
+        XCTAssertEqual(outcome3, .stale)
+        XCTAssertTrue(hills.tools(of: tunneled).isEmpty, "Stale refresh after tunnel host edit must be discarded")
     }
 
     func testConnectorsSearchIgnoresHiddenCategoryFilter() {

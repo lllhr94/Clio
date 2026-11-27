@@ -695,6 +695,29 @@ final class ThinkingRuleResolverTests: XCTestCase {
             return XCTFail("Expected unfulfilledExplicitOff on unconfirmed relay")
         }
         XCTAssertTrue(offRes.bodyFields.isEmpty)
+
+        // Explicit ThinkingStyle.none ("不设置") on relay MUST NOT offer hint efforts or allow explicitOff even via manual rule.
+        let noneContract = ThinkingRuleResolver.contract(for: relayKey, style: ThinkingStyle.none, snapshot: snapshot)
+        XCTAssertEqual(noneContract.offeredSelections, [.inheritDefault])
+        let bogusManual = ManualThinkingRule(
+            contract: relayKey,
+            canDisable: true,
+            supportedEfforts: ["low", "high"],
+            wireStyle: ThinkingStyle.none
+        )
+        let noneManualContract = ThinkingRuleResolver.contract(
+            for: relayKey,
+            style: ThinkingStyle.none,
+            manualRule: bogusManual,
+            snapshot: snapshot
+        )
+        XCTAssertFalse(noneManualContract.canExplicitlyDisable)
+        XCTAssertEqual(noneManualContract.offeredSelections, [.inheritDefault])
+        let noneOff = ThinkingRuleResolver.resolve(selection: .explicitOff, contract: noneManualContract, style: ThinkingStyle.none)
+        guard case .unfulfilledExplicitOff = noneOff.fulfillment else {
+            return XCTFail("ThinkingStyle.none must never pass explicitOff preflight")
+        }
+        XCTAssertTrue(noneOff.bodyFields.isEmpty)
     }
 
     func testIntersectOfferingsIsOrderInvariantAcrossPermutations() throws {
