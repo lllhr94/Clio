@@ -1453,5 +1453,40 @@
   "chatMenu": {
     "workbench": "工作台",
     "manageExport": "管理与导出"
+  },
+  "casual": {
+    "trackFormal": "絮语",
+    "trackCasual": "闲谈",
+    "openAction": "转入闲谈",
+    "emptyHint": "与 %@ 随口闲谈。闲谈不自动记入拾遗，适合片刻随笔与轻声相伴。",
+    "inputPlaceholder": "与 %@ 随口说几句…",
+    "mergingHint": "正在收拢连句…",
+    "reconcileTitle": "上次有一段闲谈尚未确认送达",
+    "reconcileResend": "重新递出",
+    "reconcileDiscard": "舍去",
+    "promoteMemoryCandidate": "收入拾遗候选",
+    "promoteMemoryTitle": "审阅拾遗候选",
+    "promoteMemoryPlaceholder": "润色要收进拾遗的句子",
+    "promoteMemoryMessage": "经你确认后才会记入拾遗，闲谈本身不会自动改写记忆。",
+    "promoteMemoryConfirm": "收下",
+    "handoffAction": "带入正式絮语",
+    "handoffTitle": "转入正式絮语细办？",
+    "handoffConfirm": "带与 %@ 正式办理",
+    "handoffStay": "留在闲谈",
+    "stickersTitle": "自备小图",
+    "stickersEmpty": "尚未导入表情小图。点击下方自相册选入，仅于闲谈间使用。",
+    "importSticker": "自相册导入小图",
+    "defaultStickerPack": "私藏小图"
+  },
+  "draftTransfer": {
+    "moveAction": "移稿至…",
+    "pickerTitle": "移稿至",
+    "noOtherChats": "暂没有其他可移稿的对话。",
+    "collisionTitle": "彼处已有草稿",
+    "collisionMessage": "「%@」案头已有未发草稿，要如何处置？",
+    "collisionAppend": "接续其后",
+    "collisionReplace": "替换原稿",
+    "movedToast": "已将草稿移至 %@",
+    "undoConflicted": "草稿在移稿后已有新改动，已跳过撤回。"
   }
 }
