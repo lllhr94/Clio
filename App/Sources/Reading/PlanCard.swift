@@ -6,6 +6,10 @@ struct PlanCard: View {
     let steps: [TeamModel.PlanStep]
     var maxHeight: CGFloat? = nil
     var forceCollapsed: Bool = false
+    var planMode: Bool = false
+    var revision: UInt64 = 0
+    var turnID: String = ""
+    var onExecutePlan: ((UInt64, String) -> Void)? = nil
     var close: () -> Void
     @State private var open = false
     @State private var detailsHeight: CGFloat = 0
@@ -60,7 +64,25 @@ struct PlanCard: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    if done == steps.count {
+                    if planMode, let onExecutePlan, !steps.isEmpty {
+                        Button {
+                            Haptics.thud()
+                            onExecutePlan(revision, turnID)
+                        } label: {
+                            HStack(spacing: Ink.Space.xs) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                Text(L.t("plan.executeAction"))
+                                    .font(.system(size: Ink.Size.small, weight: .semibold))
+                            }
+                            .foregroundStyle(Ink.paper)
+                            .padding(.horizontal, Ink.Space.m)
+                            .padding(.vertical, Ink.Space.s)
+                            .background(Ink.accent, in: Capsule(style: .continuous))
+                        }
+                        .buttonStyle(PressStyle())
+                        .padding(.top, Ink.Space.xs)
+                    } else if done == steps.count {
                         Button("收起清单") { close() }
                             .font(.system(size: Ink.Size.small, weight: .semibold))
                             .foregroundStyle(Ink.accent)

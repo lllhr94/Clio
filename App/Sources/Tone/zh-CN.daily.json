@@ -204,7 +204,7 @@
     "servicesLine": "管理已接服务、添加新服务",
     "models": "默认模型",
     "modelsLine": "选择聊天、备用、记忆整理和生图模型",
-    "imageLine": "选择 AI 画图用的模型",
+    "imageLine": "选择绘图用的生图模型",
     "companions": "助手列表",
     "companionsLine": "改名字、头像、性格和模型",
     "roomsLine": "新建群聊、管理成员和顺序",
@@ -314,7 +314,6 @@
     "careDiagnosticsLine": "模型连通测速、报错日志与帧率记录",
     "aboutClio": "关于 Clio",
     "aboutClioLine": "版本、开源许可与字体致谢",
-    "imageLine": "选择绘图用的生图模型",
     "identityDefaultBot": "默认助手",
     "identityMe": "我的身份",
     "identityTapAvatar": "点头像更换",
@@ -1145,21 +1144,13 @@
     "customModelNameNote": "设个好记的名字后，顶部和设置里会优先显示它"
   },
   "trace": {
-    "commandsCount": "跑了 %lld 条命令",
-    "commandsFailedCount": "%lld 条失败",
-    "commandsUnknownCount": "%lld 条结果未知",
-    "commandFailed": "失败",
-    "commandUnknown": "结果未知",
-    "commandFailedDetail": "执行未成功",
-    "commandUnknownDetail": "结果未知，可能已执行，请先确认状态",
-    "commandTitle": "命令详情",
-    "commandLabel": "命令",
-    "outputLabel": "输出",
-    "noOutput": "（没有输出）",
-    "outputTruncated": "……（界面先显示前 %lld 字，点「复制」可复制已保存部分）",
-    "outputTrimmedNote": "长输出已做脱敏截断保存，复制得到的是已保存的部分。",
-    "copy": "复制",
-    "copied": "已复制"
+    "statusSucceeded": "已完成",
+    "statusPartial": "部分完成",
+    "statusFailed": "执行失败",
+    "statusCancelled": "已取消",
+    "statusRunning": "执行中",
+    "statusPending": "等待执行",
+    "statusWaitingApproval": "等待确认"
   },
   "careSpike": {
     "section": "渲染实验室",
@@ -1410,15 +1401,6 @@
     "retryCheck": "刷新",
     "topUp": "去充值"
   },
-  "trace": {
-    "statusSucceeded": "已完成",
-    "statusPartial": "部分完成",
-    "statusFailed": "执行失败",
-    "statusCancelled": "已取消",
-    "statusRunning": "执行中",
-    "statusPending": "等待执行",
-    "statusWaitingApproval": "等待确认"
-  },
   "privateNet": {
     "sectionTitle": "私人网络与代理兼容",
     "fakeIPToggle": "Fake-IP 代理兼容",
@@ -1496,5 +1478,15 @@
     "oauthReturnToApp": "授权码已收到，请返回 Clio。",
     "goKeyRejected": "请确认密钥属于已订阅 OpenCode Go 的账户，再试一次。",
     "oauthInvalidCallback": "登录回调无效。请返回 Clio 重试。"
+  },
+  "plan": {
+    "executeAction": "按此方案执行",
+    "executePrompt": "按上面的方案开始执行。",
+    "statusCapsule": "规划模式 · 只看不动",
+    "exitAction": "退出规划",
+    "modeTitle": "规划模式",
+    "modeSubtitle": "只读调研并先列方案，确认后再动手",
+    "enterMenu": "进入规划模式（只看不动）",
+    "exitMenu": "退出规划模式"
   }
 }

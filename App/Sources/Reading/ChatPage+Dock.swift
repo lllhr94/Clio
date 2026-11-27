@@ -907,7 +907,38 @@ private struct ChatDockAreaView: View {
 
     var body: some View {
         VStack(spacing: Ink.Space.xs) {
+            if team.isPlanModeActive(for: chat.key) {
+                HStack(spacing: Ink.Space.xs) {
+                    Image(systemName: "map")
+                        .font(.system(size: Ink.Size.micro, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                    Text(L.t("plan.statusCapsule"))
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .foregroundStyle(Ink.inkSoft)
+                    Spacer(minLength: 0)
+                    if !team.livePlanModeLedger.isInheritedReadOnly(chat.key) {
+                        Button {
+                            Haptics.light()
+                            team.setPlanMode(false, in: chat.key)
+                        } label: {
+                            Text(L.t("plan.exitAction"))
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                .foregroundStyle(Ink.accent)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, Ink.Space.m)
+                .padding(.vertical, Ink.Space.xs)
+                .background(Ink.surfaceSubtle, in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(Ink.accent.opacity(0.28), lineWidth: 0.5)
+                        .allowsHitTesting(false)
+                }
+            }
             if let plan = team.plans[chat.key] {
+                let record = team.planRecords[chat.key]
                 let fallbackMax = chatViewportHeight > 0 ? max(160, chatViewportHeight * 0.38) : nil
                 let (resolvedPlanMax, forcePlanCollapsed): (CGFloat?, Bool) = {
                     switch cardBudget?.planCard {
@@ -919,7 +950,20 @@ private struct ChatDockAreaView: View {
                         return (fallbackMax, false)
                     }
                 }()
-                PlanCard(steps: plan, maxHeight: resolvedPlanMax, forceCollapsed: forcePlanCollapsed) {
+                let canExecute = record.map {
+                    team.canExecutePlan(chat: chat.key, revision: $0.revision, turnID: $0.turnID)
+                } ?? false
+                PlanCard(
+                    steps: plan,
+                    maxHeight: resolvedPlanMax,
+                    forceCollapsed: forcePlanCollapsed,
+                    planMode: canExecute,
+                    revision: record?.revision ?? 0,
+                    turnID: record?.turnID ?? "",
+                    onExecutePlan: canExecute ? { rev, tid in
+                        _ = team.unlockPlanAndExecute(chat: chat.key, revision: rev, turnID: tid)
+                    } : nil
+                ) {
                     team.clearPlan(chat.key)
                 }
                 .transition(calmPetMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
