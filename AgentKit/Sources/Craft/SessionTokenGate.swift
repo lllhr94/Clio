@@ -1,5 +1,19 @@
 import Foundation
 
+public struct SessionTokenKey: Hashable, Sendable {
+    public let account: String
+    public let issuer: String
+    public let resource: String
+    public let epoch: UInt64
+
+    public init(account: String, issuer: String, resource: String, epoch: UInt64) {
+        self.account = account
+        self.issuer = issuer
+        self.resource = resource
+        self.epoch = epoch
+    }
+}
+
 /// Single-flight access token cache bound to a monotonically increasing session epoch.
 /// Any session reset (sign-out) or credential replacement (account switch / re-login)
 /// bumps the epoch synchronously, cancels any in-flight refresh, and prevents older
@@ -60,27 +74,80 @@ public actor SessionTokenGate {
         }
 
         @discardableResult
-        func bump() -> UInt64 {
+        func bump(_ update: () -> Void = {}) -> UInt64 {
             lock.lock()
             defer { lock.unlock() }
-            value &+= 1
+            update()
+            value += 1
             return value
         }
 
-        func compareAndBump(expected: UInt64) -> UInt64? {
+        func compareAndBump(expected: UInt64, update: () throws -> Void) rethrows -> UInt64? {
             lock.lock()
             defer { lock.unlock() }
             guard value == expected else { return nil }
-            value &+= 1
+            try update()
+            value += 1
             return value
+        }
+
+        func withCurrent<T>(_ expected: UInt64?, _ operation: (UInt64) throws -> T) throws -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            if let expected, expected != value { throw GateError.sessionChanged }
+            return try operation(value)
         }
     }
 
+    private struct Scope: Hashable, Sendable {
+        let account: String
+        let issuer: String
+        let resource: String
+    }
+
+    private final class Scopes: @unchecked Sendable {
+        private let lock = NSLock()
+        private var gates: [Scope: SessionTokenGate] = [:]
+
+        func gate(_ scope: Scope) -> SessionTokenGate {
+            lock.lock()
+            defer { lock.unlock() }
+            if let gate = gates[scope] { return gate }
+            let gate = SessionTokenGate(scope: scope)
+            gates[scope] = gate
+            return gate
+        }
+
+    }
+
+    private let scopes = Scopes()
+    private let scope: Scope?
     private let epochCounter = AtomicEpoch()
     private var cached: CachedEntry?
     private var inFlight: InFlight?
 
-    public init() {}
+    public init() { scope = nil }
+
+    private init(scope: Scope) { self.scope = scope }
+
+    public nonisolated func scoped(account: String, issuer: String, resource: String) -> SessionTokenGate {
+        scopes.gate(Scope(account: account, issuer: issuer, resource: resource))
+    }
+
+    public nonisolated func sessionKey() -> SessionTokenKey? {
+        scope.map { SessionTokenKey(account: $0.account, issuer: $0.issuer, resource: $0.resource, epoch: currentEpoch()) }
+    }
+
+    public static func validateLeaseOrigin(_ url: URL, allowedHTTPSOrigins: Set<String>) -> Bool {
+        guard url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
+              let origin = EndpointAddressPolicy.rawOrigin(url.absoluteString) else { return false }
+        return allowedHTTPSOrigins.contains { raw in
+            guard let candidate = URL(string: raw), candidate.scheme?.lowercased() == "https",
+                  candidate.user == nil, candidate.password == nil, candidate.query == nil,
+                  candidate.fragment == nil, candidate.path.isEmpty || candidate.path == "/" else { return false }
+            return EndpointAddressPolicy.rawOrigin(raw) == origin
+        }
+    }
 
     /// Current session epoch. Safe to read from any context.
     public nonisolated func currentEpoch() -> UInt64 {
@@ -102,7 +169,12 @@ public actor SessionTokenGate {
     /// Atomically verifies that `attempt` is still active and advances the session epoch to
     /// supersede any older refresh tasks. Returns nil if the user signed out or another login won.
     public nonisolated func commitSignInSynchronously(_ attempt: SignInAttempt) -> UInt64? {
-        guard let next = epochCounter.compareAndBump(expected: attempt.baseEpoch) else {
+        commitSignIn(attempt) {}
+    }
+
+    /// Runs the durable write under the same epoch lock used by sign-out and refresh commits.
+    public nonisolated func commitSignIn(_ attempt: SignInAttempt, persist: () throws -> Void) rethrows -> UInt64? {
+        guard let next = try epochCounter.compareAndBump(expected: attempt.baseEpoch, update: persist) else {
             return nil
         }
         Task { await self.discardState(before: next) }
@@ -114,9 +186,19 @@ public actor SessionTokenGate {
     /// can commit or return after this call returns, and schedules actor-side cleanup.
     @discardableResult
     public nonisolated func invalidateSessionSynchronously() -> UInt64 {
-        let next = epochCounter.bump()
+        invalidateSession {}
+    }
+
+    @discardableResult
+    public nonisolated func invalidateSession(remove: () -> Void) -> UInt64 {
+        let next = epochCounter.bump(remove)
         Task { await self.discardState(before: next) }
         return next
+    }
+
+    /// Keep a short synchronous credential transaction fenced against a session change.
+    public nonisolated func withCurrentEpoch<T>(_ expected: UInt64? = nil, _ operation: (UInt64) throws -> T) throws -> T {
+        try epochCounter.withCurrent(expected, operation)
     }
 
     /// Async session invalidation: bumps the epoch, cancels any in-flight refresh, and clears cache.
@@ -179,13 +261,6 @@ public actor SessionTokenGate {
             throw GateError.sessionChanged
         }
 
-        if !forceRefresh, let cached, cached.epoch == epoch, cached.expiresAt > now() {
-            return Lease(token: cached.token, epoch: epoch)
-        }
-        if forceRefresh, cached?.epoch == epoch {
-            cached = nil
-        }
-
         if let existing = inFlight, existing.epoch == epoch {
             do {
                 let lease = try await existing.task.value
@@ -195,6 +270,13 @@ public actor SessionTokenGate {
                 if epochCounter.load() != epoch { throw GateError.sessionChanged }
                 throw error
             }
+        }
+
+        if !forceRefresh, let cached, cached.epoch == epoch, cached.expiresAt > now() {
+            return Lease(token: cached.token, epoch: epoch)
+        }
+        if forceRefresh, cached?.epoch == epoch {
+            cached = nil
         }
 
         let taskId = UUID()
@@ -229,7 +311,7 @@ public actor SessionTokenGate {
         output: RefreshOutput,
         onCommitted: (@Sendable (UInt64) async -> Void)?
     ) async throws -> Lease {
-        clearInFlight(id: id)
+        defer { clearInFlight(id: id) }
         guard epochCounter.load() == epoch else {
             discardState(before: epochCounter.load())
             throw GateError.sessionChanged

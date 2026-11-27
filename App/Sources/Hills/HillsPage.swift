@@ -7,6 +7,7 @@ struct HillsPage: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editingHost: Hills.Host?
     @State private var editingServer: Hills.Server?
+    @State private var connectAfterEditing: Hills.Server?
     @State private var testing: String?
     @State private var tested: [String: String] = [:]
     @State private var refreshing: String?
@@ -19,6 +20,15 @@ struct HillsPage: View {
     @State private var serverPendingDelete: Hills.Server?
     /// Host id → what the browser installation is doing now.
     @State private var installing: [String: String] = [:]
+
+    private func connectEditedServer() {
+        guard let server = connectAfterEditing else { return }
+        connectAfterEditing = nil
+        Task {
+            let saved = await Vault.readString("mcp.\(server.id)") != nil
+            _ = await Connecting.connect(server, signIn: server.tunnelHost == nil && !saved)
+        }
+    }
 
     var body: some View {
         if embedded {
@@ -98,7 +108,9 @@ struct HillsPage: View {
                 }
             }
             .sheet(item: $editingHost) { host in HostEditor(host: host) }
-            .sheet(item: $editingServer) { server in ServerEditor(server: server) }
+            .sheet(item: $editingServer, onDismiss: connectEditedServer) { server in
+                ServerEditor(server: server) { connectAfterEditing = $0 }
+            }
             .fullScreenCover(item: $terminalHost) { host in InkstonePage(hill: host) }
             .alert("在\(browserAsk?.name ?? "")上装一个浏览器？", isPresented: Binding(get: { browserAsk != nil }, set: { if !$0 { browserAsk = nil } })) {
                 Button("开始装") { if let host = browserAsk { installBrowser(host) } }
@@ -491,7 +503,16 @@ private struct HostEditor: View {
 }
 
 private struct ServerEditor: View {
-    @State var server: Hills.Server
+    @State private var server: Hills.Server
+    @State private var options: MCPLoginOptions
+    @State private var problem: String?
+    let onSave: (Hills.Server) -> Void
+
+    init(server: Hills.Server, onSave: @escaping (Hills.Server) -> Void) {
+        _server = State(initialValue: server)
+        _options = State(initialValue: MCPLoginOptions.load(server: server.id, url: server.url))
+        self.onSave = onSave
+    }
     @State private var token = ""
     @State private var hasToken = false
     @State private var saving = false
@@ -541,6 +562,12 @@ private struct ServerEditor: View {
                         Text(Words.t("在那台电脑上跑这条命令（要先装 Node.js 18 以上），浏览器就只在它自己的 8931 端口上听。也可以回到远山页点那台主机的「装浏览器」，一键装好、开机自启。"))
                     }
                 }
+                if server.tunnelHost == nil {
+                    Section { MCPLoginOptionsFields(options: $options) }
+                }
+                if let problem {
+                    Section { Text(problem).foregroundStyle(Ink.stop) }
+                }
                 Section { Toggle(Words.t("借给旅伴用"), isOn: $server.enabled) }
             }
             }
@@ -562,23 +589,27 @@ private struct ServerEditor: View {
                         updated.name = updated.name.trimmingCharacters(in: .whitespacesAndNewlines)
                         if updated.name.isEmpty { updated.name = URL(string: updated.url)?.host() ?? "MCP" }
                         let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let original = Hills.shared.servers.first { $0.id == updated.id }
+                        let changedTarget = original.map { $0.url != updated.url || $0.tunnelHost != updated.tunnelHost } ?? false
+                        if changedTarget { updated.id = UUID().uuidString }
                         let serverID = updated.id
                         Task {
-                            if !cleanToken.isEmpty {
-                                await Task.detached(priority: .userInitiated) {
-                                    Vault.save(cleanToken, as: "mcp.\(serverID)")
-                                }.value
-                            }
-                            Hills.shared.save(updated, token: nil)
-                            Task {
-                                let hasSavedToken: Bool
+                            do {
                                 if !cleanToken.isEmpty {
-                                    hasSavedToken = true
-                                } else {
-                                    hasSavedToken = await Vault.readString("mcp.\(serverID)") != nil
+                                    try await Task.detached(priority: .userInitiated) {
+                                        try Vault.saveResult(cleanToken, as: "mcp.\(serverID)").get()
+                                        MCPAuth.forget(serverID)
+                                    }.value
                                 }
-                                _ = await Connecting.connect(updated, signIn: updated.tunnelHost == nil && !hasSavedToken)
+                            } catch {
+                                problem = "保存令牌失败，请重试。"
+                                saving = false
+                                return
                             }
+                            options.save(server: serverID, url: updated.url)
+                            if changedTarget, let original { Hills.shared.remove(original) }
+                            Hills.shared.save(updated, token: nil)
+                            onSave(updated)
                             Haptics.thud()
                             dismiss()
                         }

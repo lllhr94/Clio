@@ -2010,9 +2010,7 @@ private final class PublicImageRedirectDelegate: NSObject, URLSessionTaskDelegat
         newRequest request: URLRequest
     ) async -> URLRequest? {
         guard let target = request.url,
-              ["http", "https"].contains(target.scheme?.lowercased() ?? ""),
-              !LocalAddress.isLocal(target),
-              !(await LocalAddress.resolvesToLocal(target)) else {
+              await LocalAddress.allowsRemoteImage(target) else {
             return nil
         }
         return request
@@ -2214,7 +2212,7 @@ struct ProsePicture: View {
             remoteFile = nil
             workspaceRef = nil
             failed = false
-            guard !LocalAddress.isLocal(remote), !(await LocalAddress.resolvesToLocal(remote)) else {
+            guard await LocalAddress.allowsRemoteImage(remote) else {
                 if !Task.isCancelled { failed = true }
                 return
             }

@@ -2052,6 +2052,12 @@ public struct WebSearchTool: AgentTool {
 /// Addresses on this phone or its local network. Tools the model drives do not go there: a page could use them
 /// to reach the router, a printer, or a service on the phone.
 public enum LocalAddress {
+    /// Remote attachments have no implicit LAN grant, even if the web tool has one.
+    public static func allowsRemoteImage(_ url: URL) async -> Bool {
+        guard classifyLiteral(url) == .publicAddress else { return false }
+        return await PrivateNetworkPolicy.shared.evaluateAsync(url: url, allowAuthorizedPrivate: false).allowed
+    }
+
     public static let refusal = "这是本机或局域网里的地址，网页工具不去这种地方，只开公网网址。真要看，请用户自己在远游的地址栏里打开。"
 
     public static func isLocal(_ url: URL) -> Bool {
