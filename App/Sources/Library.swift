@@ -581,23 +581,82 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
 
     var usesPromptCache: Bool { promptCache ?? AnthropicProvider.caches(baseURL) }
 
+    /// Whether the user paused this endpoint via the ServicePage toggle (`ServiceExtras` shared key).
+    var isPaused: Bool {
+        UserDefaults.standard.bool(forKey: "clio.endpoint.paused.\(id)")
+    }
+
+    /// True when the protocol is supported and the user has not paused this service.
+    var isDispatchable: Bool {
+        isActiveProtocol && !isPaused
+    }
+
+    /// Resolved 3-tier prompt cache setting (`off` / `5m` / `1h`), reading the shared `ServiceExtras` key first.
+    var effectivePromptCacheTier: PromptCacheTier {
+        if let raw = UserDefaults.standard.string(forKey: "clio.endpoint.cacheTier.\(id)"),
+           let tier = PromptCacheTier(rawValue: raw) {
+            return tier
+        }
+        return usesPromptCache ? .fiveMinutes : .off
+    }
+
+    /// Non-secret custom headers persisted via `ServiceExtras` (`HTTP.applyNonSecretHeaders` also enforces sanitization).
+    var customNonSecretHeaders: [String: String] {
+        let key = "clio.endpoint.customHeaders.\(id)"
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+            return decoded
+        }
+        if let raw = UserDefaults.standard.string(forKey: key),
+           let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
+            return decoded
+        }
+        return [:]
+    }
+
     func provider(key: String, stableSystemPrefix: String? = nil) -> ModelProvider {
         if let disabledReason = disabledProtocolReason {
             return DisabledProtocolProvider(reason: disabledReason)
         }
+        if isPaused {
+            return DisabledProtocolProvider(reason: "「\(name)」已暂停使用，请先在服务详情页恢复后再发消息。")
+        }
+        let headers = customNonSecretHeaders
         switch kind {
         case .openai:
-            return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle, fixedRoute: true)
-        case .openaiResponses, .openaiCodex:
-            // Avoid authorization-vs-wire route mismatch (`/responses` vs `/chat/completions`) before PR 2B wires `OpenAIResponsesProvider`.
-            return DisabledProtocolProvider(reason: "「\(name)」所选的 \(kind.displayTitle) 协议正在接入中，暂未发起请求。")
+            return OpenAIProvider(
+                baseURL: baseURL,
+                apiKey: key,
+                style: thinkingStyle,
+                fixedRoute: true,
+                customHeaders: headers
+            )
+        case .openaiResponses:
+            return OpenAIResponsesProvider(
+                baseURL: baseURL,
+                apiKey: key,
+                isCodex: false,
+                customHeaders: headers,
+                fixedRoute: true
+            )
+        case .openaiCodex:
+            return OpenAIResponsesProvider(
+                baseURL: baseURL,
+                apiKey: key,
+                isCodex: true,
+                customHeaders: headers,
+                fixedRoute: true
+            )
         case .anthropic:
             return AnthropicProvider(
                 baseURL: baseURL,
                 apiKey: key,
                 promptCache: usesPromptCache,
                 stableSystemPrefix: stableSystemPrefix,
-                fixedRoute: true
+                fixedRoute: true,
+                cacheTier: effectivePromptCacheTier,
+                customHeaders: headers
             )
         case .unknown(let raw):
             return DisabledProtocolProvider(reason: "「\(name)」使用了当前版本不识别的协议（\(raw)），已禁用并停止发送凭据。")

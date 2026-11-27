@@ -53,11 +53,57 @@ final class Hills: ObservableObject {
     @Published private(set) var borrowed: [Borrowed] = []
     @Published var lastError: [String: String] = [:]
 
+    /// Thread-safe live connector state & generation for `DeferredMCPTools` schema/execution re-checks.
+    final class ConnectorAccessBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _generation: UInt64 = 1
+        private var _enabledServers: Set<String> = []
+
+        var generation: UInt64 {
+            lock.withLock { _generation }
+        }
+
+        func isEnabled(_ serverID: String) -> Bool {
+            lock.withLock { _enabledServers.contains(serverID) }
+        }
+
+        func update(enabledServers: Set<String>, bumpGeneration: Bool) {
+            lock.withLock {
+                _enabledServers = enabledServers
+                if bumpGeneration { _generation &+= 1 }
+            }
+        }
+    }
+
+    nonisolated let connectorAccess = ConnectorAccessBox()
+
     init() {
         hosts = Disk.load([Host].self, "hills.json") ?? []
         for host in hosts { hostRevisions[host.id] = UUID() }
         servers = Disk.load([Server].self, "mcp.json") ?? []
         borrowed = Disk.load([Borrowed].self, "mcp-tools.json") ?? []
+        syncConnectorAccess(bumpGeneration: false)
+    }
+
+    private func syncConnectorAccess(bumpGeneration: Bool) {
+        connectorAccess.update(
+            enabledServers: Set(servers.filter(\.enabled).map(\.id)),
+            bumpGeneration: bumpGeneration
+        )
+    }
+
+    func deferredMCPPolicy(disabledGrants: Set<String>) -> DeferredMCPTools.Policy {
+        let box = connectorAccess
+        let capturedGen = box.generation
+        return DeferredMCPTools.Policy(
+            connectorGeneration: capturedGen,
+            currentGeneration: { box.generation },
+            isPermitted: { serverID, _ in
+                guard !disabledGrants.contains(Grant.mcp.rawValue),
+                      Grant.mcp.policy != .off else { return false }
+                return box.isEnabled(serverID)
+            }
+        )
     }
 
     // MARK: Hosts
@@ -407,6 +453,7 @@ final class Hills: ObservableObject {
         if let index = servers.firstIndex(where: { $0.id == server.id }) { servers[index] = server } else { servers.append(server) }
         if let token { Vault.save(token, as: "mcp.\(server.id)") }
         Disk.save(servers, "mcp.json")
+        syncConnectorAccess(bumpGeneration: true)
     }
 
     func remove(_ server: Server) {
@@ -416,6 +463,7 @@ final class Hills: ObservableObject {
         borrowed.removeAll { $0.server == server.id }
         Disk.save(servers, "mcp.json")
         Disk.save(borrowed, "mcp-tools.json")
+        syncConnectorAccess(bumpGeneration: true)
     }
 
     /// Asks a server for its tools again. Returns how many it offered.
@@ -439,6 +487,7 @@ final class Hills: ObservableObject {
             borrowed.removeAll { $0.server == server.id }
             borrowed += tools.map { Borrowed(server: server.id, name: $0.name, description: $0.description, schema: $0.schema, readOnly: $0.readOnly) }
             Disk.save(borrowed, "mcp-tools.json")
+            syncConnectorAccess(bumpGeneration: true)
             lastError[server.id] = nil
             return tools.count
         } catch {
@@ -452,9 +501,11 @@ final class Hills: ObservableObject {
     // MARK: Tools
 
     func tools(canSee: Bool = true) -> [AgentTool] {
+        sshTools() + mcpToolEntries(canSee: canSee).map(\.tool)
+    }
+
+    func sshTools() -> [AgentTool] {
         var tools: [AgentTool] = []
-        let turnBudget = MCPImageTurnBudget()
-        let snapshotHosts = hosts
         if !hosts.isEmpty {
             let names = hosts.map { "\($0.name)（\($0.user)@\($0.address)）" }.joined(separator: "、")
             let snapshot = hosts
@@ -504,6 +555,13 @@ final class Hills: ObservableObject {
                 }
             })
         }
+        return tools
+    }
+
+    func mcpToolEntries(canSee: Bool = true) -> [DeferredMCPTools.Entry] {
+        var entries: [DeferredMCPTools.Entry] = []
+        let turnBudget = MCPImageTurnBudget()
+        let snapshotHosts = hosts
         for server in servers where server.enabled {
             let serverId = server.id
             // A name with no Latin letters or digits ("香港的浏览器") would slug to underscores only; the id keeps tools apart.
@@ -529,7 +587,7 @@ final class Hills: ObservableObject {
                 }
                 let toolName = String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64))
                 let where_ = server.connector == nil ? Words.t("远山 MCP") : Words.t("连接器")
-                tools.append(DeskTool(name: toolName, description: "（来自\(where_)「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }, approval: ask) { arguments in
+                let wrapped = DeskTool(name: toolName, description: "（来自\(where_)「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }, approval: ask) { arguments in
                     do {
                         let tunnelHost: Host?
                         if let tunnelHostId {
@@ -549,10 +607,16 @@ final class Hills: ObservableObject {
                     } catch {
                         return ToolOutput("「\(title)」出错：\(error.localizedDescription)", isError: true)
                     }
-                })
+                }
+                entries.append(DeferredMCPTools.Entry(
+                    stableID: toolName,
+                    serverID: serverId,
+                    serverName: title,
+                    tool: wrapped
+                ))
             }
         }
-        return tools
+        return entries
     }
 
     /// Runs a request with the service's credential: the token from its sign-in (renewed and tried once more

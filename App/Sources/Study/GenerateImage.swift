@@ -7,6 +7,8 @@ struct GenerateImage: AgentTool {
     let baseURL: String
     let model: String
     let apiKey: String?
+    var endpointKind: Endpoint.Kind = .openai
+    var customHeaders: [String: String] = [:]
 
     var spec: ToolSpec {
         ToolSpec(name: Self.name, description: "按用户的要求生成一张图片，保存到书案。成功后把工具给出的 Markdown 图片行原样写进回答。", parameters: [
@@ -26,10 +28,27 @@ struct GenerateImage: AgentTool {
         guard !prompt.isEmpty else { return failure("errors.imagePromptEmpty") }
         guard let apiKey, !apiKey.isEmpty else { return failure("errors.invalidApiKey") }
         let size = arguments["size"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let provider = OpenAIProvider(baseURL: baseURL, apiKey: apiKey)
+        let resolvedSize = size.isEmpty ? "1024x1024" : size
         let data: Data
         do {
-            data = try await provider.generateImage(model: model, prompt: prompt, size: size.isEmpty ? "1024x1024" : size)
+            if endpointKind.usesResponsesAPI {
+                let responses = OpenAIResponsesProvider(
+                    baseURL: baseURL,
+                    apiKey: apiKey,
+                    isCodex: endpointKind == .openaiCodex,
+                    customHeaders: customHeaders,
+                    fixedRoute: true
+                )
+                data = try await responses.generateImage(model: model, prompt: prompt, size: resolvedSize)
+            } else {
+                let provider = OpenAIProvider(
+                    baseURL: baseURL,
+                    apiKey: apiKey,
+                    fixedRoute: true,
+                    customHeaders: customHeaders
+                )
+                data = try await provider.generateImage(model: model, prompt: prompt, size: resolvedSize)
+            }
             try Task.checkCancellation()
         } catch is CancellationError {
             throw CancellationError()

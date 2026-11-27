@@ -33,6 +33,7 @@ actor ContextEstimateCache {
         var consentGeneration: UInt64
         var echoes: Bool
         var includesSignatures = false
+        var preserveNonToolReasoningTurns = false
         var toolsEnabled: Bool
         var tools: [ToolSpec]
         var prompt: String
@@ -75,7 +76,11 @@ actor ContextEstimateCache {
         var messageTokens = 0
         let protocolName = projection.recipient?.protocolKind ?? ""
         let rule = protocolName + (projection.includesSignatures ? ":signed" : projection.echoes ? ":echo" : ":plain")
-        for unit in ProtocolAtomicUnit.group(projection.messages) {
+            + (projection.preserveNonToolReasoningTurns ? ":nt" : "")
+        for unit in ProtocolAtomicUnit.group(
+            projection.messages,
+            preserveNonToolReasoningTurns: projection.preserveNonToolReasoningTurns
+        ) {
             for (offset, pair) in zip(unit.messages, unit.sourceIndices).enumerated() {
                 var message = pair.0
                 let source = pair.1
@@ -108,6 +113,20 @@ actor ContextEstimateCache {
                     var reasoning = projection.echoes ? Tokens.estimate(message.reasoning ?? "") : 0
                     if projection.includesSignatures, let signature = message.reasoningSignature, !signature.isEmpty {
                         reasoning = Tokens.estimate(message.reasoning ?? "") + Tokens.estimate(signature)
+                    }
+                    if let payloads = message.continuationPayloads, !payloads.isEmpty,
+                       let recipient = projection.recipient {
+                        let targetContract = EndpointContractKey(
+                            origin: recipient.canonicalOrigin,
+                            protocolKind: recipient.protocolKind,
+                            route: recipient.route,
+                            modelID: projection.base.model
+                        )
+                        let compatiblePayloads = payloads.filter { $0.isCompatible(with: targetContract) }
+                        if !compatiblePayloads.isEmpty {
+                            let payloadTokens = compatiblePayloads.reduce(0) { $0 + Tokens.estimate($1.opaqueData) }
+                            reasoning = max(reasoning, payloadTokens)
+                        }
                     }
                     let tools = message.toolCalls.reduce(0) { $0 + Tokens.estimate($1.name + $1.arguments) }
                     let images = described ? TeamModel.auxiliaryVisionOutputLimit
@@ -191,7 +210,8 @@ extension TeamModel {
         let chatOptions = options(key)
         let echoes = found?.endpoint.thinkingStyle.echoesReasoning ?? false
         let selection = chatOptions.effectiveThinkingSelection
-        let signedReasoning = found?.endpoint.kind.isAnthropic == true && !selection.isDefault && !selection.isExplicitOff
+        let signedReasoning = found?.endpoint.kind.isAnthropic == true && !selection.isExplicitOff
+        let preserveNonTool = (found?.endpoint.thinkingStyle == .deepseek) || (found?.endpoint.kind.usesResponsesAPI == true)
         estimate.model = found?.model ?? ""
         estimate.window = traits?.window ?? Tokens.window(for: estimate.model)
         let workplace = place(of: key)
@@ -213,6 +233,7 @@ extension TeamModel {
                   permittedImageCategories: permitted, describedImageCategories: permittedImageCategories(for: auxiliaryRecipient),
                   recipient: recipient, visionRecipient: auxiliaryRecipient, visionModel: auxiliary?.model,
                   consentGeneration: settings.outboundConsentGeneration, echoes: echoes, includesSignatures: signedReasoning,
+                  preserveNonToolReasoningTurns: preserveNonTool,
                   toolsEnabled: traits?.tools != false, tools: specs, prompt: prompt, base: estimate),
             chat: key
         )
