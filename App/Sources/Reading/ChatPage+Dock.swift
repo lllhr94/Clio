@@ -909,19 +909,16 @@ private struct ChatDockAreaView: View {
         VStack(spacing: Ink.Space.xs) {
             if let plan = team.plans[chat.key] {
                 let fallbackMax = chatViewportHeight > 0 ? max(160, chatViewportHeight * 0.38) : nil
-                let resolvedPlanMax: CGFloat?
-                let forcePlanCollapsed: Bool
-                switch cardBudget?.planCard {
-                case .expandable(let cap):
-                    resolvedPlanMax = cap
-                    forcePlanCollapsed = false
-                case .forcedCollapsedCapsule:
-                    resolvedPlanMax = nil
-                    forcePlanCollapsed = true
-                default:
-                    resolvedPlanMax = fallbackMax
-                    forcePlanCollapsed = false
-                }
+                let (resolvedPlanMax, forcePlanCollapsed): (CGFloat?, Bool) = {
+                    switch cardBudget?.planCard {
+                    case .expandable(let cap):
+                        return (cap, false)
+                    case .forcedCollapsedCapsule:
+                        return (nil, true)
+                    default:
+                        return (fallbackMax, false)
+                    }
+                }()
                 PlanCard(steps: plan, maxHeight: resolvedPlanMax, forceCollapsed: forcePlanCollapsed) {
                     team.clearPlan(chat.key)
                 }
