@@ -286,6 +286,7 @@ final class ClioAppPR1ATests: XCTestCase {
         let snap1 = try restoreBridge.revisionStore.commitWithJournal(
             CanonicalMemoryBook(
                 memories: [CanonicalMemoryItem(id: "m-snap1", text: "快照一保留记忆", at: 100)],
+                suppressedFlushHashes: [blockedExpHash],
                 tombstones: [
                     MemoryTombstone(
                         textSHA256: blockedExpHash,
@@ -294,7 +295,6 @@ final class ClioAppPR1ATests: XCTestCase {
                         reason: "user_delete"
                     ),
                 ],
-                suppressedFlushHashes: [blockedExpHash],
                 generation: 1
             ),
             snapshotReason: "manual",
@@ -317,7 +317,7 @@ final class ClioAppPR1ATests: XCTestCase {
         )
 
         let restored = try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
-        XCTAssertEqual(restored.book.memories.map(\.id), ["m-snap1"])
+        XCTAssertEqual(restored.book.memories.map(\Memory.id), ["m-snap1"])
         XCTAssertNotEqual(restored.book.storeEpoch, staleMainActorBook.storeEpoch)
         XCTAssertTrue(restoreBridge.tombstoneHashesSnapshot().contains(blockedExpHash))
         XCTAssertFalse(restoreBridge.revisionStore.hasPendingProjectionRebuild)
@@ -713,14 +713,14 @@ final class ClioAppPR1ATests: XCTestCase {
         let backupToolResult = LockedBox<String?>(nil)
         team.turnProviderOverrideForTesting = { _, model, source in
             if model == "gpt-4o-primary" {
-                return CapturingMockModelProvider { _ in
+                return CapturingMockModelProvider(customStream: { _ in
                     AsyncThrowingStream { continuation in
                         continuation.finish(throwing: ProviderError(status: 404, "primary unavailable"))
                     }
-                }
+                })
             }
             if model == "gpt-4o-backup" {
-                return CapturingMockModelProvider { req in
+                return CapturingMockModelProvider(customStream: { req in
                     backupCalls.mutate { $0.append((model: model, source: source.rawValue)) }
                     return AsyncThrowingStream { continuation in
                         if let toolReply = req.messages.last(where: { $0.role == .tool }) {
@@ -738,12 +738,12 @@ final class ClioAppPR1ATests: XCTestCase {
                             continuation.finish()
                         }
                     }
-                }
+                })
             }
-            return CapturingMockModelProvider(replyText: "收到") { req in
+            return CapturingMockModelProvider(replyText: "收到", onRequest: { req in
                 let lastUser = req.messages.last(where: { $0.role == .user })?.text ?? ""
                 providerTurns.mutate { $0.append((source: source.rawValue, userText: lastUser)) }
-            }
+            })
         }
         team.phase = .ready
         defer {
