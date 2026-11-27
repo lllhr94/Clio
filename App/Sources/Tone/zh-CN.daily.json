@@ -1543,5 +1543,40 @@
     "stopAllIncludingRemote": "停主回复、本地及远端后台任务",
     "stopScopeNotice": "当前还有后台子任务在运行，请选择停止范围。",
     "stopRemoteNotice": "当前有运行在远端主机的后台任务，可选择仅停本机或一并终止远端任务。"
+  },
+  "casual": {
+    "trackFormal": "对话",
+    "trackCasual": "闲谈",
+    "openAction": "进入闲谈",
+    "emptyHint": "和 %@ 随便聊聊。闲谈不会自动写入记忆，适合日常随口说几句。",
+    "inputPlaceholder": "和 %@ 随便说两句…",
+    "mergingHint": "正在合并连发…",
+    "reconcileTitle": "上次有一条闲谈状态未确认",
+    "reconcileResend": "重新发送",
+    "reconcileDiscard": "丢弃",
+    "promoteMemoryCandidate": "收入记忆候选",
+    "promoteMemoryTitle": "审阅记忆候选",
+    "promoteMemoryPlaceholder": "编辑要保存的记忆内容",
+    "promoteMemoryMessage": "确认后才会保存到记忆库，闲谈本身不会自动改写记忆。",
+    "promoteMemoryConfirm": "保存",
+    "handoffAction": "带入正式对话",
+    "handoffTitle": "转入正式对话处理？",
+    "handoffConfirm": "带给 %@ 正式处理",
+    "handoffStay": "留在闲谈",
+    "stickersTitle": "自定义表情",
+    "stickersEmpty": "还没有导入表情包。点击下方从相册导入自定义表情，仅限闲谈使用。",
+    "importSticker": "从相册导入表情",
+    "defaultStickerPack": "我的表情"
+  },
+  "draftTransfer": {
+    "moveAction": "搬运草稿到…",
+    "pickerTitle": "搬运草稿到",
+    "noOtherChats": "暂时没有其他可搬运的目标对话。",
+    "collisionTitle": "目标对话已有草稿",
+    "collisionMessage": "「%@」里已有未发送草稿，要如何处理？",
+    "collisionAppend": "追加到末尾",
+    "collisionReplace": "替换原草稿",
+    "movedToast": "已将草稿搬运到 %@",
+    "undoConflicted": "草稿在搬运后已被编辑，已跳过撤销。"
   }
 }

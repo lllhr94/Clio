@@ -89,6 +89,7 @@ extension ChatPage {
                 listProxy.controller?.updateTopBarHitRect(slot, rect: rect)
             },
             headerHeight: $headerHeight,
+            trackMode: $trackMode,
             detailOpen: $detailOpen,
             cardOpen: $cardOpen,
             roaming: $roaming,
@@ -215,6 +216,7 @@ struct ChatTopBarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var headerHeight: CGFloat
+    @Binding var trackMode: ChatTrackMode
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
     @Binding var roaming: Bool
@@ -319,6 +321,7 @@ struct ChatTopBarView: View {
             isTyping: isTyping,
             isImmersiveCollapsed: isImmersiveCollapsed,
             onDismissTyping: onDismissTyping,
+            trackMode: $trackMode,
             detailOpen: $detailOpen,
             cardOpen: $cardOpen
         )
@@ -393,6 +396,7 @@ private struct ChatCenteredIdentityPill: View {
     let isImmersiveCollapsed: Bool
     let onDismissTyping: () -> Void
 
+    @Binding var trackMode: ChatTrackMode
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
     @State private var showCompanionHub = false
@@ -460,6 +464,7 @@ private struct ChatCenteredIdentityPill: View {
                 isTyping: isTyping,
                 onDismissTyping: onDismissTyping,
                 isPresented: $showCompanionHub,
+                trackMode: $trackMode,
                 detailOpen: $detailOpen,
                 cardOpen: $cardOpen
             )
@@ -568,6 +573,7 @@ private struct ChatCompanionHubPopover: View {
     let onDismissTyping: () -> Void
 
     @Binding var isPresented: Bool
+    @Binding var trackMode: ChatTrackMode
     @Binding var detailOpen: Bool
     @Binding var cardOpen: Bool
 
@@ -698,6 +704,21 @@ private struct ChatCompanionHubPopover: View {
 
     private var rootView: some View {
         VStack(spacing: 0) {
+            if !isRoom {
+                SlidingCapsuleControl(
+                    selection: $trackMode,
+                    options: ChatTrackMode.allCases,
+                    compact: true
+                ) { option in
+                    L.t(option.titleKey)
+                }
+                .padding(.horizontal, Ink.Space.m)
+                .padding(.vertical, Ink.Space.s)
+                .onChange(of: trackMode) { _, _ in
+                    isPresented = false
+                }
+                hairlineDivider
+            }
             rootHeaderSection
             hairlineDivider
             rootModelRowSection
