@@ -482,18 +482,19 @@ struct SearchHistoryTool: AgentTool {
     }
 }
 
-/// Asks another companion to do part of the work. It works in its own conversation and its answer comes back.
+/// Asks another companion to do part of the work. Supports non-blocking async subtasks (default) and synchronous wait.
 struct DelegateTool: AgentTool {
     let others: [(name: String, role: String)]
-    let ask: @Sendable (String, String) async -> ToolOutput
+    let ask: @Sendable (String, String, Bool) async -> ToolOutput
 
     var spec: ToolSpec {
         let list = others.map { $0.role.isEmpty ? $0.name : "\($0.name)（\($0.role)）" }.joined(separator: "、")
-        return ToolSpec(name: "ask_companion", description: "请团队里另一位旅伴帮忙做一件事，等它做完把结果交回给你。适合交给更擅长的那位（查资料、写稿、算账……），或者一件事里能分出去的一块。它在自己的絮语里干活，用户看得到。请它时把要做的事、要的结果写完整，它看不到你们的对话。能请的有：\(list)。", parameters: [
+        return ToolSpec(name: "ask_companion", description: "请团队里另一位旅伴帮忙做一件事。默认以异步后台子任务派发（mode: async），不阻塞当前对话，完成后自动把结果回传；若必须等它当场交卷再继续，可设 mode: sync。请它时把要做的事、要的结果写完整。能请的有：\(list)。", parameters: [
             "type": "object",
             "properties": [
                 "name": ["type": "string", "description": "请谁，写名字"],
                 "task": ["type": "string", "description": "请它做什么：背景、要求、要交回什么"],
+                "mode": ["type": "string", "enum": ["async", "sync"], "description": "async（默认，异步后台执行）或 sync（同步等待）"],
             ],
             "required": ["name", "task"],
         ])
@@ -502,7 +503,9 @@ struct DelegateTool: AgentTool {
     func label(for arguments: JSONValue) -> String { "请\(arguments["name"]?.string ?? "旅伴")帮忙" }
 
     func run(_ arguments: JSONValue) async throws -> ToolOutput {
-        await ask(arguments["name"]?.string ?? "", arguments["task"]?.string ?? "")
+        let mode = arguments["mode"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "async"
+        let runAsync = mode != "sync"
+        return await ask(arguments["name"]?.string ?? "", arguments["task"]?.string ?? "", runAsync)
     }
 }
 
@@ -557,12 +560,57 @@ enum Notify {
 
     /// The kind of notification that can be answered right there: 同意 / 不同意.
     static let approvalCategory = "clio.approval"
+    /// Isolated notification category for non-secret `ask_user` clarifying questions (never mixed with `clio.approval`).
+    static let questionCategory = "clio.question"
 
     static func registerCategories() {
         let allow = UNNotificationAction(identifier: "allow", title: "同意", options: [.authenticationRequired])
         let deny = UNNotificationAction(identifier: "deny", title: "不同意", options: [.destructive])
-        let category = UNNotificationCategory(identifier: approvalCategory, actions: [allow, deny], intentIdentifiers: [], options: [])
-        UNUserNotificationCenter.current().setNotificationCategories([category])
+        let approvalCat = UNNotificationCategory(identifier: approvalCategory, actions: [allow, deny], intentIdentifiers: [], options: [])
+
+        let replyAction = UNTextInputNotificationAction(
+            identifier: "reply_question",
+            title: "回复",
+            options: [.authenticationRequired],
+            textInputButtonTitle: "发送",
+            textInputPlaceholder: "输入你的选择或回答…"
+        )
+        let option0 = UNNotificationAction(identifier: "option_0", title: "选项 1", options: [.authenticationRequired])
+        let option1 = UNNotificationAction(identifier: "option_1", title: "选项 2", options: [.authenticationRequired])
+        let questionCat = UNNotificationCategory(
+            identifier: questionCategory,
+            actions: [replyAction, option0, option1],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([approvalCat, questionCat])
+    }
+
+    /// Posts a persisted `ask_user` notification. Vault/secret/forced prompts never attach background reply actions
+    /// and show only a minimal lockscreen summary.
+    static func question(_ question: PendingQuestion) {
+        let content = UNMutableNotificationContent()
+        content.title = "\(question.botName) · 等待你的回答"
+        if question.requiresForeground {
+            content.body = "有一项需要回到前台确认的填写项。"
+        } else {
+            let trimmed = question.promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+            var body = String((trimmed.isEmpty ? question.title : trimmed).prefix(140))
+            if !question.options.isEmpty {
+                let preview = question.options.prefix(2).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: " / ")
+                body += "\n\(preview)"
+            }
+            content.body = body
+            content.categoryIdentifier = questionCategory
+        }
+        content.sound = .default
+        content.userInfo = [
+            "chat": question.chatKey,
+            "question": question.questionID,
+            "options": Array(question.options.prefix(2)),
+        ]
+        content.interruptionLevel = .timeSensitive
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: question.questionID, content: content, trigger: nil))
     }
 
     /// A companion waits for a yes. Asks that came after reading the web open the app instead, so the details are seen first.

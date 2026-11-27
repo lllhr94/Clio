@@ -577,6 +577,7 @@ struct Desk: View {
             switch action {
             case .open(let chat): openChat(chat)
             case .answer(let id, let allow): team.answerFromNotification(id, allow: allow)
+            case .answerQuestion: team.subtasks.drainPendingQuestionResumes(team: team)
             }
         }
     }

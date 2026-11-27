@@ -252,7 +252,7 @@ extension Asker.Field {
 // MARK: Tools
 
 enum SecretTools {
-    static func all(botName: String, chat: String) -> [AgentTool] {
+    static func all(botName: String, chat: String, displayChat: String? = nil, subtasks: SubtaskManager? = nil) -> [AgentTool] {
         [
             DeskTool(name: "ask_user", description: """
             递一张小笺请用户选择或填写信息：支持单选（single）、多选（multi）、自由输入（text）以及多字段表单（fields）。用户填好你才拿到结果。
@@ -330,8 +330,38 @@ enum SecretTools {
                 guard !prompt.requiresVault || !form.inline else {
                     return ToolOutput("安全路由校验未通过。", isError: true)
                 }
+                let persistedQuestionID = form.id.uuidString.lowercased()
+                let requiresForeground = prompt.requiresVault || fields.contains(where: \.secret) || fields.count > 1
+                let primaryField = fields.first
+                let userFacingChat = displayChat ?? chat
+                let subtaskThread = (displayChat != nil && displayChat != chat) ? chat : nil
+                if let subtasks, !requiresForeground, let primaryField {
+                    let savedQuestion = await MainActor.run {
+                        subtasks.persistQuestion(
+                            questionID: persistedQuestionID,
+                            formID: form.id,
+                            chatKey: userFacingChat,
+                            threadID: subtaskThread,
+                            botName: botName,
+                            title: prompt.title,
+                            promptText: primaryField.label,
+                            fieldKey: primaryField.key,
+                            options: primaryField.choices,
+                            requiresForeground: false
+                        )
+                    }
+                    if let savedQuestion, await MainActor.run(body: { UIApplication.shared.applicationState != .active }) {
+                        Notify.question(savedQuestion)
+                    }
+                }
                 guard let values = await Asker.shared.ask(form) else {
+                    if let subtasks, !requiresForeground {
+                        await MainActor.run { subtasks.markLiveQuestionSettled(persistedQuestionID, cancelled: true) }
+                    }
                     return ToolOutput("用户把笺收起来了，没有填。", isError: true)
+                }
+                if let subtasks, !requiresForeground {
+                    await MainActor.run { subtasks.markLiveQuestionSettled(persistedQuestionID, cancelled: false) }
                 }
                 switch AskUserRules.formatResult(prompt: prompt, rawValues: values) {
                 case .failure(let error):

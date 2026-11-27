@@ -588,15 +588,47 @@ struct ChatBottomStackView<FindBar: View>: View {
         }
         .animation(petDockMotion, value: finding)
         .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
-            Button(L.t("chat.stopNow"), role: .destructive) {
-                Haptics.lock()
-                if team.workDetail(for: chat.key).words != nil || chat.hasStreaming {
-                    chat.stop()
+            let activeSubs = team.subtasks.activeThreads(for: chat.key)
+            let hasRemote = team.subtasks.hasActiveRemoteHillsTask(for: chat.key)
+            if activeSubs.isEmpty {
+                Button(L.t("chat.stopNow"), role: .destructive) {
+                    Haptics.lock()
+                    if team.workDetail(for: chat.key).words != nil || chat.hasStreaming {
+                        chat.stop()
+                    }
+                }
+            } else {
+                Button(L.t("subtask.stopMainOnly"), role: .destructive) {
+                    Haptics.lock()
+                    if team.workDetail(for: chat.key).words != nil || chat.hasStreaming {
+                        chat.stop()
+                    }
+                }
+                if hasRemote {
+                    Button(L.t("subtask.stopLocalOnly"), role: .destructive) {
+                        Haptics.lock()
+                        team.stopAll(chat.key, includeRemoteHills: false)
+                    }
+                    Button(L.t("subtask.stopAllIncludingRemote"), role: .destructive) {
+                        Haptics.lock()
+                        team.stopAll(chat.key, includeRemoteHills: true)
+                    }
+                } else {
+                    Button(L.t("subtask.stopAllWithSubtasks"), role: .destructive) {
+                        Haptics.lock()
+                        team.stopAll(chat.key, includeRemoteHills: true)
+                    }
                 }
             }
             Button(L.t("actions.cancel"), role: .cancel) {}
         } message: {
-            Text(L.t("chat.stopAskNote"))
+            if team.subtasks.hasActiveRemoteHillsTask(for: chat.key) {
+                Text(L.t("subtask.stopRemoteNotice"))
+            } else if !team.subtasks.activeThreads(for: chat.key).isEmpty {
+                Text(L.t("subtask.stopScopeNotice"))
+            } else {
+                Text(L.t("chat.stopAskNote"))
+            }
         }
     }
 }
@@ -905,8 +937,18 @@ private struct ChatDockAreaView: View {
         )
     }
 
+    @State private var showingSubtasks = false
+
     var body: some View {
+        let visibleSubtasks = team.subtasks.threads(for: chat.key).filter {
+            $0.status.isActive || $0.status == .interrupted || $0.status == .interruptedNeedsReconcile
+        }
         VStack(spacing: Ink.Space.xs) {
+            if !visibleSubtasks.isEmpty {
+                SubtaskCapsuleCard(threads: visibleSubtasks) {
+                    showingSubtasks = true
+                }
+            }
             if team.isPlanModeActive(for: chat.key) {
                 HStack(spacing: Ink.Space.xs) {
                     Image(systemName: "map")
@@ -971,6 +1013,10 @@ private struct ChatDockAreaView: View {
             dockContent
         }
         .animation(petDockMotion, value: waiting?.id)
+        .sheet(isPresented: $showingSubtasks) {
+            SubtaskThreadSheet(team: team, subtasks: team.subtasks, parentChat: chat.key)
+                .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
+        }
     }
 
     @ViewBuilder

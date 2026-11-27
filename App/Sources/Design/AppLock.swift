@@ -41,8 +41,13 @@ struct AppLock: ViewModifier {
             // The cover is a window of its own above everything, sheets included: drawn as an overlay it sat under
             // any open sheet (信匣 with a password shown, say), which then showed in the app switcher and stayed usable.
             .onChange(of: "\(covering)|\(locked)|\(asking)|\(on)", initial: true) {
-                Self.unlockedInActiveSession = !on || (!locked && phase == .active)
+                let wasUnlocked = Self.unlockedInActiveSession
+                let nowUnlocked = !on || (!locked && phase == .active)
+                Self.unlockedInActiveSession = nowUnlocked
                 if covering { LockCurtain.shared.show(AnyView(cover)) } else { LockCurtain.shared.hide() }
+                if !wasUnlocked && nowUnlocked {
+                    NotificationCenter.default.post(name: .clioAppDidUnlock, object: nil)
+                }
             }
             .onChange(of: phase) { _, now in
                 if now == .background, on {
@@ -101,6 +106,10 @@ struct AppLock: ViewModifier {
 
 extension View {
     func appLock() -> some View { modifier(AppLock()) }
+}
+
+extension Notification.Name {
+    static let clioAppDidUnlock = Notification.Name("clio.appDidUnlock")
 }
 
 /// The window the lock cover is drawn in, above alerts and sheets.

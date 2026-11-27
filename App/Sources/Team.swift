@@ -114,6 +114,7 @@ final class TeamModel: ObservableObject {
     var livePromptRefreshers: [UUID: MemoryRecallPromptRefresher] = [:]
     let liveChatMemoryGate = LiveChatMemoryGate()
     let livePlanModeLedger = LivePlanModeLedger()
+    let subtasks = SubtaskManager()
     var memoryWriteGuard: MemoryWriteGuard = .init()
     let contextEstimateCache = ContextEstimateCache()
     @Published var compressionFailures: [String: String] = [:]
@@ -184,6 +185,8 @@ final class TeamModel: ObservableObject {
     let approvalQueue = PendingApprovalQueue()
     let approvalReceipts = ApprovalReceiptBook()
     let hostBindings = HostBindingBook()
+    /// Ephemeral workplace overrides bound to non-reusable async subtask execution keys (`attempt-*`).
+    var ephemeralPlaces: [String: WorkPlace] = [:]
     private var hostBindingObserver: AnyCancellable?
     private var mountedFoldersObserver: AnyCancellable?
     var feeds: [UUID: (key: String, handler: (TurnEvent) -> Void)] = [:]
@@ -348,6 +351,7 @@ final class TeamModel: ObservableObject {
         memoryWriteGuard = MemoryWriteGuard(modeAllowsWrite: { key in
             !planLedger.isRestricted(key)
         })
+        subtasks.bind(to: self)
         hostBindingObserver = Hills.shared.hostBindingChanges.sink { [weak self] change in
             guard let self else { return }
             for key in self.hostBindings.replace(change.old, with: change.new) {
@@ -1315,16 +1319,26 @@ final class TeamModel: ObservableObject {
         if !keepSendNow { sendQueuedNow.remove(key) }
         if runs[key] != nil { Asker.shared.cancel(chat: key) }
         var executionChats: Set<String> = [key]
-        for approval in approvals where approval.chat == key {
+        // Only cancel approvals owned by the main turn (preserve independent async subtask approvals).
+        let isMainTurnApproval: (Approval) -> Bool = { approval in
+            approval.chat == key && (approval.executionChat == nil || approval.executionChat == key)
+        }
+        for approval in approvals where isMainTurnApproval(approval) {
             if let authChat = approval.authChat { executionChats.insert(authChat) }
             approvalQueue.cancel(id: approval.id)
         }
         for execChat in executionChats {
             approvalReceipts.clear(executionChat: execChat)
         }
-        withAnimation(.smooth) { approvals.removeAll { $0.chat == key } }
+        withAnimation(.smooth) { approvals.removeAll(where: isMainTurnApproval) }
         if runs[key] != nil { browser.cancelHandoff(for: key) }
         runs[key]?.task.cancel()
+    }
+
+    /// Stops both the active main reply and background subtasks for `key`, respecting remote Hills preference.
+    func stopAll(_ key: String, includeRemoteHills: Bool = true) {
+        stop(key)
+        subtasks.stopSubtasks(for: key, includeRemoteHills: includeRemoteHills, team: self)
     }
 
     func start(_ key: String, userInitiated: Bool = true, experienceSource: ExperienceWriteSource = .mainChat) {
@@ -2465,7 +2479,7 @@ final class TeamModel: ObservableObject {
     /// Read-only snapshots for the usage sheet, scoped to the open conversation.
     func modelInputs(_ key: String) -> [ModelInput] { modelInputLog.requests(in: key) }
 
-    private func recordingProvider(_ provider: any ModelProvider, chat: String, refresher: MemoryRecallPromptRefresher) -> LivePromptProvider {
+    func recordingProvider(_ provider: any ModelProvider, chat: String, refresher: MemoryRecallPromptRefresher) -> LivePromptProvider {
         let epoch = epochs[chat, default: 0]
         let session = modelInputLog.session
         return LivePromptProvider(upstream: provider, refresher: refresher) { [weak self] input in
@@ -2519,7 +2533,8 @@ final class TeamModel: ObservableObject {
         displayChat: String? = nil,
         workplace: WorkPlace? = nil,
         imageAPIKey: String? = nil,
-        experienceSource: ExperienceWriteSource = .mainChat
+        experienceSource: ExperienceWriteSource = .mainChat,
+        subtaskSideEffectContext: (threadID: String, attemptID: String, store: TaskStore)? = nil
     ) -> [AgentTool] {
         let botId = bot.id
         let approvalChat = displayChat ?? key
@@ -2527,8 +2542,18 @@ final class TeamModel: ObservableObject {
         // Asking another companion: from one's own conversation only, and one level deep (a helper does not pass work on).
         let others = bots.filter { $0.id != botId }
         if !helping, !key.hasPrefix("room-"), !others.isEmpty {
-            all.append(DelegateTool(others: others.map { ($0.name, $0.role ?? "") }) { [weak self] name, task in
-                await self?.delegate(from: botId, to: name, task: task, chat: key) ?? ToolOutput("没办成。", isError: true)
+            all.append(DelegateTool(others: others.map { ($0.name, $0.role ?? "") }) { [weak self] name, task, runAsync in
+                guard let self else { return ToolOutput("没办成。", isError: true) }
+                if runAsync {
+                    return await self.subtasks.launchAsyncSubtask(
+                        from: botId,
+                        to: name,
+                        task: task,
+                        parentChat: key,
+                        team: self
+                    )
+                }
+                return await self.delegate(from: botId, to: name, task: task, chat: key)
             })
         }
         all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
@@ -2621,7 +2646,7 @@ final class TeamModel: ObservableObject {
         all += Hills.shared.sshTools()
         all += GoogleTools.all()
         all.append(Self.planTool(key: key, team: self))
-        all += SecretTools.all(botName: bot.name, chat: key)
+        all += SecretTools.all(botName: bot.name, chat: key, displayChat: approvalChat, subtasks: subtasks)
         all += HealthTools.all()
         var grants: [String: Grant] = [:]
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
@@ -2636,7 +2661,15 @@ final class TeamModel: ObservableObject {
         let isPlanActive: @Sendable () -> Bool = { planLedger.isRestricted(key) }
         // Keep TaintGuard inside Grant.gate so turning a grant off mid-turn immediately blocks execution without prompting.
         func wrap(_ rawTools: [AgentTool]) -> [AgentTool] {
-            let guarded = rawTools.map {
+            let instrumented: [AgentTool]
+            if let ctx = subtaskSideEffectContext {
+                instrumented = rawTools.map {
+                    SideEffectRecordingTool(inner: $0, threadID: ctx.threadID, attemptID: ctx.attemptID, store: ctx.store)
+                }
+            } else {
+                instrumented = rawTools
+            }
+            let guarded = instrumented.map {
                 TaintGuard(
                     $0,
                     key: key,

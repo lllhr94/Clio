@@ -1463,5 +1463,33 @@
     "modeSubtitle": "只读勘察并先拟步骤，确认后再落手",
     "enterMenu": "进入规划模式（只看不动）",
     "exitMenu": "退出规划模式"
+  },
+  "subtask": {
+    "sheetTitle": "后台分务",
+    "empty": "这段絮语下暂无后台分务记录。",
+    "capsuleActive": "%lld 项后台分务进行中",
+    "capsuleNeedsReconcile": "%lld 项中断分务待核对",
+    "capsuleInterrupted": "%lld 项中断分务可重试",
+    "capsuleActiveAndReconcile": "%lld 项进行中 · %lld 项待核对",
+    "statusRunning": "进行中",
+    "statusWaiting": "候示",
+    "statusDone": "已毕",
+    "statusFailed": "未成",
+    "statusCancelled": "已止",
+    "statusInterrupted": "已中断",
+    "statusNeedsReconcile": "待核对",
+    "pendingEffectsHeader": "中断前落笔的外部或文件动作：",
+    "cancelOne": "止此分务",
+    "retryClean": "重新续办",
+    "reconcileAndRetry": "核对后重办",
+    "reconcileConfirmTitle": "确认已核对外部或文件变动？",
+    "reconcileConfirmBody": "此分务中断前已有待落实的写入或外部动作，无法自动判断是否已生效。请先检视文件或远端情形，确认无虞后再重办。",
+    "reconcileConfirmAction": "已核对，重办分务",
+    "stopMainOnly": "仅止当前主回复",
+    "stopAllWithSubtasks": "止主回复与全部分务",
+    "stopLocalOnly": "止主回复与本机分务（留远端）",
+    "stopAllIncludingRemote": "止主回复、本机及远端后台分务",
+    "stopScopeNotice": "当前尚有后台分务在办，请选择停止范围。",
+    "stopRemoteNotice": "当前有运行在远端主机的后台分务，可选择仅止本机或一并止远端。"
   }
 }
