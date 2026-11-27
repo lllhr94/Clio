@@ -244,7 +244,7 @@ extension TeamModel {
         guard let source = Balance.source(baseURL: endpoint.baseURL) else { throw TeamError(message: "\(endpoint.name) 不提供余额查询。") }
         guard let secret = await readAPIKey(for: endpoint.id), !secret.isEmpty else { throw TeamError(message: "\(endpoint.name) 的密钥找不到了。") }
         var request = URLRequest(url: source.url, timeoutInterval: 15)
-        request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+        request.setValue(source.authorizationValue(for: secret), forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0

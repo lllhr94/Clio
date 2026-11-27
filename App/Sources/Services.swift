@@ -19,6 +19,10 @@ extension Endpoint {
 /// A model service Clio knows how to reach: its address, where its keys are made, and how it spells thinking.
 /// Anything not listed still works through 自定义, as long as it speaks the OpenAI or the Claude way.
 struct Service: Identifiable, Equatable {
+    enum Category: CaseIterable, Hashable {
+        case recommended, codingPlan, customAndLocal
+    }
+
     struct Address: Equatable {
         var label: String
         var url: String
@@ -49,12 +53,17 @@ struct Service: Identifiable, Equatable {
     /// Runs on the person's own computer: no key needed.
     var keyless = false
 
+    var category: Category { custom ? .customAndLocal : group }
+    var group: Category = .recommended
+
     var baseURL: String { addresses.first?.url ?? "" }
 
     private static let knownDomains: [String: String] = [
         "deepseek": "deepseek.com", "kimi": "kimi.com", "qwen": "tongyi.aliyun.com", "glm": "bigmodel.cn",
         "doubao": "doubao.com", "siliconflow": "siliconflow.cn", "minimax": "minimaxi.com", "openai": "openai.com",
         "claude": "claude.ai", "gemini": "gemini.google.com", "grok": "grok.com", "openrouter": "openrouter.ai",
+        "zhipu-coding": "bigmodel.cn", "minimax-coding": "minimaxi.com", "stepfun": "stepfun.com",
+        "modelscope": "modelscope.cn", "opencode-go": "opencode.ai", "aihubmix": "aihubmix.com", "kimi-code": "kimi.com",
     ]
 
     /// The maker's site, for its icon (see `BrandIcon`).
@@ -120,6 +129,37 @@ struct Service: Identifiable, Equatable {
                 addresses: [Address(label: "官方", url: "https://openrouter.ai/api/v1")],
                 keyPage: "https://openrouter.ai/settings/keys", style: .openrouter,
                 suggested: ["deepseek/deepseek-v4.1-flash", "anthropic/claude-sonnet-4.6", "google/gemini-3-flash"], many: true),
+        Service(id: "zhipu-coding", name: "智谱 GLM Coding Plan", note: "智谱与 Z.ai 编程套餐", kind: .openai,
+                addresses: [Address(label: "国内", url: "https://open.bigmodel.cn/api/coding/paas/v4"),
+                            Address(label: "海外 Z.ai", url: "https://api.z.ai/api/coding/paas/v4")],
+                keyPage: "https://open.bigmodel.cn/usercenter/apikeys", style: .glm,
+                suggested: ["glm-5.3", "glm-5.3-flash"], group: .codingPlan),
+        Service(id: "minimax-coding", name: "MiniMax Coding Plan", note: "使用 MiniMax 订阅额度", kind: .openai,
+                addresses: [Address(label: "国内", url: "https://api.minimaxi.com/v1"),
+                            Address(label: "海外", url: "https://api.minimax.io/v1")],
+                keyPage: "https://platform.minimaxi.com/user-center/basic-information/interface-key", style: .minimax,
+                suggested: ["MiniMax-M3", "MiniMax-M3.1-Flash"], group: .codingPlan),
+        Service(id: "stepfun", name: "阶跃星辰", note: "Step 系列模型", kind: .openai,
+                addresses: [Address(label: "官方", url: "https://api.stepfun.com/v1")],
+                keyPage: "https://platform.stepfun.com/", style: .effort,
+                suggested: ["step-3.5-flash"], group: .codingPlan),
+        Service(id: "modelscope", name: "魔搭 ModelScope", note: "魔搭模型推理与每日额度", kind: .openai,
+                addresses: [Address(label: "官方", url: "https://api-inference.modelscope.cn/v1")],
+                keyPage: "https://modelscope.cn/my/myaccesstoken", style: .qwen,
+                suggested: [], many: true, group: .codingPlan),
+        Service(id: "opencode-go", name: "OpenCode Go", note: "OpenCode 编程订阅", kind: .openai,
+                addresses: [Address(label: "官方", url: "https://opencode.ai/inference/go/openai/v1")],
+                keyPage: "https://opencode.ai/console/go", style: .effort,
+                suggested: ["kimi-k3"], many: true, group: .codingPlan),
+        Service(id: "aihubmix", name: "AiHubMix", note: "用一个密钥连接多家模型", kind: .openai,
+                addresses: [Address(label: "官方", url: "https://aihubmix.com/v1")],
+                keyPage: "https://aihubmix.com/", style: .effort,
+                suggested: [], many: true, group: .codingPlan),
+        Service(id: "kimi-code", name: "Kimi Code", note: "使用 Kimi Code 订阅额度", kind: .openai,
+                addresses: [Address(label: "国内", url: "https://api.kimi.com/coding/v1"),
+                            Address(label: "海外", url: "https://api.kimi.ai/coding/v1")],
+                keyPage: "https://www.kimi.com/code/console", style: .kimi,
+                suggested: ["k3", "k3-256k", "kimi-for-coding"], group: .codingPlan),
         Service(id: "local", name: "自己电脑上的模型", note: "Ollama、LM Studio；手机和电脑连同一个 Wi-Fi", kind: .openai,
                 addresses: [Address(label: "", url: "")], keyPage: nil, style: .effort,
                 suggested: [], custom: true, keyless: true),
@@ -155,6 +195,9 @@ struct Service: Identifiable, Equatable {
         if let known = named(endpoint.service) { return known }
         if let known = named(endpoint.id), !known.custom { return known }
         guard let host = URL(string: endpoint.baseURL)?.host()?.lowercased(), !host.isEmpty else { return nil }
+        if host == "opencode.ai", URLComponents(string: endpoint.baseURL)?.path.hasPrefix("/inference/go/") != true {
+            return nil
+        }
         return byHost[host]
     }
 

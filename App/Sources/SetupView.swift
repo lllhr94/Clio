@@ -1,5 +1,6 @@
 import AgentKit
 import Craft
+import Foundation
 import Observation
 import SwiftUI
 
@@ -7,7 +8,11 @@ import SwiftUI
 @Observable
 private final class SetupDraft {
     var key = ""
-    var baseURL = ""
+    var baseURL = "" {
+        didSet {
+            if EndpointAddressPolicy.rawOrigin(oldValue) != EndpointAddressPolicy.rawOrigin(baseURL) { key = "" }
+        }
+    }
     var name = ""
     var modelName = ""
 
@@ -30,11 +35,23 @@ struct SetupView: View {
     var welcomeOnly = false
     var onDone: () -> Void
 
+    private let preset: Service?
+    @State private var saveTask: Task<Void, Never>?
+
+    init(team: TeamModel, first: Bool = false, welcomeOnly: Bool = false, preset: Service? = nil, onDone: @escaping () -> Void) {
+        self.team = team
+        self.first = first
+        self.welcomeOnly = welcomeOnly
+        self.preset = preset
+        self.onDone = onDone
+        _choice = State(initialValue: preset ?? Service.catalog[0])
+    }
+
     private enum Step { case welcome, service, done }
 
     @Environment(\.openURL) private var openURL
     @State private var step: Step = .service
-    @State private var choice = Service.catalog[0]
+    @State private var choice: Service
     @State private var region = 0
     @State private var draft = SetupDraft()
     @State private var busy = false
@@ -64,6 +81,7 @@ struct SetupView: View {
         .onGeometryChange(for: CGSize.self) { $0.size } action: { onboardingSize = $0 }
         .animation(Ink.Motion.unfold, value: step)
         .onAppear { step = first && !UserDefaults.standard.bool(forKey: Self.introSeen) ? .welcome : .service }
+        .onDisappear { saveTask?.cancel() }
     }
 
     // MARK: Welcome: four pages, then the service
@@ -186,7 +204,7 @@ struct SetupView: View {
                     draft: draft,
                     choice: choice,
                     region: region,
-                    loadCatalog: { try await loadCatalog(for: $0, secret: $1) },
+                    loadCatalog: { try await ServiceOnboardingEngine.loadCatalog(for: $0, secret: $1) },
                     onFetching: { fetching = $0 },
                     onResult: { result in
                         fetched = result.fetched
@@ -205,36 +223,19 @@ struct SetupView: View {
     private var serviceBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Ink.Space.xl) {
-                HStack(alignment: .center) {
-                    VStack(alignment: .leading, spacing: Ink.Space.xs) {
-                        Text(first ? L.t("settings.firstModel") : L.t("settings.addModelService")).font(Ink.title).foregroundStyle(Ink.ink)
-                        Text(L.t("settings.moreModelServices")).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
-                    }
-                    Spacer()
-                    if !first {
-                        Button {
-                            Haptics.light()
-                            onDone()
-                        } label: {
-                            Text(L.t("actions.cancel")).font(Ink.label).foregroundStyle(Ink.accent)
-                        }
-                    }
+                if preset == nil {
+                    serviceHeading
                 }
-
-                servicePicker
-                SetupKeyField(draft: draft, choice: choice, keyFocused: $keyFocused, helpURL: helpURL) {
-                    openURL($0)
+                Group {
+                    servicePicker
+                    SetupKeyField(draft: draft, choice: choice, keyFocused: $keyFocused, helpURL: helpURL) {
+                        openURL($0)
+                    }
+                    modelPicker
                 }
-                modelPicker
+                .disabled(busy)
                 adviceCard
-                SetupConnectButton(
-                    draft: draft,
-                    choice: choice,
-                    fetched: fetched,
-                    pickedCount: picked.count,
-                    busy: busy,
-                    connect: connect
-                )
+                SetupConnectButton(draft: draft, choice: choice, fetched: fetched, pickedCount: picked.count, busy: busy, connect: connect)
             }
             .padding(.horizontal, Ink.Space.page)
             .padding(.vertical, Ink.Space.xl)
@@ -243,21 +244,44 @@ struct SetupView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .scrollIndicators(.hidden)
+        .onChange(of: draft.key) { clearCatalog() }
+        .onChange(of: draft.baseURL) { clearCatalog() }
+    }
+
+    private var serviceHeading: some View {
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: Ink.Space.xs) {
+                Text(L.t(first ? "settings.firstModel" : "settings.addModelService")).font(Ink.title).foregroundStyle(Ink.ink)
+                Text(L.t("settings.moreModelServices")).font(Ink.secondary).foregroundStyle(Ink.inkSoft)
+            }
+            Spacer()
+            if !first {
+                Button {
+                    Haptics.light()
+                    onDone()
+                } label: {
+                    Text(L.t("actions.cancel")).font(Ink.label).foregroundStyle(Ink.accent)
+                }
+            }
+        }
     }
 
     @ViewBuilder
     private var servicePicker: some View {
-        SetupServiceList(
-            endpoints: team.settings.endpoints,
-            choiceID: choice.id,
-            onSelect: selectService
-        )
+        if preset == nil {
+            SetupServiceList(endpoints: team.settings.endpoints, choiceID: choice.id, onSelect: selectService)
+        }
 
         if choice.addresses.count > 1 {
             VStack(alignment: .leading, spacing: Ink.Space.s) {
                 FieldTitle(text: L.t("settings.chooseAddress"), note: "账号在哪边注册的就选哪边，密钥不通用")
                 SlidingCapsuleControl(
-                    selection: $region,
+                    selection: Binding(get: { region }, set: { next in
+                        guard next != region else { return }
+                        draft.key = ""
+                        clearCatalog()
+                        region = next
+                    }),
                     options: Array(choice.addresses.indices)
                 ) { index in
                     choice.addresses[index].label
@@ -300,15 +324,6 @@ struct SetupView: View {
 
     // MARK: Models, before saving
 
-    private func loadCatalog(for endpoint: Endpoint, secret: String) async throws -> (ids: [String], windows: [String: Int]) {
-        let provider = endpoint.provider(key: secret)
-        if let catalogProvider = provider as? CatalogReportingProvider {
-            let catalog = try await catalogProvider.catalog()
-            return (catalog.ids, catalog.windows)
-        }
-        return (try await provider.models(), [:])
-    }
-
     @ViewBuilder
     private var modelPicker: some View {
         if fetching {
@@ -341,18 +356,26 @@ struct SetupView: View {
     private var address: String { draft.address(for: choice, region: region) }
 
     private func selectService(_ item: Service) {
+        guard item.id != choice.id else { return }
         Haptics.tick(0.6)
         withAnimation(Ink.Motion.settle) {
+            draft.key = ""
+            draft.modelName = ""
             choice = item
             region = 0
-            advice = nil
-            fetched = nil
-            fetchedImageModels = nil
-            fetchedWindows = [:]
-            picked = []
-            fetchNote = nil
-            fetchFailed = false
+            clearCatalog()
         }
+    }
+
+    private func clearCatalog() {
+        advice = nil
+        fetched = nil
+        fetchedImageModels = nil
+        fetchedWindows = [:]
+        picked = []
+        fetching = false
+        fetchNote = nil
+        fetchFailed = false
     }
 
     // MARK: Done
@@ -398,57 +421,37 @@ struct SetupView: View {
         let secret = draft.secret(keyless: choice.keyless)
         let typed = draft.modelName.trimmingCharacters(in: .whitespacesAndNewlines)
         let given = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let taken = Set(team.settings.endpoints.map(\.id))
-        var id = custom ? "custom-\(UUID().uuidString.prefix(6).lowercased())" : choice.id
-        if taken.contains(id) { id += "-\(UUID().uuidString.prefix(4).lowercased())" }
-        var title = custom ? (given.isEmpty ? (URL(string: address)?.host ?? "自定义") : given) : choice.name
-        if team.settings.endpoints.contains(where: { $0.name == title }) { title += " 2" }
-        var endpoint = Endpoint(id: id, name: title, kind: choice.kind, baseURL: address, models: [], service: custom ? nil : choice.id)
         let service = custom ? nil : choice
+        let draftEndpoint = ServiceOnboardingEngine.endpoint(for: choice, address: address, name: given, in: team)
+        let fetched = self.fetched
+        let picked = self.picked
+        let imageModels = fetchedImageModels
+        let windows = fetchedWindows
         busy = true
         advice = nil
         keyFocused = false
-        // The list is already here and models are picked: nothing more to ask the service.
-        if let fetched, !picked.isEmpty {
-            endpoint.listed = fetched
-            endpoint.imageModels = fetchedImageModels
-            endpoint.windows = fetchedWindows.isEmpty ? nil : fetchedWindows
-            var models = fetched.filter(picked.contains)
-            if !typed.isEmpty, !models.contains(typed) { models.insert(typed, at: 0) }
-            endpoint.models = models
-            Task { await finish(endpoint, secret) }
-            return
-        }
-        Task {
+
+        saveTask = Task {
+            defer { busy = false }
             do {
-                let result = try await loadCatalog(for: endpoint, secret: secret)
-                let listed = TeamModel.keep(result.ids, for: endpoint)
-                if endpoint.kind.supportsImages { endpoint.imageModels = result.ids }
-                endpoint.windows = result.windows.isEmpty ? nil : result.windows
-                var models = TeamModel.firstPicks(listed, service: service)
-                if !typed.isEmpty { models = [typed] + models.filter { $0 != typed } }
-                guard !models.isEmpty else { throw TeamError(message: "连上了，但没找到能聊天的模型。请填上模型名再试。") }
-                endpoint.listed = listed
-                endpoint.models = models
-                await finish(endpoint, secret)
-            } catch {
-                // Some services do not list their models: with a model name to try, a one-word question decides.
-                let fallback = typed.isEmpty ? (service?.suggested ?? []) : [typed]
-                let status = (error as? ProviderError)?.status
-                if !fallback.isEmpty, status != 401, status != 403 {
-                    do {
-                        var ask = Agent(provider: endpoint.provider(key: secret), model: fallback[0], system: "")
-                        ask.thinking = .off
-                        _ = try await ask.ask("回一个字：好")
-                        endpoint.models = fallback
-                        await finish(endpoint, secret)
-                        return
-                    } catch {
-                        fail(error, service: endpoint.name)
-                        return
-                    }
+                var endpoint = draftEndpoint
+                if let fetched, !picked.isEmpty {
+                    endpoint.listed = fetched
+                    endpoint.imageModels = imageModels
+                    endpoint.windows = windows.isEmpty ? nil : windows
+                    endpoint.models = fetched.filter(picked.contains)
+                    if !typed.isEmpty, !endpoint.models.contains(typed) { endpoint.models.insert(typed, at: 0) }
+                } else {
+                    endpoint = try await ServiceOnboardingEngine.discover(endpoint, secret: secret, typed: typed, service: service)
                 }
-                fail(error, service: endpoint.name)
+                try await ServiceOnboardingEngine.save(endpoint, secret: secret, in: team)
+                guard !Task.isCancelled else { return }
+                draft.key = ""
+                connected = endpoint
+                Haptics.thud()
+                if preset == nil { step = .done } else { onDone() }
+            } catch {
+                if !Task.isCancelled { fail(error, service: draftEndpoint.name) }
             }
         }
     }
@@ -463,12 +466,90 @@ struct SetupView: View {
         }
     }
 
-    private func finish(_ endpoint: Endpoint, _ secret: String) async {
+}
+
+/// Shared by first-launch setup, manual service addition, and browser authorization.
+@MainActor
+enum ServiceOnboardingEngine {
+    private static let session = URLSession(configuration: .ephemeral)
+
+    private static func isGo(_ endpoint: Endpoint) -> Bool {
+        guard Service.of(endpoint)?.id == "opencode-go", let preset = Service.byID["opencode-go"] else { return false }
+        return endpoint.baseURL == preset.baseURL
+    }
+
+    private static func verifyGoKey(for endpoint: Endpoint, secret: String) async throws {
+        guard let source = Balance.source(baseURL: endpoint.baseURL) else {
+            throw TeamError(message: L.t("services.goKeyRejected"))
+        }
+        var request = URLRequest(url: source.url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+        request.setValue(source.authorizationValue(for: secret), forHTTPHeaderField: "Authorization")
+        request.httpShouldHandleCookies = false
+        let (_, response) = try await session.data(for: request, delegate: OAuthRedirectGuard())
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw TeamError(message: L.t("services.goKeyRejected"))
+        }
+    }
+
+    static func endpoint(for choice: Service, address: String, name: String, in team: TeamModel) -> Endpoint {
+        let id = choice.custom || team.settings.endpoints.contains(where: { $0.id == choice.id })
+            ? "\(choice.custom ? "custom" : choice.id)-\(UUID().uuidString.lowercased())" : choice.id
+        var title = choice.custom ? (name.isEmpty ? (URL(string: address)?.host ?? L.t("services.customName")) : name) : choice.name
+        if team.settings.endpoints.contains(where: { $0.name == title }) { title += " 2" }
+        return Endpoint(id: id, name: title, kind: choice.kind, baseURL: address, models: [], service: choice.custom ? nil : choice.id)
+    }
+
+    static func loadCatalog(for endpoint: Endpoint, secret: String) async throws -> (ids: [String], windows: [String: Int]) {
+        if isGo(endpoint) {
+            let url = URL(string: "https://opencode.ai/inference/go/v1/models")!
+            let (data, response) = try await session.data(from: url, delegate: OAuthRedirectGuard())
+            struct Catalog: Decodable {
+                struct Item: Decodable { let id: String }
+                let data: [Item]
+            }
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw TeamError(message: L.t("services.catalogUnavailable"))
+            }
+            let catalog = try JSONDecoder().decode(Catalog.self, from: data)
+            return (catalog.data.map(\.id), [:])
+        }
+        let provider = endpoint.provider(key: secret)
+        if let catalogProvider = provider as? CatalogReportingProvider {
+            let catalog = try await catalogProvider.catalog()
+            return (catalog.ids, catalog.windows)
+        }
+        return (try await provider.models(), [:])
+    }
+
+    static func discover(_ draft: Endpoint, secret: String, typed: String, service: Service?) async throws -> Endpoint {
+        var endpoint = draft
+        do {
+            let result = try await loadCatalog(for: endpoint, secret: secret)
+            let listed = TeamModel.keep(result.ids, for: endpoint)
+            if endpoint.kind.supportsImages { endpoint.imageModels = result.ids }
+            endpoint.windows = result.windows.isEmpty ? nil : result.windows
+            var models = TeamModel.firstPicks(listed, service: service)
+            if !typed.isEmpty { models = [typed] + models.filter { $0 != typed } }
+            guard !models.isEmpty else { throw TeamError(message: L.t("services.catalogEmpty")) }
+            endpoint.listed = listed
+            endpoint.models = models
+        } catch {
+            try Task.checkCancellation()
+            let fallback = typed.isEmpty ? (service?.suggested ?? []) : [typed]
+            let status = (error as? ProviderError)?.status
+            guard let first = fallback.first, status != 401, status != 403 else { throw error }
+            var ask = Agent(provider: endpoint.provider(key: secret), model: first, system: "")
+            ask.thinking = .off
+            _ = try await ask.ask("回一个字：好")
+            endpoint.models = fallback
+        }
+        return endpoint
+    }
+
+    static func save(_ endpoint: Endpoint, secret: String, in team: TeamModel) async throws {
+        if isGo(endpoint) { try await verifyGoKey(for: endpoint, secret: secret) }
+        try Task.checkCancellation()
         await team.addEndpointAsync(endpoint, key: secret)
-        busy = false
-        connected = endpoint
-        Haptics.thud()
-        step = .done
     }
 }
 
