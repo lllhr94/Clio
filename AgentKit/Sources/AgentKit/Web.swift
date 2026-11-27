@@ -556,7 +556,10 @@ enum WebFetch {
         // Read as it comes, up to a limit: a link to a huge file must not be pulled whole into memory. A redirect to an
         // unauthorized local or home-network address is not followed.
         do {
-            let (bytes, response) = try await HTTP.session.bytes(for: request, delegate: StayPublic(allowAuthorizedPrivate: true))
+            let (bytes, response) = try await HTTP.session.bytes(
+                for: request,
+                delegate: StayPublic(allowAuthorizedPrivate: true, initialDomain: initialEval.domain)
+            )
             let http = response as? HTTPURLResponse
             if let status = http?.statusCode, (300..<400).contains(status) {
                 throw ProviderError(status: status, "这个网址要跳到本机或局域网地址，没有跟过去。")
@@ -730,11 +733,39 @@ enum WebFetch {
         }
     }
 
-    fileprivate final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    final class StayPublic: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         let allowAuthorizedPrivate: Bool
+        let initialDomain: NetworkAccessDomain
 
-        init(allowAuthorizedPrivate: Bool = false) {
+        init(allowAuthorizedPrivate: Bool = false, initialDomain: NetworkAccessDomain = .publicWeb) {
             self.allowAuthorizedPrivate = allowAuthorizedPrivate
+            self.initialDomain = initialDomain
+        }
+
+        static func isCrossZoneEscalation(
+            from initialDomain: NetworkAccessDomain,
+            to targetDomain: NetworkAccessDomain
+        ) -> Bool {
+            let startedPublic = (initialDomain == .publicWeb || initialDomain == .fakeIPProxy)
+            let targetPrivate = (targetDomain != .publicWeb && targetDomain != .fakeIPProxy)
+            return startedPublic && targetPrivate
+        }
+
+        static func sanitizeRedirectRequest(_ request: URLRequest, from previousURL: URL?) -> URLRequest {
+            guard let next = request.url, let prev = previousURL else { return request }
+            let prevScheme = prev.scheme?.lowercased()
+            let nextScheme = next.scheme?.lowercased()
+            let prevHost = prev.host?.lowercased()
+            let nextHost = next.host?.lowercased()
+            let prevPort = prev.port ?? (prevScheme == "https" ? 443 : 80)
+            let nextPort = next.port ?? (nextScheme == "https" ? 443 : 80)
+
+            var sanitized = request
+            if prevHost != nextHost || prevPort != nextPort || prevScheme != nextScheme {
+                sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
+                sanitized.setValue(nil, forHTTPHeaderField: "Cookie")
+            }
+            return sanitized
         }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -744,19 +775,19 @@ enum WebFetch {
                   scheme == "http" || scheme == "https",
                   let host = next.host, !host.isEmpty,
                   next.user == nil, next.password == nil else { return nil }
-            let hasCreds = request.value(forHTTPHeaderField: "Authorization") != nil
-                || request.value(forHTTPHeaderField: "Cookie") != nil
+            let sanitized = Self.sanitizeRedirectRequest(request, from: response.url)
+            let hasCreds = sanitized.value(forHTTPHeaderField: "Authorization") != nil
+                || sanitized.value(forHTTPHeaderField: "Cookie") != nil
+            let allowPrivateForHop = allowAuthorizedPrivate
+                && (initialDomain != .publicWeb && initialDomain != .fakeIPProxy)
             let eval = await PrivateNetworkPolicy.shared.evaluateAsync(
                 url: next,
                 action: .read,
-                allowAuthorizedPrivate: allowAuthorizedPrivate,
+                allowAuthorizedPrivate: allowPrivateForHop,
                 hasCredentials: hasCreds
             )
-            guard eval.allowed else { return nil }
-            var sanitized = request
-            if let prevHost = response.url?.host?.lowercased(), prevHost != host.lowercased() {
-                sanitized.setValue(nil, forHTTPHeaderField: "Authorization")
-                sanitized.setValue(nil, forHTTPHeaderField: "Cookie")
+            guard eval.allowed, !Self.isCrossZoneEscalation(from: initialDomain, to: eval.domain) else {
+                return nil
             }
             return sanitized
         }
@@ -811,7 +842,11 @@ public enum Web {
             }
         }
         if let finalURL = http?.url {
-            let finalEval = PrivateNetworkPolicy.shared.evaluate(url: finalURL, action: .read, allowAuthorizedPrivate: false, resolvedKinds: [])
+            let finalEval = await PrivateNetworkPolicy.shared.evaluateAsync(
+                url: finalURL,
+                action: .read,
+                allowAuthorizedPrivate: false
+            )
             if !finalEval.allowed {
                 throw ProviderError(LocalAddress.refusal)
             }

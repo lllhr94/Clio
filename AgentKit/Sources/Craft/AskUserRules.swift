@@ -1313,21 +1313,16 @@ public enum AskUserRules {
     }
 
     private static func containsTokenPrefix(_ original: String, lower: String) -> Bool {
-        let bytes = Array(lower.utf8)
-        let origBytes = Array(original.utf8)
-
-        func isBoundaryBefore(_ index: Int) -> Bool {
-            if index == 0 { return true }
-            let b = bytes[index - 1]
-            let isAlnum = (b >= 48 && b <= 57) || (b >= 97 && b <= 122)
-            return !isAlnum
+        func isBoundaryBefore(_ index: String.Index, in text: String) -> Bool {
+            guard index > text.unicodeScalars.startIndex else { return true }
+            let prev = text.unicodeScalars[text.unicodeScalars.index(before: index)]
+            return !isASCIIAlnumScalar(prev)
         }
 
         for prefix in secretTokenPrefixes {
             var searchStart = lower.startIndex
             while let range = lower.range(of: prefix, range: searchStart..<lower.endIndex) {
-                let offset = lower.distance(from: lower.startIndex, to: range.lowerBound)
-                if isBoundaryBefore(offset) {
+                if isBoundaryBefore(range.lowerBound, in: lower) {
                     return true
                 }
                 searchStart = range.upperBound
@@ -1338,13 +1333,18 @@ public enum AskUserRules {
         for sensitivePrefix in ["AKIA", "ASIA", "AIza"] {
             var searchStart = original.startIndex
             while let range = original.range(of: sensitivePrefix, range: searchStart..<original.endIndex) {
-                let offset = original.distance(from: original.startIndex, to: range.lowerBound)
-                let beforeOK = offset == 0 || !isASCIIAlnum(origBytes[offset - 1])
-                if beforeOK { return true }
+                if isBoundaryBefore(range.lowerBound, in: original) {
+                    return true
+                }
                 searchStart = range.upperBound
             }
         }
         return false
+    }
+
+    private static func isASCIIAlnumScalar(_ scalar: UnicodeScalar) -> Bool {
+        let v = scalar.value
+        return (v >= 48 && v <= 57) || (v >= 65 && v <= 90) || (v >= 97 && v <= 122)
     }
 
     private static func isASCIIAlnum(_ byte: UInt8) -> Bool {

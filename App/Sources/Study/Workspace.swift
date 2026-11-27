@@ -381,9 +381,10 @@ enum Workspace {
         return parts
     }
 
-    /// True only when `url` (including existing ancestors and any symlinks, even dangling ones) stays within `root`.
+    /// True only when `url` (including existing ancestors and multi-hop/dangling symlinks) stays within `root`.
     static func isInsideRealRoot(_ url: URL, root: URL) -> Bool {
         let base = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let rootStd = root.standardizedFileURL.path
         func contained(_ path: String) -> Bool { path == base || path.hasPrefix(base + "/") }
         func entersTrash(_ path: String, below prefix: String) -> Bool {
             guard path.hasPrefix(prefix + "/") else { return false }
@@ -392,41 +393,92 @@ enum Workspace {
             }
         }
 
-        let resolvedTarget = url.resolvingSymlinksInPath().standardizedFileURL.path
-        guard contained(resolvedTarget),
-              !entersTrash(resolvedTarget, below: base),
-              !entersTrash(url.standardizedFileURL.path, below: root.standardizedFileURL.path) else { return false }
-
-        // Walk upward to verify every existing prefix (catches intermediate symlinks before non-existent write targets
-        // and dangling symlinks pointing outside the root).
         let fm = FileManager.default
-        let rootStd = root.standardizedFileURL.path
-        var current = url.standardizedFileURL
-        while true {
-            var st = stat()
-            if lstat(current.path, &st) == 0 {
-                let isLink = (st.st_mode & S_IFMT) == S_IFLNK
-                if isLink {
-                    let linkResolved = current.resolvingSymlinksInPath().standardizedFileURL.path
-                    guard contained(linkResolved), !entersTrash(linkResolved, below: base) else { return false }
-                    if let dest = try? fm.destinationOfSymbolicLink(atPath: current.path) {
+        let maxSymlinkHops = 16
+        var pending: [(url: URL, hops: Int, visited: Set<String>)] = [(url.standardizedFileURL, 0, [])]
+
+        while let (candidate, hops, visited) = pending.popLast() {
+            let candidateStd = candidate.standardizedFileURL.path
+            let resolvedTarget = candidate.resolvingSymlinksInPath().standardizedFileURL.path
+            guard contained(resolvedTarget),
+                  !entersTrash(resolvedTarget, below: base),
+                  !entersTrash(candidateStd, below: rootStd),
+                  !entersTrash(candidateStd, below: base) else {
+                return false
+            }
+
+            // Walk upward to verify every existing prefix and iteratively follow symlink chains
+            // (catches multi-hop dangling symlinks, cycles, and intermediate symlinks before non-existent targets).
+            var current = candidate.standardizedFileURL
+            var trailingComponents: [String] = []
+            while true {
+                var st = stat()
+                if lstat(current.path, &st) == 0 {
+                    let isLink = (st.st_mode & S_IFMT) == S_IFLNK
+                    if isLink {
+                        let canonicalLinkPath = current.deletingLastPathComponent()
+                            .resolvingSymlinksInPath()
+                            .appendingPathComponent(current.lastPathComponent)
+                            .standardizedFileURL.path
+                        guard hops < maxSymlinkHops,
+                              !visited.contains(current.path),
+                              !visited.contains(canonicalLinkPath) else {
+                            return false
+                        }
+                        guard let dest = try? fm.destinationOfSymbolicLink(atPath: current.path), !dest.isEmpty else {
+                            return false
+                        }
+                        let linkResolved = current.resolvingSymlinksInPath().standardizedFileURL.path
+                        guard contained(linkResolved), !entersTrash(linkResolved, below: base) else {
+                            return false
+                        }
+                        let linkParent = current.deletingLastPathComponent()
+                        var nextVisited = visited
+                        nextVisited.insert(current.path)
+                        nextVisited.insert(canonicalLinkPath)
+
+                        // If `dest` climbs with `..` after an intermediate segment (`sub/../x`), verify that prefix too
+                        // so a symlinked intermediate directory cannot escape before `..` collapses lexically.
+                        let rawSegments = dest.split(separator: "/", omittingEmptySubsequences: true)
+                        if rawSegments.contains("..") {
+                            var prefixURL = dest.hasPrefix("/") ? URL(fileURLWithPath: "/") : linkParent
+                            for seg in rawSegments {
+                                if seg == ".." {
+                                    pending.append((prefixURL.standardizedFileURL, hops + 1, nextVisited))
+                                    prefixURL = prefixURL.deletingLastPathComponent()
+                                } else if seg != "." {
+                                    prefixURL = prefixURL.appendingPathComponent(String(seg))
+                                }
+                            }
+                        }
+
                         let destURL: URL
                         if dest.hasPrefix("/") {
                             destURL = URL(fileURLWithPath: dest).standardizedFileURL
                         } else {
-                            destURL = current.deletingLastPathComponent().appendingPathComponent(dest).standardizedFileURL
+                            destURL = linkParent.appendingPathComponent(dest).standardizedFileURL
                         }
-                        let destResolved = destURL.resolvingSymlinksInPath().standardizedFileURL.path
-                        guard contained(destResolved), !entersTrash(destResolved, below: base) else { return false }
+                        pending.append((destURL, hops + 1, nextVisited))
+                        if !trailingComponents.isEmpty {
+                            var expanded = destURL
+                            for part in trailingComponents.reversed() {
+                                expanded.appendPathComponent(part)
+                            }
+                            pending.append((expanded.standardizedFileURL, hops + 1, nextVisited))
+                        }
+                    } else {
+                        let realPath = current.resolvingSymlinksInPath().standardizedFileURL.path
+                        guard contained(realPath), !entersTrash(realPath, below: base) else {
+                            return false
+                        }
                     }
-                } else {
-                    guard contained(current.resolvingSymlinksInPath().standardizedFileURL.path) else { return false }
                 }
+                if current.path == rootStd || current.path == base || current.path == "/" { break }
+                let parent = current.deletingLastPathComponent()
+                if parent.path == current.path { break }
+                trailingComponents.append(current.lastPathComponent)
+                current = parent
             }
-            if current.path == rootStd || current.path == base || current.path == "/" { break }
-            let parent = current.deletingLastPathComponent()
-            if parent.path == current.path { break }
-            current = parent
         }
         return true
     }

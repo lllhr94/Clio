@@ -14,7 +14,8 @@ public enum Taint {
     public static func reads(_ tool: String) -> Bool {
         // Web pages (and their titles), mail and shared documents, the clipboard, and any connector service.
         ["browser_read", "browser_text", "browser_open", "browser_click", "browser_back", "browser_tabs", "browser_screenshot",
-         "web_read", "web_search", "gmail_read", "gmail_search", "drive_read", "drive_search", "clipboard_read"].contains(tool)
+         "web_read", "web_search", "gmail_read", "gmail_search", "drive_read", "drive_search", "clipboard_read",
+         "tool_invoke"].contains(tool)
             || tool.hasPrefix("mcp_")
     }
 
@@ -23,11 +24,16 @@ public enum Taint {
     public static let hardExits: Set<String> = ["browser_fill_secret", "gmail_send", "schedule_task"]
 
     /// Whether this step must be asked about after the turn read external content: commands, filling in a kept secret,
-    /// anything on a far computer, any MCP tool, lasting/outbound actions, and writing outside the workspace.
+    /// anything on a far computer, any MCP tool (including deferred `tool_invoke`), JS execution, lasting/outbound
+    /// actions, and writing outside the workspace.
     public static func needsSeal(tool: String, arguments: JSONValue, isInside: (String) -> Bool) -> Bool {
-        if tool == "shell" || tool == "browser_fill_secret" || tool.hasPrefix("ssh_") || tool.hasPrefix("mcp_") { return true }
-        // Things that last or go out: a memory, a routine, a message later, mail, the calendar, contacts, a link opened.
-        if ["remember", "forget", "schedule_task", "message_later", "gmail_send", "gmail_draft", "calendar_add", "reminder_add",
+        if tool == "shell" || tool == "run_js" || tool == "browser_fill_secret" || tool == "tool_invoke"
+            || tool.hasPrefix("ssh_") || tool.hasPrefix("mcp_") {
+            return true
+        }
+        // Things that last or go out: a memory/experience, a document, a routine, a message later, mail, the calendar, contacts, a link opened.
+        if ["remember", "forget", "record_experience", "make_document", "schedule_task", "message_later",
+            "gmail_send", "gmail_draft", "calendar_add", "reminder_add",
             "contacts_add", "clipboard_write", "photos_save", "open_link", "browser_type"].contains(tool) { return true }
         if WorkspaceTools.writers.contains(tool) {
             guard let path = arguments["path"]?.string else { return true }
@@ -43,7 +49,7 @@ public enum Taint {
         if name == "run_js", let script = arguments["code"]?.string, !script.isEmpty {
             return script
         }
-        if name.hasPrefix("mcp_") {
+        if name.hasPrefix("mcp_") || name == "tool_invoke" {
             let compact = arguments.compact
             if !compact.isEmpty, compact != "{}" { return compact }
         }
