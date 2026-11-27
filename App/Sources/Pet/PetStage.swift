@@ -191,7 +191,7 @@ struct PetStage: View {
             .overlay(alignment: .topTrailing) {
                 if case .working(let count) = mood, count > 1 {
                     Text(count.formatted())
-                        .font(Ink.uiMono(Ink.Size.micro))
+                        .font(Ink.mono(Ink.Size.micro))
                         .foregroundStyle(Ink.ink)
                         .padding(.horizontal, Ink.Space.xs)
                         .padding(.vertical, Ink.Space.xs)

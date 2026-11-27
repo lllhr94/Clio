@@ -283,7 +283,7 @@ private struct ArtifactLibraryPage: View {
                     .font(Ink.label)
                     .foregroundStyle(Ink.ink)
                 Text(item.version.relativePath)
-                    .font(Ink.uiMono(Ink.Size.small))
+                    .font(Ink.mono(Ink.Size.small))
                     .foregroundStyle(Ink.inkSoft)
                 Text(L.t(item.kind.titleKey))
                     .font(Ink.footnote)
