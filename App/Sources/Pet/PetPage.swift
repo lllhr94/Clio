@@ -49,7 +49,7 @@ struct PetPage: View {
                         }
                         .disabled(library.loading || installing)
                     } header: { Text(L.t("pet.choose")) } footer: {
-                        Text(Words.t("选中的这只也是旅伴的头像和各处的插图。导入认三种：DSH Go、Clawd on Desk 那种宠物包（zip）；每个状态一个 GIF / APNG 打成的 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）；或者直接一张图片、一个 GIF，就是一只只会站着的宠物。长按导入的可以删掉。"))
+                        Text(Words.t("选中的宠物也会出现在各处的宠物插图中。导入认三种：DSH Go、Clawd on Desk 那种宠物包（zip）；每个状态一个 GIF / APNG 打成的 zip，文件名用状态名（idle、thinking、working、done、error、sleeping……）；或者直接一张图片、一个 GIF，就是一只只会站着的宠物。长按导入的可以删掉。"))
                     }
 
                     Section {
@@ -61,7 +61,7 @@ struct PetPage: View {
                             }
                         }
                     } footer: {
-                        Text("关掉「站在输入框上」只是不站出来，头像和插图还是它。别的\(L.t("chat.conversation"))做完、出错、等你确认时冒个气泡，点气泡直接过去；安静模式下只做动作。点它、连点、拖它、长按，都有反应。")
+                        Text("关掉「站在输入框上」只是不站出来，宠物插图照常显示。别的\(L.t("chat.conversation"))做完、出错、等你确认时冒个气泡，点气泡直接过去；安静模式下只做动作。点它、连点、拖它、长按，都有反应。")
                     }
                 }
             }

@@ -104,6 +104,24 @@ enum LiveTurns {
         states[chat] = state
     }
 
+    /// Reuses the existing `TurnAttributes` Live Activity to surface background subtask progress & waiting state
+    /// without adding any new widget extension.
+    static func syncSubtasks(chat: String, activeCount: Int, waitingCount: Int, summary: String?) {
+        guard let activity = running[chat], var state = states[chat], state.ended == nil else { return }
+        if waitingCount > 0 {
+            state.phase = .waiting
+            state.doing = L.t("pet.needsApproval")
+        } else if activeCount > 0, let summary, !summary.isEmpty {
+            state.phase = .working
+            state.doing = Words.t(summary)
+        } else {
+            return
+        }
+        states[chat] = state
+        sent[chat] = Date()
+        Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
+    }
+
     /// The turn ended: the card stays a few minutes with how it went, then goes.
     static func end(chat: String, ok: Bool, line: String?) {
         guard let activity = running.removeValue(forKey: chat), var state = states.removeValue(forKey: chat) else { return }

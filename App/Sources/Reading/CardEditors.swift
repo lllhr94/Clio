@@ -43,11 +43,19 @@ struct BotEditor: View {
     /// "" follows the default model.
     @State private var model: String
     @State private var instructions: String
+    @State private var relationship: String
+    @State private var expressionStyle: String
+    @State private var antiSlop: Bool
+    @State private var firstPersonThoughts: Bool
+    @State private var expertiseBoundary: String
+    @State private var privateNotes: String
+    @State private var publicAgentsCard: String
+    @State private var showingWizard = false
     @State private var busy = false
     @State private var error: String?
     @State private var confirmingDelete = false
     @FocusState private var naming: Bool
-    /// nil = the pet picked in 宠物设置; "pet:<id>" = a pet of its own; "photo" = a picture from 相册.
+    /// nil = a name seal; "pet:<id>" = a pet of its own; "photo" = a picture from 相册.
     @State private var face: String?
     /// A picture just picked, not saved yet.
     @State private var photo: UIImage?
@@ -77,6 +85,13 @@ struct BotEditor: View {
         _tint = State(initialValue: bot?.color.flatMap { key in Ink.tints.contains { $0.key == key } ? key : nil } ?? "dai")
         _model = State(initialValue: bot?.model ?? "")
         _instructions = State(initialValue: bot?.instructions ?? "")
+        _relationship = State(initialValue: bot?.relationship ?? "")
+        _expressionStyle = State(initialValue: bot?.expressionStyle ?? "")
+        _antiSlop = State(initialValue: bot?.antiSlop ?? false)
+        _firstPersonThoughts = State(initialValue: bot?.firstPersonThoughts ?? false)
+        _expertiseBoundary = State(initialValue: bot?.expertiseBoundary ?? "")
+        _privateNotes = State(initialValue: bot?.privateNotes ?? "")
+        _publicAgentsCard = State(initialValue: bot?.publicAgentsCard ?? "")
         _face = State(initialValue: bot?.avatar)
         _temper = State(initialValue: Temper.of(bot))
         _style = State(initialValue: SpeechStyle.of(bot))
@@ -92,6 +107,13 @@ struct BotEditor: View {
                 Ink.paper.ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: Ink.Space.xl) {
+                        if bot == nil {
+                            Button(L.t("persona.wizard")) {
+                                naming = false
+                                showingWizard = true
+                            }
+                                .buttonStyle(WideButtonStyle(filled: false))
+                        }
                         preview
 
                         faces
@@ -118,6 +140,8 @@ struct BotEditor: View {
                         stylePicker
 
                         sealField
+
+                        personalityFields
 
                         VStack(alignment: .leading, spacing: Ink.Space.s) {
                             FieldTitle(text: "设定", note: "它是谁、怎么说话、擅长什么。写得越具体，越像它自己；和性格有出入时以这里为准")
@@ -251,6 +275,9 @@ struct BotEditor: View {
                 Button("再想想", role: .cancel) {}
             }
         }
+        .sheet(isPresented: $showingWizard) {
+            CompanionCreatorWizard(onDraft: applyDraft)
+        }
         .onAppear { if bot == nil { naming = true } }
     }
 
@@ -318,7 +345,7 @@ struct BotEditor: View {
             .padding(.horizontal, Ink.Space.xs)
             // The same news, as this companion would say it.
             HStack(alignment: .top, spacing: Ink.Space.s) {
-                PetStill(size: 28, wash: Ink.wash(named: tint), avatar: true, bot: bot, photo: face == "photo" ? photo : nil, face: .some(face))
+                CompanionAvatar(size: 28, wash: Ink.wash(named: tint), bot: bot, photo: face == "photo" ? photo : nil, face: .some(face), name: trimmed, seal: seal)
                 Text(style.sample)
                     .font(Ink.reading)
                     .foregroundStyle(Ink.ink)
@@ -358,18 +385,18 @@ struct BotEditor: View {
         return trimmed.first.map(String.init) ?? "克"
     }
 
-    /// 头像: the default pet, a pet of its own, or a photo.
+    /// 头像: a name seal, an explicitly selected pet, or a photo.
     private var faces: some View {
         VStack(alignment: .leading, spacing: Ink.Space.s) {
-            FieldTitle(text: "头像", note: "选一只宠物的话，和它聊天时站在输入框上的也是这只")
+            FieldTitle(text: "头像", note: L.t("persona.avatarHint"))
             ScrollView(.horizontal) {
                 HStack(spacing: Ink.Space.m) {
-                    faceChoice(nil, title: "默认") {
-                        PetStill(size: 52, wash: Ink.wash(named: tint), avatar: true, face: .some(nil))
+                    faceChoice(nil, title: L.t("persona.defaultSeal")) {
+                        CompanionAvatar(size: 52, wash: Ink.wash(named: tint), name: trimmed, seal: seal)
                     }
                     ForEach(PetLibrary.shared.packs, id: \.id) { pack in
                         faceChoice("pet:\(pack.id)", title: pack.name) {
-                            PetStill(size: 52, wash: Ink.wash(named: tint), avatar: true, face: .some("pet:\(pack.id)"))
+                            CompanionAvatar(size: 52, wash: Ink.wash(named: tint), face: .some("pet:\(pack.id)"))
                         }
                     }
                     PhotosPicker(selection: $photoItem, matching: .images) {
@@ -394,6 +421,38 @@ struct BotEditor: View {
                 }
             }
         }
+    }
+
+    private var personalityFields: some View {
+        VStack(alignment: .leading, spacing: Ink.Space.m) {
+            personaField("persona.relationship", text: $relationship)
+            personaField("persona.expressionStyle", text: $expressionStyle)
+            Toggle(L.t("persona.antiSlop"), isOn: $antiSlop)
+            Toggle(L.t("persona.firstPersonThoughts"), isOn: $firstPersonThoughts)
+            personaField("persona.expertiseBoundary", text: $expertiseBoundary)
+            personaField("persona.privateNotes", text: $privateNotes)
+            personaField("persona.publicAgentsCard", text: $publicAgentsCard)
+        }
+    }
+
+    private func personaField(_ key: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: Ink.Space.s) {
+            FieldTitle(text: L.t(key))
+            TextField(L.t(key), text: text, axis: .vertical)
+                .font(Ink.reading)
+                .lineLimit(2...5)
+                .paperField(height: nil)
+        }
+    }
+
+    private func applyDraft(_ draft: BotInfo) {
+        name = draft.name
+        role = draft.role ?? ""
+        relationship = draft.relationship ?? ""
+        expressionStyle = draft.expressionStyle ?? ""
+        expertiseBoundary = draft.expertiseBoundary ?? ""
+        privateNotes = draft.privateNotes ?? ""
+        publicAgentsCard = draft.publicAgentsCard ?? ""
     }
 
     private func pickFace(_ value: String?) {
@@ -449,13 +508,13 @@ struct BotEditor: View {
             HStack(alignment: .center, spacing: Ink.Space.l) {
                 // Tap the face itself to change it: the obvious place to look.
                 Menu {
-                    Button { pickFace(nil) } label: { faceItem("默认（跟宠物设置走）", picked: face == nil) }
+                    Button { pickFace(nil) } label: { faceItem(L.t("persona.defaultSeal"), picked: face == nil) }
                     ForEach(PetLibrary.shared.packs, id: \.id) { pack in
                         Button { pickFace("pet:\(pack.id)") } label: { faceItem(pack.name, picked: face == "pet:\(pack.id)") }
                     }
                     Button { choosingPhoto = true } label: { Label("从相册选一张", systemImage: "photo") }
                 } label: {
-                    PetStill(size: 72, wash: Ink.wash(named: tint), avatar: true, bot: bot, photo: face == "photo" ? photo : nil, face: .some(face))
+                    CompanionAvatar(size: 72, wash: Ink.wash(named: tint), bot: bot, photo: face == "photo" ? photo : nil, face: .some(face), name: trimmed, seal: seal)
                         .overlay(alignment: .bottomTrailing) {
                             Image(systemName: "pencil")
                                 .font(.system(size: Ink.Size.micro, weight: .bold))
@@ -513,7 +572,14 @@ struct BotEditor: View {
                 if chosen == "photo", let photo, let known = bot?.id { Avatars.save(photo, for: known) }
                 let id = try await team.saveBot(id: bot?.id, name: trimmed, role: role.trimmingCharacters(in: .whitespacesAndNewlines), color: tint, model: model,
                                                 instructions: instructions.trimmingCharacters(in: .whitespacesAndNewlines), avatar: chosen ?? "",
-                                                temper: temper.rawValue, style: style.rawValue, seal: seal.trimmingCharacters(in: .whitespaces))
+                                                temper: temper.rawValue, style: style.rawValue, seal: seal.trimmingCharacters(in: .whitespaces),
+                                                relationship: relationship,
+                                                expressionStyle: expressionStyle,
+                                                antiSlop: antiSlop,
+                                                firstPersonThoughts: firstPersonThoughts,
+                                                expertiseBoundary: expertiseBoundary,
+                                                privateNotes: privateNotes,
+                                                publicAgentsCard: publicAgentsCard)
                 if chosen == "photo", let photo, bot == nil { Avatars.save(photo, for: id) }
                 if chosen != "photo", bot?.avatar == "photo" { Avatars.forget(id) }
                 Haptics.thud()
@@ -641,7 +707,7 @@ struct RoomEditor: View {
         } label: {
             VStack(spacing: Ink.Space.s) {
                 ZStack(alignment: .topTrailing) {
-                    PetStill(size: 56, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                    CompanionAvatar(size: 56, bot: bot)
                         .opacity(order == nil ? 0.5 : 1)
                     if let order {
                         Text("\(order + 1)")

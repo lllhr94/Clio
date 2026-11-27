@@ -27,7 +27,7 @@ struct NewChatSheet: View {
                                 pick = bot.id
                             } label: {
                                 HStack(spacing: Ink.Space.m) {
-                                    PetStill(size: 32, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                                    CompanionAvatar(size: 32, wash: Ink.wash(for: bot), bot: bot)
                                     Text(bot.name).foregroundStyle(Ink.ink)
                                     Spacer()
                                     if pick == bot.id {

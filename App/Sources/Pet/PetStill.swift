@@ -12,62 +12,11 @@ struct PetStill: View {
     var wash: Color?
     /// A portrait: the pet a little smaller, on a round ground.
     var avatar = false
-    /// Whose portrait: a companion with a face of its own (a pet, or a photo) shows that instead of the default pet.
-    var bot: BotInfo? = nil
-    /// A photo not saved yet (the editor's preview).
-    var photo: UIImage? = nil
-    /// The editor's choice before it is saved: overrides `bot.avatar` (`.some(nil)` = the default pet).
-    var face: String?? = nil
+    var explicitPack: PetPack? = nil
 
-    private var look: String? {
-        if let face { return face }
-        return bot?.avatar
-    }
+    var body: some View { drawn }
 
-    private var avatarPhotoLoadID: String? {
-        guard avatar, photo == nil, look == "photo", let id = bot?.id else { return nil }
-        return Avatars.cachedImage(id) == nil && !Avatars.isKnownMissing(id) ? id : nil
-    }
-
-    var body: some View {
-        Group {
-            if avatar, let picture = portrait {
-                Image(uiImage: picture)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: size, height: size)
-                    .clipShape(Circle())
-                    .accessibilityHidden(true)
-            } else if avatar, photo == nil, look == "photo", let id = bot?.id, !Avatars.isKnownMissing(id) {
-                Circle()
-                    .fill(wash ?? Ink.accentWash)
-                    .frame(width: size, height: size)
-                    .accessibilityHidden(true)
-            } else {
-                drawn
-            }
-        }
-        .task(id: avatarPhotoLoadID) {
-            guard let id = avatarPhotoLoadID else { return }
-            await Avatars.loadAsync(id)
-        }
-    }
-
-    private var portrait: UIImage? {
-        if let photo { return photo }
-        guard look == "photo", let bot else { return nil }
-        _ = Avatars.revision
-        return Avatars.cachedImage(bot.id)
-    }
-
-    /// This companion's pet if it has one of its own, else the one picked in 宠物设置.
-    private var pack: PetPack? {
-        if let chosen = look, chosen.hasPrefix("pet:") {
-            let id = String(chosen.dropFirst(4))
-            if let own = PetLibrary.shared.packs.first(where: { $0.id == id }) { return own }
-        }
-        return PetLibrary.shared.pack
-    }
+    private var pack: PetPack? { explicitPack ?? PetLibrary.shared.pack }
 
     private var drawn: some View {
         let inner = avatar ? size * 0.78 : size

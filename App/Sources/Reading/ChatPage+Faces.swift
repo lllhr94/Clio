@@ -77,7 +77,7 @@ extension ChatPage {
     func speakerHead(_ line: ChatLine) -> some View {
         let speaker = line.speaker.flatMap { id in team.bots.first { $0.id == id } } ?? (isRoom ? nil : bot)
         return HStack(spacing: Ink.Space.s) {
-            PetStill(size: faces ? Self.face : 22, wash: speaker.map { Ink.wash(for: $0) }, avatar: true, bot: speaker)
+            CompanionAvatar(size: faces ? Self.face : 22, wash: speaker.map { Ink.wash(for: $0) }, bot: speaker)
             Text(speaker?.name ?? line.speakerName ?? bot.name)
                 .font(.system(size: Ink.Size.small, weight: .semibold))
                 .foregroundStyle(Ink.inkSoft)

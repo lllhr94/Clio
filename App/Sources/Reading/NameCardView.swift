@@ -39,16 +39,11 @@ struct NameCardView: View {
         .accessibilityLabel(Words.t("\(bot.name)的名帖"))
     }
 
-    /// The face on its colour: a pet drawn large, or a photo filling the frame.
+    /// The companion's portrait on the card's colour.
     private var portrait: some View {
         ZStack {
             LinearGradient(colors: [wash.opacity(0.55), wash.opacity(0.25)], startPoint: .top, endPoint: .bottom)
-            if bot.avatar == "photo", let photo = Avatars.image(bot.id) {
-                Image(uiImage: photo).resizable().scaledToFill()
-            } else {
-                PetStill(size: width * 0.62, bot: bot, face: .some(bot.avatar))
-                    .offset(y: width * 0.04)
-            }
+            CompanionAvatar(size: width * 0.62, bot: bot, photo: bot.avatar == "photo" ? Avatars.image(bot.id) : nil)
         }
         .frame(width: width, height: width * 0.86)
         .clipped()
@@ -174,6 +169,8 @@ struct NameCardSheet: View {
     @State private var flipped = false
     @State private var editing = false
     @State private var shared: [URL] = []
+    @State private var includePrivateNotes = false
+    @State private var exportFailed = false
 
     /// The companion as it is now (it may have been edited behind this sheet).
     private var current: BotInfo { team.bots.first { $0.id == bot.id } ?? bot }
@@ -194,6 +191,13 @@ struct NameCardSheet: View {
                     Text("点一下翻到背面")
                         .font(Ink.footnote)
                         .foregroundStyle(Ink.inkFaint)
+                    if current.privateNotes?.isEmpty == false {
+                        Toggle(L.t("persona.includePrivateNotes"), isOn: $includePrivateNotes)
+                            .padding(.horizontal, Ink.Space.page)
+                    }
+                    if exportFailed {
+                        Text(L.t("persona.exportFailed")).font(Ink.footnote).foregroundStyle(Ink.stop)
+                    }
                     HStack(spacing: Ink.Space.m) {
                         Button {
                             Haptics.light()
@@ -228,6 +232,7 @@ struct NameCardSheet: View {
         }
         .sheet(isPresented: $editing, onDismiss: prepareShare) { BotEditor(team: team, bot: current) }
         .task { prepareShare() }
+        .onChange(of: includePrivateNotes) { _, _ in prepareShare() }
     }
 
     private var card: some View {
@@ -244,17 +249,21 @@ struct NameCardSheet: View {
     /// The picture (drawn at three times its size) and the file, ready to hand over.
     @MainActor
     private func prepareShare() {
+        shared = []
+        exportFailed = false
         let who = current
+        guard let file = try? NameCard.file(for: who, includePrivateNotes: includePrivateNotes) else {
+            exportFailed = true
+            return
+        }
         let renderer = ImageRenderer(content: NameCardView(bot: who, width: 330, model: model, forSharing: true).padding(24).background(Ink.paper))
         renderer.scale = 3
         var urls: [URL] = []
         if let image = renderer.uiImage, let data = image.pngData() {
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("名帖", isDirectory: true)
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let url = folder.appendingPathComponent("\(who.name.replacingOccurrences(of: "/", with: "-")).名帖.png")
+            let url = file.deletingPathExtension().appendingPathExtension("png")
             if (try? data.write(to: url, options: .atomic)) != nil { urls.append(url) }
         }
-        urls.append(NameCard.file(for: who))
+        urls.append(file)
         shared = urls
     }
 }

@@ -285,15 +285,213 @@ public final class PendingApprovalQueue: @unchecked Sendable {
     }
 }
 
+/// Decision returned by `PlanModeReadOnlyPolicy` for a single tool invocation.
+public enum PlanModeDecision: Equatable, Sendable {
+    case allow
+    case deny(reason: String)
+
+    public var isAllowed: Bool {
+        if case .allow = self { return true }
+        return false
+    }
+}
+
+/// Evaluates read-only capability by implementation identity, bound host, and arguments while Plan mode is active.
+/// Hard-blocks mutating tools, shell/JS/SSH/browser interactions, memory/experience writes, vault/secret collection,
+/// scheduled/external sends, and ALL third-party MCP tools (including deferred MCP meta-tools).
+public enum PlanModeReadOnlyPolicy {
+    private static let readOnlyDeskWorkspaceTools: Set<String> = [
+        "read_file", "list_dir", "glob", "grep",
+    ]
+
+    private static let readOnlySafeTools: Set<String> = [
+        "photo_text", "read_pdf", "search_docs",
+        "web_search", "web_read", "weather",
+        "recall", "search_history", "recall_experience",
+        "calendar_events", "reminders", "device_status", "current_status",
+        "use_skill", "update_plan", "ask_companion",
+    ]
+
+    public static func evaluate(
+        toolName: String,
+        hostKind: String,
+        arguments: JSONValue
+    ) -> PlanModeDecision {
+        // Third-party MCP tools and deferred MCP meta-tools are always hard-blocked in Plan mode.
+        if toolName.hasPrefix("mcp_") || toolName == "tool_search" || toolName == "tool_help" || toolName == "tool_invoke" {
+            return .deny(reason: "当前处于「规划模式 · 只看不动」，已拦截第三方扩展工具「\(toolName)」。请先完成规划并待用户确认执行后再调用。")
+        }
+
+        let normalizedHost = hostKind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        // `view_image`: local `ref`-only conversation image reload is side-effect free; `path` reads via host (desk only).
+        if toolName == "view_image" {
+            if let ref = arguments["ref"]?.string, !ref.isEmpty, arguments["path"] == nil {
+                return .allow
+            }
+            if normalizedHost.isEmpty || normalizedHost == "desk" {
+                return .allow
+            }
+            return .deny(reason: "当前处于「规划模式 · 只看不动」，为避免触发远程主机或终端环境副作用，已暂停在「\(hostKind)」上读取图片路径。")
+        }
+
+        // Workspace inspection tools are allowed strictly on the read-only local desk boundary (never Den/Hills SSH).
+        if readOnlyDeskWorkspaceTools.contains(toolName) {
+            if normalizedHost.isEmpty || normalizedHost == "desk" {
+                return .allow
+            }
+            return .deny(reason: "当前处于「规划模式 · 只看不动」，为避免触发远程主机或终端环境副作用，已暂停在「\(hostKind)」上执行「\(toolName)」。")
+        }
+
+        if readOnlySafeTools.contains(toolName) {
+            return .allow
+        }
+
+        // `ask_user` is allowed ONLY for plain non-secret clarifying questions; vault/secret forms are hard-blocked.
+        if toolName == "ask_user" {
+            if arguments["secret"]?.bool == true {
+                return .deny(reason: "当前处于「规划模式 · 只看不动」，不能发起密匣填表或采集密码、密钥等机密信息。")
+            }
+            if let fields = arguments["fields"]?.array,
+               fields.contains(where: { $0["secret"]?.bool == true }) {
+                return .deny(reason: "当前处于「规划模式 · 只看不动」，不能发起密匣填表或采集密码、密钥等机密信息。")
+            }
+            switch AskUserRules.parse(arguments) {
+            case .success(let parsed):
+                if parsed.requiresVault || parsed.questions.contains(where: \.secret) {
+                    return .deny(reason: "当前处于「规划模式 · 只看不动」，不能发起密匣填表或采集密码、密钥等机密信息。")
+                }
+                return .allow
+            case .failure:
+                return .deny(reason: "当前处于「规划模式 · 只看不动」，问题参数校验未通过，未发起询问。")
+            }
+        }
+
+        return .deny(reason: "当前处于「规划模式 · 只看不动」，已拦截可能产生写入或外部副作用的操作「\(toolName)」。请先用只读方式调研并更新方案清单，等用户点击确认后再执行。")
+    }
+}
+
+/// Wraps ANY tool across all `Grant.gate` branches (internal, Asking, LiveGatedTool) and deferred MCP tools
+/// with live Plan-mode read-only enforcement at both dispatch (`approval`) and pre-execution (`run`).
+public struct PlanGatedTool: AgentTool {
+    public let inner: AgentTool
+    public let hostKind: String
+    public let isPlanModeActive: @Sendable () -> Bool
+
+    public init(
+        inner: AgentTool,
+        hostKind: String = "desk",
+        isPlanModeActive: @escaping @Sendable () -> Bool
+    ) {
+        self.inner = inner
+        self.hostKind = hostKind
+        self.isPlanModeActive = isPlanModeActive
+    }
+
+    public var spec: ToolSpec { inner.spec }
+    public var isReadOnlySafe: Bool { inner.isReadOnlySafe }
+    public var hasSideEffects: Bool { inner.hasSideEffects }
+    public func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
+
+    public func approval(for arguments: JSONValue) -> ApprovalAsk? {
+        let decision = PlanModeReadOnlyPolicy.evaluate(toolName: spec.name, hostKind: hostKind, arguments: arguments)
+        if isPlanModeActive(), !decision.isAllowed {
+            // Skip prompting so `run(_:)` returns the gentle Plan boundary refusal immediately.
+            return nil
+        }
+        guard var ask = inner.approval(for: arguments) else { return nil }
+        ask.planReadOnlySafe = decision.isAllowed
+        return ask
+    }
+
+    public func run(_ arguments: JSONValue) async throws -> ToolOutput {
+        // Pre-execution re-check: even if a turn entered Plan mode mid-flight or during an approval wait, refuse cleanly.
+        if isPlanModeActive(),
+           case .deny(let reason) = PlanModeReadOnlyPolicy.evaluate(toolName: spec.name, hostKind: hostKind, arguments: arguments) {
+            return ToolOutput(reason, isError: true)
+        }
+        return try await inner.run(arguments)
+    }
+}
+
+/// Thread-safe mirror of per-conversation Plan mode and inherited read-only sub-companion ceilings.
+public final class LivePlanModeLedger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var planChats: Set<String> = []
+    private var inheritedReadOnlyChats: Set<String> = []
+    private var delegationParent: [String: String] = [:]
+
+    public init() {}
+
+    public func setPlanMode(_ active: Bool, for chat: String) {
+        lock.lock()
+        if active && !chat.hasPrefix("casual-") {
+            planChats.insert(chat)
+        } else {
+            planChats.remove(chat)
+        }
+        lock.unlock()
+    }
+
+    public func setInheritedReadOnly(_ active: Bool, for chat: String) {
+        lock.lock()
+        if active {
+            inheritedReadOnlyChats.insert(chat)
+        } else {
+            inheritedReadOnlyChats.remove(chat)
+        }
+        lock.unlock()
+    }
+
+    public func setDelegationParent(_ parent: String?, for child: String) {
+        lock.lock()
+        if let parent, !parent.isEmpty, parent != child {
+            delegationParent[child] = parent
+        } else {
+            delegationParent.removeValue(forKey: child)
+        }
+        lock.unlock()
+    }
+
+    public func isPlanMode(_ chat: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return planChats.contains(chat)
+    }
+
+    public func isInheritedReadOnly(_ chat: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if inheritedReadOnlyChats.contains(chat) { return true }
+        if let parent = delegationParent[chat] {
+            return planChats.contains(parent) || inheritedReadOnlyChats.contains(parent)
+        }
+        return false
+    }
+
+    /// True when either user Plan mode OR an inherited read-only ceiling applies to `chat`.
+    public func isRestricted(_ chat: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if planChats.contains(chat) || inheritedReadOnlyChats.contains(chat) { return true }
+        if let parent = delegationParent[chat] {
+            return planChats.contains(parent) || inheritedReadOnlyChats.contains(parent)
+        }
+        return false
+    }
+}
+
 /// Wraps a tool with live permission evaluation so mid-turn permission changes take effect immediately,
 /// tightening `.allow -> .ask` or recovering `.off -> .ask/.allow` before execution is checked atomically,
 /// and switching a conversation's workplace/host blocks stale executions on the previous host.
 public struct LiveGatedTool: AgentTool {
     public let inner: AgentTool
     public let context: ToolExecutionContext
+    public let hostKind: String
     let receipts: ApprovalReceiptBook?
     let policyRevision: (@Sendable () -> UInt64)?
     let isContextStillValid: (@Sendable () -> Bool)?
+    let planRefusal: (@Sendable (JSONValue) -> String?)?
     let access: @Sendable () -> LiveToolAccess
     let reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)?
 
@@ -302,17 +500,21 @@ public struct LiveGatedTool: AgentTool {
     public init(
         inner: AgentTool,
         context: ToolExecutionContext = ToolExecutionContext(executionChat: ""),
+        hostKind: String = "desk",
         receipts: ApprovalReceiptBook? = nil,
         policyRevision: (@Sendable () -> UInt64)? = nil,
         isContextStillValid: (@Sendable () -> Bool)? = nil,
+        planRefusal: (@Sendable (JSONValue) -> String?)? = nil,
         access: @escaping @Sendable () -> LiveToolAccess,
         reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
     ) {
         self.inner = inner
         self.context = context
+        self.hostKind = hostKind
         self.receipts = receipts
         self.policyRevision = policyRevision
         self.isContextStillValid = isContextStillValid
+        self.planRefusal = planRefusal
         self.access = access
         self.reconfirm = reconfirm
     }
@@ -323,6 +525,9 @@ public struct LiveGatedTool: AgentTool {
     public func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
 
     public func approval(for arguments: JSONValue) -> ApprovalAsk? {
+        if let refusal = planRefusal?(arguments), !refusal.isEmpty {
+            return nil
+        }
         if let isContextStillValid, !isContextStillValid() {
             return nil
         }
@@ -341,6 +546,9 @@ public struct LiveGatedTool: AgentTool {
 
     private func runBound(_ arguments: JSONValue, invocationID: String) async throws -> ToolOutput {
         defer { receipts?.revoke(invocation: invocationID) }
+        if let refusal = planRefusal?(arguments), !refusal.isEmpty {
+            return ToolOutput(refusal, isError: true)
+        }
         if let isContextStillValid, !isContextStillValid() {
             return ToolOutput(Self.workplaceChangedRefusal, isError: true)
         }
@@ -355,6 +563,10 @@ public struct LiveGatedTool: AgentTool {
             if case .off(let refusal) = access() {
                 return ToolOutput(refusal, isError: true)
             }
+            // Final atomic Plan-mode boundary re-check immediately before execution.
+            if let refusal = planRefusal?(arguments), !refusal.isEmpty {
+                return ToolOutput(refusal, isError: true)
+            }
             return try await inner.run(arguments)
         }
         // This invocation was not explicitly approved by the user on the approval slip/card.
@@ -364,6 +576,9 @@ public struct LiveGatedTool: AgentTool {
             if Task.isCancelled {
                 return ToolOutput("这一轮已经停下，这一步没有做。", isError: true)
             }
+            if let refusal = planRefusal?(arguments), !refusal.isEmpty {
+                return ToolOutput(refusal, isError: true)
+            }
             if let isContextStillValid, !isContextStillValid() {
                 return ToolOutput(Self.workplaceChangedRefusal, isError: true)
             }
@@ -372,6 +587,9 @@ public struct LiveGatedTool: AgentTool {
                 return ToolOutput(refusal, isError: true)
             }
             guard let ask = evaluate(for: arguments, using: current) else {
+                if let refusal = planRefusal?(arguments), !refusal.isEmpty {
+                    return ToolOutput(refusal, isError: true)
+                }
                 return try await inner.run(arguments)
             }
             if ToolInvocation.isConcurrentBatch {
@@ -394,6 +612,9 @@ public struct LiveGatedTool: AgentTool {
             if case .off(let refusal) = access() {
                 return ToolOutput(refusal, isError: true)
             }
+            if let refusal = planRefusal?(arguments), !refusal.isEmpty {
+                return ToolOutput(refusal, isError: true)
+            }
             if reconfirmedByUser {
                 return try await inner.run(arguments)
             }
@@ -402,11 +623,15 @@ public struct LiveGatedTool: AgentTool {
             if let policyRevision, policyRevision() != revBefore {
                 continue
             }
+            if let refusal = planRefusal?(arguments), !refusal.isEmpty {
+                return ToolOutput(refusal, isError: true)
+            }
             return try await inner.run(arguments)
         }
     }
 
     private func evaluate(for arguments: JSONValue, using current: LiveToolAccess) -> ApprovalAsk? {
+        let safeForPlan = PlanModeReadOnlyPolicy.evaluate(toolName: spec.name, hostKind: hostKind, arguments: arguments).isAllowed
         switch current {
         case .off:
             return nil
@@ -416,18 +641,21 @@ public struct LiveGatedTool: AgentTool {
             if existing.code == nil {
                 existing.code = Taint.codePayload(tool: spec.name, arguments: arguments)
             }
+            existing.planReadOnlySafe = safeForPlan
             return existing
         case .ask(let title):
             if var existing = inner.approval(for: arguments) {
                 if existing.code == nil {
                     existing.code = Taint.codePayload(tool: spec.name, arguments: arguments)
                 }
+                existing.planReadOnlySafe = safeForPlan
                 return existing
             }
             return ApprovalAsk(
                 title: title,
                 reason: inner.label(for: arguments),
-                code: Taint.codePayload(tool: spec.name, arguments: arguments)
+                code: Taint.codePayload(tool: spec.name, arguments: arguments),
+                planReadOnlySafe: safeForPlan
             )
         }
     }

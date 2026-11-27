@@ -473,7 +473,7 @@ struct ChatBottomStackView<FindBar: View>: View {
         let budget = sharedCardBudget
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
-                PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: viewportMetrics.size)
+                PetPerchSpace(face: nil, viewport: viewportMetrics.size)
                 VStack(spacing: 0) {
                     ChatDockedFormSlot(
                         chatKey: chat.key,
@@ -555,7 +555,7 @@ struct ChatBottomStackView<FindBar: View>: View {
                         asker: asker,
                         dictationSlot: dictationSlot,
                         petPerch: petPerch,
-                        face: isRoom ? nil : bot.avatar,
+                        face: nil,
                         baseSheetOpen: baseSheetOpen,
                         coveredByPage: coveredByPage,
                         quiet: p > 0.15,
@@ -588,15 +588,47 @@ struct ChatBottomStackView<FindBar: View>: View {
         }
         .animation(petDockMotion, value: finding)
         .confirmationDialog(L.t("chat.stopAsk"), isPresented: $askingStop, titleVisibility: .visible) {
-            Button(L.t("chat.stopNow"), role: .destructive) {
-                Haptics.lock()
-                if team.workDetail(for: chat.key).words != nil || chat.hasStreaming {
-                    chat.stop()
+            let activeSubs = team.subtasks.activeThreads(for: chat.key)
+            let hasRemote = team.subtasks.hasActiveRemoteHillsTask(for: chat.key)
+            if activeSubs.isEmpty {
+                Button(L.t("chat.stopNow"), role: .destructive) {
+                    Haptics.lock()
+                    if team.workDetail(for: chat.key).words != nil || chat.hasStreaming {
+                        chat.stop()
+                    }
+                }
+            } else {
+                Button(L.t("subtask.stopMainOnly"), role: .destructive) {
+                    Haptics.lock()
+                    if team.workDetail(for: chat.key).words != nil || chat.hasStreaming {
+                        chat.stop()
+                    }
+                }
+                if hasRemote {
+                    Button(L.t("subtask.stopLocalOnly"), role: .destructive) {
+                        Haptics.lock()
+                        team.stopAll(chat.key, includeRemoteHills: false)
+                    }
+                    Button(L.t("subtask.stopAllIncludingRemote"), role: .destructive) {
+                        Haptics.lock()
+                        team.stopAll(chat.key, includeRemoteHills: true)
+                    }
+                } else {
+                    Button(L.t("subtask.stopAllWithSubtasks"), role: .destructive) {
+                        Haptics.lock()
+                        team.stopAll(chat.key, includeRemoteHills: true)
+                    }
                 }
             }
             Button(L.t("actions.cancel"), role: .cancel) {}
         } message: {
-            Text(L.t("chat.stopAskNote"))
+            if team.subtasks.hasActiveRemoteHillsTask(for: chat.key) {
+                Text(L.t("subtask.stopRemoteNotice"))
+            } else if !team.subtasks.activeThreads(for: chat.key).isEmpty {
+                Text(L.t("subtask.stopScopeNotice"))
+            } else {
+                Text(L.t("chat.stopAskNote"))
+            }
         }
     }
 }
@@ -905,9 +937,50 @@ private struct ChatDockAreaView: View {
         )
     }
 
+    @State private var showingSubtasks = false
+
     var body: some View {
+        let visibleSubtasks = team.subtasks.threads(for: chat.key).filter {
+            $0.status.isActive || $0.status == .interrupted || $0.status == .interruptedNeedsReconcile
+        }
         VStack(spacing: Ink.Space.xs) {
+            if !visibleSubtasks.isEmpty {
+                SubtaskCapsuleCard(threads: visibleSubtasks) {
+                    showingSubtasks = true
+                }
+            }
+            if team.isPlanModeActive(for: chat.key) {
+                HStack(spacing: Ink.Space.xs) {
+                    Image(systemName: "map")
+                        .font(.system(size: Ink.Size.micro, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                    Text(L.t("plan.statusCapsule"))
+                        .font(.system(size: Ink.Size.micro, weight: .medium))
+                        .foregroundStyle(Ink.inkSoft)
+                    Spacer(minLength: 0)
+                    if !team.livePlanModeLedger.isInheritedReadOnly(chat.key) {
+                        Button {
+                            Haptics.light()
+                            team.setPlanMode(false, in: chat.key)
+                        } label: {
+                            Text(L.t("plan.exitAction"))
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                .foregroundStyle(Ink.accent)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, Ink.Space.m)
+                .padding(.vertical, Ink.Space.xs)
+                .background(Ink.surfaceSubtle, in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(Ink.accent.opacity(0.28), lineWidth: 0.5)
+                        .allowsHitTesting(false)
+                }
+            }
             if let plan = team.plans[chat.key] {
+                let record = team.planRecords[chat.key]
                 let fallbackMax = chatViewportHeight > 0 ? max(160, chatViewportHeight * 0.38) : nil
                 let (resolvedPlanMax, forcePlanCollapsed): (CGFloat?, Bool) = {
                     switch cardBudget?.planCard {
@@ -919,7 +992,20 @@ private struct ChatDockAreaView: View {
                         return (fallbackMax, false)
                     }
                 }()
-                PlanCard(steps: plan, maxHeight: resolvedPlanMax, forceCollapsed: forcePlanCollapsed) {
+                let canExecute = record.map {
+                    team.canExecutePlan(chat: chat.key, revision: $0.revision, turnID: $0.turnID)
+                } ?? false
+                PlanCard(
+                    steps: plan,
+                    maxHeight: resolvedPlanMax,
+                    forceCollapsed: forcePlanCollapsed,
+                    planMode: canExecute,
+                    revision: record?.revision ?? 0,
+                    turnID: record?.turnID ?? "",
+                    onExecutePlan: canExecute ? { rev, tid in
+                        _ = team.unlockPlanAndExecute(chat: chat.key, revision: rev, turnID: tid)
+                    } : nil
+                ) {
                     team.clearPlan(chat.key)
                 }
                 .transition(calmPetMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
@@ -927,6 +1013,10 @@ private struct ChatDockAreaView: View {
             dockContent
         }
         .animation(petDockMotion, value: waiting?.id)
+        .sheet(isPresented: $showingSubtasks) {
+            SubtaskThreadSheet(team: team, subtasks: team.subtasks, parentChat: chat.key)
+                .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
+        }
     }
 
     @ViewBuilder

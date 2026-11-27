@@ -305,6 +305,9 @@ extension TeamModel {
             mainBotId: mainBotId
         )
         deliverDue()
+        if keeping {
+            _ = subtasks.reconcileOnLaunch(team: self)
+        }
     }
 
     var keeping: Bool { phase != .demo }

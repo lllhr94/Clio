@@ -78,10 +78,9 @@ private struct ChatTraceHostView: View {
             }
             if row.opens, row.faces || row.isRoom {
                 HStack(spacing: Ink.Space.s) {
-                    PetStill(
+                    CompanionAvatar(
                         size: row.faces ? ChatPage.face : ChatCellMetrics.compactSpeakerSize,
                         wash: row.speakerBot.map { Ink.wash(for: $0) },
-                        avatar: true,
                         bot: row.speakerBot
                     )
                     Text(row.speakerTitle)

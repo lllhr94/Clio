@@ -28,9 +28,16 @@ struct BotInfo: Codable, Identifiable, Equatable, Sendable {
     var style: String?
     /// The character on its seal; nil is the first character of its name.
     var seal: String?
-    /// Its face: nil follows the pet picked in 宠物设置; "pet:<pack id>" one particular pet; "photo" a picture
+    /// Its face: nil is a name seal; "pet:<pack id>" one particular pet; "photo" a picture
     /// from the album, kept on this phone (`Avatars`).
     var avatar: String?
+    var relationship: String? = nil
+    var expressionStyle: String? = nil
+    var antiSlop: Bool? = nil
+    var firstPersonThoughts: Bool? = nil
+    var expertiseBoundary: String? = nil
+    var privateNotes: String? = nil
+    var publicAgentsCard: String? = nil
 }
 
 struct RoomInfo: Codable, Identifiable, Equatable, Sendable {
@@ -49,6 +56,7 @@ struct Entry: Codable, Identifiable, Equatable, Sendable {
     var message: Message
     /// In a group: the Bot that said it.
     var speaker: String?
+    var firstPersonThoughts: Bool? = nil
     /// File names under `media/`.
     var photos: [String] = []
     /// What the user saw while the tool ran: 「搜索：重庆天气」.

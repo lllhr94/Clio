@@ -61,7 +61,11 @@ struct ChatLine: Identifiable, Equatable, Sendable {
 @MainActor @Observable
 final class ChatLiveStreamState {
     var text = ""
-    var reasoning = ""
+    var rawReasoning = ""
+    var firstPersonThoughts = false
+    var reasoning: String {
+        ReplySanitizer.formatPublicReasoning(rawReasoning, firstPerson: firstPersonThoughts)
+    }
     var pulse = ""
     var pulseSpeaker: String?
     var activeTool: String?
@@ -95,8 +99,8 @@ final class ChatModel {
     private(set) var hasStreaming = false
     /// What the model is thinking right now, before it answers or between steps. Cleared once it moves on.
     var thinking: String {
-        get { stream.reasoning }
-        set { stream.reasoning = newValue }
+        get { stream.rawReasoning }
+        set { stream.rawReasoning = newValue }
     }
     @ObservationIgnored private var pendingThought = ""
     @ObservationIgnored private var thoughtUpdate: Task<Void, Never>?
@@ -454,7 +458,7 @@ final class ChatModel {
                 // 心绪 written before a step with tools belongs to the reply that ends the turn.
                 if let felt = entry.pulse, feltThisTurn == nil { feltThisTurn = felt }
                 if let reasoning = message.reasoning?.trimmingCharacters(in: .whitespacesAndNewlines), !reasoning.isEmpty {
-                    thought += (thought.isEmpty ? "" : "\n\n") + reasoning
+                    thought += (thought.isEmpty ? "" : "\n\n") + ReplySanitizer.formatPublicReasoning(reasoning, firstPerson: entry.firstPersonThoughts == true)
                 }
                 if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     var line = ChatLine(id: entry.id, kind: .bot, text: message.text, speaker: entry.speaker)
@@ -589,7 +593,8 @@ final class ChatModel {
         case .pulse(let piece, let speaker):
             if pulseSpeaker != speaker { pulseSpeaker = speaker }
             pulse += piece
-        case .thinking(let piece):
+        case .thinking(let piece, let firstPerson):
+            stream.firstPersonThoughts = firstPerson
             showThinking(piece)
         case .text(let piece):
             clearThinking()
