@@ -80,7 +80,8 @@ final class ClioAppPR2BTests: XCTestCase {
 
         setDefault(true, forKey: "clio.endpoint.paused.p2")
 
-        let team = TeamModel(keeping: false)
+        let team = TeamModel()
+        team.phase = .demo
         team.settings.endpoints = [epPrimary, epPaused, epB2, epB3]
         team.settings.defaultModel = "p1/m1"
         team.settings.setBackupModelsList(["p2/m2", "p3/m3", "p4/m4"])
@@ -111,10 +112,16 @@ final class ClioAppPR2BTests: XCTestCase {
             func models() async throws -> [String] { [] }
         }
 
-        let bot = BotInfo(id: "bot-b2b", name: "Tester", role: nil, instructions: "hi", model: "p1/m1")
+        let bot = BotInfo(id: "bot-b2b-\(UUID().uuidString.lowercased())", name: "Tester", role: nil, instructions: "hi", model: "p1/m1")
         team.bots = [bot]
         let chatKey = TeamModel.key(bot: bot.id)
         team.entries[chatKey] = [Entry(id: UUID().uuidString, at: Now.ms, message: .user("hello"))]
+        defer {
+            team.turnProviderOverrideForTesting = nil
+            ChatDisk.finishWrites()
+            Disk.remove(Disk.chatFile(chatKey))
+            Disk.remove(TeamModel.optionsFile(chatKey))
+        }
 
         let lock = NSLock()
         var called: [String] = []
