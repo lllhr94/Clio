@@ -1585,6 +1585,7 @@ final class MessageRevealCoordinator {
         } else {
             controller.observeUpdate(latestLength: timeline.totalPoints, at: now)
         }
+        _ = controller.tick(now: now)
         self.isComplete = timeline.totalPoints == 0
             || (controller.isFinalizing && clamped >= Double(timeline.totalPoints))
     }
@@ -1752,6 +1753,7 @@ final class ChatRevealSession {
         } else {
             self.controller.observeUpdate(latestLength: snapshot.totalPoints, at: now)
         }
+        _ = self.controller.tick(now: now)
 
         if snapshot.totalPoints == 0 || (controller.isFinalizing && displayedPoints >= Double(snapshot.totalPoints)) {
             self.isComplete = true

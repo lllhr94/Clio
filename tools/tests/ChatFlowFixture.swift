@@ -391,8 +391,9 @@ private enum ChatFlowTests {
         let total = 600
         let live = TextRevealController(initialRevealedCount: 2, initialLength: 60, durationMultiplier: 1.0)
         live.observeUpdate(latestLength: 60, at: 0)
+        _ = live.tick(now: 0)
         live.observeUpdate(latestLength: total, at: 0.2)
-        _ = live.tick(now: 0.2)
+        _ = live.tick(now: 0.2 + 1.0 / 60)
         let first = ChatRevealPacer.stepCursor(
             current: 2, controllerTarget: live.revealedCount, totalPoints: total,
             elapsed: 1.0 / 60, pace: .balanced, hasRateSample: true, isFinalizing: false
