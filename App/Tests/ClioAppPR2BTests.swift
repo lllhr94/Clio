@@ -8,12 +8,13 @@ import XCTest
 final class ClioAppPR2BTests: XCTestCase {
     private var cleanupKeys: [String] = []
 
-    override func tearDown() {
+    @MainActor
+    override func tearDown() async throws {
         for key in cleanupKeys {
             UserDefaults.standard.removeObject(forKey: key)
         }
         cleanupKeys.removeAll()
-        super.tearDown()
+        try await super.tearDown()
     }
 
     private func setDefault(_ value: Any?, forKey key: String) {
@@ -157,12 +158,17 @@ final class ClioAppPR2BTests: XCTestCase {
         }
 
         let box = Hills.ConnectorAccessBox()
-        box.update(enabledServers: ["srv_a"], bumpGeneration: false)
+        box.update(
+            servers: ["srv_a": .init(enabled: true, url: "https://mcp.example.com", tunnelHost: nil)],
+            bumpGeneration: false
+        )
         let captured = box.generation
         let policy = DeferredMCPTools.Policy(
             connectorGeneration: captured,
-            currentGeneration: { box.generation },
-            isPermitted: { serverID, _ in box.isEnabled(serverID) }
+            isGenerationCurrent: { box.generation == captured },
+            atomicCheck: { serverID, _ in
+                box.snapshotGenerationAndCheck(expectedGeneration: captured, serverID: serverID)
+            }
         )
 
         let entries = (1...26).map { i in
@@ -176,7 +182,7 @@ final class ClioAppPR2BTests: XCTestCase {
         XCTAssertFalse(okHelp.isError)
 
         // Mutating connector configuration bumps generation and revokes access immediately.
-        box.update(enabledServers: [], bumpGeneration: true)
+        box.update(servers: [:], bumpGeneration: true)
         let deniedHelp = try await help.run(.object(["tool": .string("mcp_srv__t1")]))
         let deniedInvoke = try await invoke.run(.object(["tool": .string("mcp_srv__t1")]))
         XCTAssertTrue(deniedHelp.isError)

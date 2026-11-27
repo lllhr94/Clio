@@ -7,7 +7,7 @@ public struct OpenAIProvider: ModelProvider {
     /// How this service wants to hear about thinking.
     public var style: ThinkingStyle
     public var customHeaders: [String: String]
-    private var fixedRoute: Bool
+    var fixedRoute: Bool
 
     public init(
         baseURL: String,
@@ -23,16 +23,38 @@ public struct OpenAIProvider: ModelProvider {
         self.customHeaders = customHeaders
     }
 
+    func effectiveContractKey(for model: String, endpointURL: URL? = nil) -> EndpointContractKey {
+        let resolvedURL = endpointURL ?? (try? HTTP.endpoint(baseURL, "/chat/completions"))
+        let route = resolvedURL?.path.isEmpty == false ? resolvedURL!.path : "/chat/completions"
+        return EndpointContractKey(origin: baseURL, protocolKind: "openai", route: route, modelID: model)
+    }
+
     public func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
-            var http = URLRequest(url: try HTTP.endpoint(baseURL, "/chat/completions"))
+            let url = try HTTP.endpoint(baseURL, "/chat/completions")
+            let derivedContract = effectiveContractKey(for: request.model, endpointURL: url)
+            if let supplied = request.contractKey, !supplied.matches(derivedContract) {
+                throw ProviderError("请求契约与当前服务地址或协议不匹配，已阻止发送。")
+            }
+            if case .missingOrIncompatible(let reason) = Self.verifyContinuation(
+                request.messages,
+                style: style,
+                contractKey: derivedContract,
+                speakerOrThreadID: request.speakerOrThreadID,
+                hasTools: !request.tools.isEmpty
+            ) {
+                throw ProviderError(reason)
+            }
+            var boundRequest = request
+            boundRequest.contractKey = derivedContract
+            var http = URLRequest(url: url)
             http.httpMethod = "POST"
             http.setValue("application/json", forHTTPHeaderField: "Content-Type")
             http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             var mergedHeaders = customHeaders
             for (k, v) in request.customHeaders { mergedHeaders[k] = v }
             HTTP.applyNonSecretHeaders(mergedHeaders, to: &http)
-            http.httpBody = try HTTP.json(Self.body(request, style: style))
+            http.httpBody = try HTTP.json(Self.body(boundRequest, style: style))
             let session = fixedRoute ? FixedModelRoute.session : nil
             return Self.splittingThoughts(
                 HTTP.stream(
@@ -210,22 +232,18 @@ public struct OpenAIProvider: ModelProvider {
                 }
                 if style.echoesReasoning, index > turnStart {
                     if let payloads = message.continuationPayloads, !payloads.isEmpty {
-                        // Contract-bound continuation payloads: project ONLY compatible payloads, never fall back to public text.
-                        let matching = payloads
-                            .filter { payload in
-                                guard payload.wireKind == "openai_reasoning_content" else { return false }
-                                guard let target = request.contractKey else {
-                                    if let own = payload.speakerOrThreadID, let targetSpeaker = request.speakerOrThreadID {
-                                        return own == targetSpeaker
-                                    }
-                                    return true
+                        // Contract-bound continuation payloads: NEVER replay without an explicit matching target contract.
+                        if let target = request.contractKey {
+                            let matching = payloads
+                                .filter { payload in
+                                    payload.wireKind == "openai_reasoning_content"
+                                        && payload.isCompatible(with: target, speakerOrThreadID: request.speakerOrThreadID)
                                 }
-                                return payload.isCompatible(with: target, speakerOrThreadID: request.speakerOrThreadID)
+                                .sorted { $0.blockOrder < $1.blockOrder }
+                            if !matching.isEmpty {
+                                let combined = matching.map(\.opaqueData).joined()
+                                if !combined.isEmpty { item["reasoning_content"] = combined }
                             }
-                            .sorted { $0.blockOrder < $1.blockOrder }
-                        if !matching.isEmpty {
-                            let combined = matching.map(\.opaqueData).joined()
-                            if !combined.isEmpty { item["reasoning_content"] = combined }
                         }
                     } else if let reasoning = message.reasoning, !reasoning.isEmpty {
                         item["reasoning_content"] = reasoning

@@ -27,9 +27,9 @@ public enum DeferredMCPTools {
 
     public struct Policy: Sendable {
         public let connectorGeneration: UInt64
-        public let currentGeneration: @Sendable () -> UInt64
-        /// Live permission check per `(serverID, toolStableID)`. Checked at BOTH `tool_help` and execution!
-        public let isPermitted: @Sendable (String, String) -> Bool
+        /// Atomic evaluation returning `nil` when permitted, or a user-facing denial reason if generation/permission changed.
+        private let evaluateAccess: @Sendable (String, String) -> String?
+        private let evaluateGeneration: @Sendable () -> Bool
 
         public init(
             connectorGeneration: UInt64,
@@ -37,18 +37,34 @@ public enum DeferredMCPTools {
             isPermitted: @escaping @Sendable (String, String) -> Bool
         ) {
             self.connectorGeneration = connectorGeneration
-            self.currentGeneration = currentGeneration
-            self.isPermitted = isPermitted
+            self.evaluateGeneration = { currentGeneration() == connectorGeneration }
+            self.evaluateAccess = { serverID, stableID in
+                if currentGeneration() != connectorGeneration {
+                    return "连接器配置已变更（代次已失效），请重新检索工具后再试。"
+                }
+                guard isPermitted(serverID, stableID) else {
+                    return "连接器权限已关闭或当前工具未被授权。"
+                }
+                return nil
+            }
+        }
+
+        public init(
+            connectorGeneration: UInt64,
+            isGenerationCurrent: @escaping @Sendable () -> Bool,
+            atomicCheck: @escaping @Sendable (String, String) -> String?
+        ) {
+            self.connectorGeneration = connectorGeneration
+            self.evaluateGeneration = isGenerationCurrent
+            self.evaluateAccess = atomicCheck
+        }
+
+        func isGenerationValid() -> Bool {
+            evaluateGeneration()
         }
 
         func checkAccess(serverID: String, stableID: String) -> String? {
-            if currentGeneration() != connectorGeneration {
-                return "连接器配置已变更（代次已失效），请重新检索工具后再试。"
-            }
-            guard isPermitted(serverID, stableID) else {
-                return "连接器权限已关闭或当前工具未被授权。"
-            }
-            return nil
+            evaluateAccess(serverID, stableID)
         }
     }
 
@@ -65,9 +81,18 @@ public enum DeferredMCPTools {
         guard mcpEntries.count > threshold else {
             return builtInTools + mcpEntries.map(\.tool)
         }
-        let indexed = Dictionary(uniqueKeysWithValues: mcpEntries.map { ($0.stableID, $0) })
+        // Safely deduplicate by stableID without ever trapping on duplicate keys.
+        var indexed: [String: Entry] = [:]
+        var uniqueEntries: [Entry] = []
+        uniqueEntries.reserveCapacity(mcpEntries.count)
+        for entry in mcpEntries {
+            if indexed[entry.stableID] == nil {
+                indexed[entry.stableID] = entry
+                uniqueEntries.append(entry)
+            }
+        }
         let metaTools: [AgentTool] = [
-            SearchTool(entries: mcpEntries, policy: policy),
+            SearchTool(entries: uniqueEntries, policy: policy),
             HelpTool(indexed: indexed, policy: policy),
             InvokeTool(indexed: indexed, policy: policy),
         ]
@@ -101,12 +126,12 @@ public enum DeferredMCPTools {
         }
 
         func run(_ arguments: JSONValue) async throws -> ToolOutput {
-            if policy.currentGeneration() != policy.connectorGeneration {
+            if !policy.isGenerationValid() {
                 return ToolOutput("连接器配置已变更（代次已失效），请刷新后重试。", isError: true)
             }
             let query = (arguments["query"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             let limit = min(25, max(1, arguments["limit"]?.int ?? 12))
-            let permitted = entries.filter { policy.isPermitted($0.serverID, $0.stableID) }
+            let permitted = entries.filter { policy.checkAccess(serverID: $0.serverID, stableID: $0.stableID) == nil }
             let matched: [Entry]
             if query.isEmpty {
                 matched = Array(permitted.prefix(limit))

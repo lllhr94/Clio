@@ -9,6 +9,7 @@ struct GenerateImage: AgentTool {
     let apiKey: String?
     var endpointKind: Endpoint.Kind = .openai
     var customHeaders: [String: String] = [:]
+    var isEndpointDispatchable: (@Sendable () -> Bool)? = nil
 
     var spec: ToolSpec {
         ToolSpec(name: Self.name, description: "按用户的要求生成一张图片，保存到书案。成功后把工具给出的 Markdown 图片行原样写进回答。", parameters: [
@@ -26,6 +27,9 @@ struct GenerateImage: AgentTool {
     func run(_ arguments: JSONValue) async throws -> ToolOutput {
         let prompt = arguments["prompt"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !prompt.isEmpty else { return failure("errors.imagePromptEmpty") }
+        if let check = isEndpointDispatchable, !check() {
+            return ToolOutput("当前生图服务已暂停或不可用，未发起生图请求。", isError: true)
+        }
         guard let apiKey, !apiKey.isEmpty else { return failure("errors.invalidApiKey") }
         let size = arguments["size"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let resolvedSize = size.isEmpty ? "1024x1024" : size

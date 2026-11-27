@@ -113,8 +113,8 @@ final class ClioAppPR2ATests: XCTestCase {
         XCTAssertTrue(responses.kind.supportsImages)
         XCTAssertEqual(responses.recipientIdentity?.route, "/v1/responses")
         XCTAssertTrue(
-            responses.provider(key: "sk-secret") is DisabledProtocolProvider,
-            "Responses/Codex must never silently misroute to /chat/completions before PR 2B wires OpenAIResponsesProvider"
+            responses.provider(key: "sk-secret") is OpenAIResponsesProvider,
+            "Responses/Codex endpoints wire directly to OpenAIResponsesProvider"
         )
 
         // Disabled endpoints are excluded from active resolution and first-preferred selection.

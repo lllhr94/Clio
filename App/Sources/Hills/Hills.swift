@@ -53,23 +53,56 @@ final class Hills: ObservableObject {
     @Published private(set) var borrowed: [Borrowed] = []
     @Published var lastError: [String: String] = [:]
 
-    /// Thread-safe live connector state & generation for `DeferredMCPTools` schema/execution re-checks.
+    /// Thread-safe atomic connector state & generation for `DeferredMCPTools` schema/execution re-checks
+    /// and pre-send URL/credential binding validation.
     final class ConnectorAccessBox: @unchecked Sendable {
+        struct ServerSnapshot: Equatable, Sendable {
+            let enabled: Bool
+            let url: String
+            let tunnelHost: String?
+        }
+
         private let lock = NSLock()
         private var _generation: UInt64 = 1
-        private var _enabledServers: Set<String> = []
+        private var _servers: [String: ServerSnapshot] = [:]
 
         var generation: UInt64 {
             lock.withLock { _generation }
         }
 
-        func isEnabled(_ serverID: String) -> Bool {
-            lock.withLock { _enabledServers.contains(serverID) }
+        func snapshotGenerationAndCheck(expectedGeneration: UInt64, serverID: String) -> String? {
+            lock.withLock {
+                guard _generation == expectedGeneration else {
+                    return "连接器配置已变更（代次已失效），请重新检索工具后再试。"
+                }
+                guard let srv = _servers[serverID], srv.enabled else {
+                    return "连接器权限已关闭或当前工具未被授权。"
+                }
+                return nil
+            }
         }
 
-        func update(enabledServers: Set<String>, bumpGeneration: Bool) {
+        func verifyExecution(
+            expectedGeneration: UInt64,
+            serverID: String,
+            expectedURL: String,
+            expectedTunnelHost: String?
+        ) -> Bool {
             lock.withLock {
-                _enabledServers = enabledServers
+                guard _generation == expectedGeneration,
+                      let srv = _servers[serverID],
+                      srv.enabled,
+                      srv.url == expectedURL,
+                      srv.tunnelHost == expectedTunnelHost else {
+                    return false
+                }
+                return true
+            }
+        }
+
+        func update(servers: [String: ServerSnapshot], bumpGeneration: Bool) {
+            lock.withLock {
+                _servers = servers
                 if bumpGeneration { _generation &+= 1 }
             }
         }
@@ -86,10 +119,10 @@ final class Hills: ObservableObject {
     }
 
     private func syncConnectorAccess(bumpGeneration: Bool) {
-        connectorAccess.update(
-            enabledServers: Set(servers.filter(\.enabled).map(\.id)),
-            bumpGeneration: bumpGeneration
-        )
+        let map = Dictionary(uniqueKeysWithValues: servers.map {
+            ($0.id, ConnectorAccessBox.ServerSnapshot(enabled: $0.enabled, url: $0.url, tunnelHost: $0.tunnelHost))
+        })
+        connectorAccess.update(servers: map, bumpGeneration: bumpGeneration)
     }
 
     func deferredMCPPolicy(disabledGrants: Set<String>) -> DeferredMCPTools.Policy {
@@ -97,11 +130,13 @@ final class Hills: ObservableObject {
         let capturedGen = box.generation
         return DeferredMCPTools.Policy(
             connectorGeneration: capturedGen,
-            currentGeneration: { box.generation },
-            isPermitted: { serverID, _ in
+            isGenerationCurrent: { box.generation == capturedGen },
+            atomicCheck: { serverID, _ in
                 guard !disabledGrants.contains(Grant.mcp.rawValue),
-                      Grant.mcp.policy != .off else { return false }
-                return box.isEnabled(serverID)
+                      Grant.mcp.policy != .off else {
+                    return "连接器权限已关闭或当前工具未被授权。"
+                }
+                return box.snapshotGenerationAndCheck(expectedGeneration: capturedGen, serverID: serverID)
             }
         )
     }
@@ -562,6 +597,9 @@ final class Hills: ObservableObject {
         var entries: [DeferredMCPTools.Entry] = []
         let turnBudget = MCPImageTurnBudget()
         let snapshotHosts = hosts
+        let box = connectorAccess
+        let capturedGen = box.generation
+        var usedNames: Set<String> = []
         for server in servers where server.enabled {
             let serverId = server.id
             // A name with no Latin letters or digits ("香港的浏览器") would slug to underscores only; the id keeps tools apart.
@@ -585,10 +623,29 @@ final class Hills: ObservableObject {
                         return ApprovalAsk(title: askTitle, reason: reason, detail: nil, code: compact == "{}" || compact == "null" ? nil : compact)
                     }
                 }
-                let toolName = String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64))
+                let baseName = String("mcp_\(server.connector ?? slug)__\(Self.slug(remote))".prefix(64))
+                let toolName: String
+                if usedNames.insert(baseName).inserted {
+                    toolName = baseName
+                } else {
+                    let digest = SHA256.hash(data: Data("\(serverId):\(remote)".utf8))
+                        .prefix(4).map { String(format: "%02x", $0) }.joined()
+                    let disambiguated = String(baseName.prefix(55)) + "_" + digest
+                    usedNames.insert(disambiguated)
+                    toolName = disambiguated
+                }
                 let where_ = server.connector == nil ? Words.t("远山 MCP") : Words.t("连接器")
                 let wrapped = DeskTool(name: toolName, description: "（来自\(where_)「\(title)」）" + tool.description, parameters: tool.schema, label: { _ in shown }, approval: ask) { arguments in
                     do {
+                        guard Grant.mcp.policy != .off,
+                              box.verifyExecution(
+                                  expectedGeneration: capturedGen,
+                                  serverID: serverId,
+                                  expectedURL: url,
+                                  expectedTunnelHost: tunnelHostId
+                              ) else {
+                            return ToolOutput("「\(title)」的配置或权限已变更，已取消本次调用。", isError: true)
+                        }
                         let tunnelHost: Host?
                         if let tunnelHostId {
                             guard let found = snapshotHosts.first(where: { $0.id == tunnelHostId }) else {
@@ -601,7 +658,17 @@ final class Hills: ObservableObject {
                         let address = try await Hills.address(url, through: tunnelHost)
                         let isTunneled = tunnelHost != nil
                         return try await Hills.withCredential(serverId) { token in
-                            try await MCPClient(url: address, token: token, tunneled: isTunneled)
+                            // Re-verify atomic binding right before dispatching credential + URL to prevent TOCTOU swaps.
+                            guard Grant.mcp.policy != .off,
+                                  box.verifyExecution(
+                                      expectedGeneration: capturedGen,
+                                      serverID: serverId,
+                                      expectedURL: url,
+                                      expectedTunnelHost: tunnelHostId
+                                  ) else {
+                                throw ProviderError("「\(title)」的配置或权限在发送前已变更，已阻止外发凭据。")
+                            }
+                            return try await MCPClient(url: address, token: token, tunneled: isTunneled)
                                 .call(remote, arguments: arguments, canSee: canSee, turnBudget: turnBudget)
                         }
                     } catch {

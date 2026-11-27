@@ -35,12 +35,13 @@ extension OpenAIProvider {
 
     func generateImage(model: String, prompt: String, size: String, session: URLSession?) async throws -> Data {
         let request = try imageRequest(model: model, prompt: prompt, size: size)
-        let lease = session == nil ? HTTP.SessionPool.shared.acquireLease() : nil
-        let activeSession = session ?? lease?.session ?? HTTP.session
+        let lease = (session == nil && !fixedRoute) ? HTTP.SessionPool.shared.acquireLease() : nil
+        let activeSession = session ?? (fixedRoute ? FixedModelRoute.session : (lease?.session ?? HTTP.session))
+        let taskDelegate: URLSessionTaskDelegate = fixedRoute ? FixedModelRoute.rejectDelegate : HTTP.RedirectGuardDelegate.shared
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (bytes, response) = try await activeSession.bytes(for: request, delegate: HTTP.RedirectGuardDelegate.shared)
+            (bytes, response) = try await activeSession.bytes(for: request, delegate: taskDelegate)
         } catch {
             if let lease { HTTP.SessionPool.shared.releaseLease(lease) }
             throw error

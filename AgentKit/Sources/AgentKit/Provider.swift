@@ -534,6 +534,7 @@ enum HTTP {
         private var firstMeaningfulAt: ContinuousClock.Instant?
         private var lastMeaningfulAt: ContinuousClock.Instant
         private var timeoutError: ProviderError?
+        private var completed = false
 
         init(now: ContinuousClock.Instant) {
             self.startedAt = now
@@ -542,14 +543,26 @@ enum HTTP {
 
         func markMeaningful(at now: ContinuousClock.Instant) {
             lock.lock()
-            if firstMeaningfulAt == nil { firstMeaningfulAt = now }
-            lastMeaningfulAt = now
+            if !completed {
+                if firstMeaningfulAt == nil { firstMeaningfulAt = now }
+                lastMeaningfulAt = now
+            }
             lock.unlock()
+        }
+
+        /// Atomically transitions to completed iff not already timed out. Returns true if caller owns completion.
+        func markCompleted() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !completed, timeoutError == nil else { return false }
+            completed = true
+            return true
         }
 
         func evaluate(at now: ContinuousClock.Instant, timeouts: StreamTimeouts) -> ProviderError? {
             lock.lock()
             defer { lock.unlock() }
+            if completed { return nil }
             if let existing = timeoutError { return existing }
             if now - startedAt >= .seconds(timeouts.total) {
                 let err = ProviderError(status: 408, "模型流式响应超过总时限（\(Int(timeouts.total)) 秒）。")
@@ -584,6 +597,7 @@ enum HTTP {
         session: URLSession? = nil,
         rejectAllRedirects: Bool = false,
         timeouts: StreamTimeouts = .default,
+        stopOnFinishEvent: Bool = false,
         decode: @escaping @Sendable (String) throws -> [StreamEvent]
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         return AsyncThrowingStream { continuation in
@@ -628,10 +642,11 @@ enum HTTP {
                         if !events.isEmpty && !hasFinish(events) {
                             continuation.yield(.finish(reason: "done"))
                         }
-                        continuation.finish()
+                        if state.markCompleted() { continuation.finish() }
                         return
                     }
                     var sawSSE = false
+                    var reachedTerminalFrame = false
                     var plain = ""
                     var lineBuffer: [UInt8] = []
                     var pendingCR = false
@@ -645,6 +660,7 @@ enum HTTP {
                             if payload == "[DONE]" {
                                 state.markMeaningful(at: clock.now)
                                 continuation.yield(.finish(reason: "done"))
+                                reachedTerminalFrame = true
                                 return
                             }
                             let events = try decode(payload)
@@ -652,6 +668,9 @@ enum HTTP {
                             if !events.isEmpty {
                                 state.markMeaningful(at: clock.now)
                                 for event in events { continuation.yield(event) }
+                                if stopOnFinishEvent, hasFinish(events) {
+                                    reachedTerminalFrame = true
+                                }
                             }
                         } else if !sawSSE, plain.utf8.count < 16_000 {
                             if !plain.isEmpty { plain.append("\n") }
@@ -667,6 +686,7 @@ enum HTTP {
                             lineBuffer.removeAll(keepingCapacity: true)
                             pendingCR = true
                             try handleLine(line)
+                            if reachedTerminalFrame { break }
                         } else if byte == 0x0A {
                             if pendingCR {
                                 pendingCR = false
@@ -674,6 +694,7 @@ enum HTTP {
                                 let line = String(decoding: lineBuffer, as: UTF8.self)
                                 lineBuffer.removeAll(keepingCapacity: true)
                                 try handleLine(line)
+                                if reachedTerminalFrame { break }
                             }
                         } else {
                             pendingCR = false
@@ -683,7 +704,7 @@ enum HTTP {
                             }
                         }
                     }
-                    if !lineBuffer.isEmpty {
+                    if !reachedTerminalFrame, !lineBuffer.isEmpty {
                         let line = String(decoding: lineBuffer, as: UTF8.self)
                         lineBuffer.removeAll()
                         try handleLine(line)
@@ -703,9 +724,15 @@ enum HTTP {
                             }
                         }
                     }
-                    continuation.finish()
+                    if state.markCompleted() {
+                        continuation.finish()
+                    }
                 } catch {
-                    continuation.finish(throwing: state.recordedTimeoutError ?? error)
+                    if let timeoutErr = state.recordedTimeoutError {
+                        continuation.finish(throwing: timeoutErr)
+                    } else if state.markCompleted() {
+                        continuation.finish(throwing: error)
+                    }
                 }
             }
 

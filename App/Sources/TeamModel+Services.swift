@@ -835,7 +835,7 @@ extension TeamModel {
 
     var imageModelSelection: (endpoint: Endpoint, model: String)? {
         guard let selected = resolve(settings.imageModel),
-              selected.endpoint.isActiveProtocol,
+              selected.endpoint.isDispatchable,
               selected.endpoint.kind.supportsImages else { return nil }
         return selected
     }
@@ -843,7 +843,7 @@ extension TeamModel {
     func setImageModel(_ ref: String?) {
         if let ref {
             guard let selected = resolve(ref),
-                  selected.endpoint.isActiveProtocol,
+                  selected.endpoint.isDispatchable,
                   selected.endpoint.kind.supportsImages else { return }
         }
         settings.imageModel = ref

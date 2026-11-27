@@ -536,12 +536,13 @@ public struct Agent: Sendable {
                 }
             }
             var made = order.compactMap { calls[$0] }.filter { !$0.name.isEmpty }
-            // A stream that stopped without the service saying it was done may have cut a tool call short: its
-            // arguments can parse and still be half of what was meant. Nothing is run then (the review, #2).
-            // Same for a reply stopped at the length limit in the middle of writing a call.
-            let lengthCut = ["length", "max_tokens", "model_length"].contains(finished?.lowercased() ?? "") && !made.isEmpty
+            // A stream that stopped without finishing cleanly (dropped, truncated, filtered, or incomplete)
+            // may have cut a tool call short: never execute partial/filtered tool calls.
+            let finishReasonLower = finished?.lowercased() ?? ""
+            let lengthCut = ["length", "max_tokens", "model_length"].contains(finishReasonLower) && !made.isEmpty
+            let filteredOrIncomplete = ["content_filter", "sensitive", "safety", "refusal", "incomplete"].contains(finishReasonLower) && !made.isEmpty
             let dropped = finished == nil && !made.isEmpty
-            if dropped || lengthCut { made = [] }
+            if dropped || lengthCut || filteredOrIncomplete { made = [] }
             var reply = Message.assistant(text, toolCalls: made, reasoning: reasoning.isEmpty ? nil : reasoning)
             if !signature.isEmpty { reply.reasoningSignature = signature }
             reply.continuationPayloads = Self.buildContinuationPayloads(

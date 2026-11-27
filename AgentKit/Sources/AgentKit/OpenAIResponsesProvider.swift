@@ -27,20 +27,26 @@ public struct OpenAIResponsesProvider: ModelProvider, CatalogReportingProvider {
         isCodex ? "openai_codex" : "openai_responses"
     }
 
-    public func effectiveContractKey(for model: String, override: EndpointContractKey? = nil) -> EndpointContractKey {
-        if let override { return override }
-        return EndpointContractKey(origin: baseURL, protocolKind: protocolKind, route: "/responses", modelID: model)
+    /// Derives the authoritative contract strictly from the actual target URL, protocol, and model.
+    public func effectiveContractKey(for model: String, endpointURL: URL? = nil) -> EndpointContractKey {
+        let resolvedURL = endpointURL ?? (try? HTTP.endpoint(baseURL, "/responses"))
+        let route = resolvedURL?.path.isEmpty == false ? resolvedURL!.path : "/responses"
+        return EndpointContractKey(origin: baseURL, protocolKind: protocolKind, route: route, modelID: model)
     }
 
     func urlRequest(_ request: ModelRequest) throws -> URLRequest {
-        var http = URLRequest(url: try HTTP.endpoint(baseURL, "/responses"))
+        let url = try HTTP.endpoint(baseURL, "/responses")
+        let contract = effectiveContractKey(for: request.model, endpointURL: url)
+        if let supplied = request.contractKey, !supplied.matches(contract) {
+            throw ProviderError("请求契约与当前 Responses 服务地址或协议不匹配，已阻止发送。")
+        }
+        var http = URLRequest(url: url)
         http.httpMethod = "POST"
         http.setValue("application/json", forHTTPHeaderField: "Content-Type")
         http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         var mergedHeaders = customHeaders
         for (k, v) in request.customHeaders { mergedHeaders[k] = v }
         HTTP.applyNonSecretHeaders(mergedHeaders, to: &http)
-        let contract = effectiveContractKey(for: request.model, override: request.contractKey)
         http.httpBody = try HTTP.json(Self.body(request, contractKey: contract, isCodex: isCodex))
         return http
     }
@@ -51,9 +57,27 @@ public struct OpenAIResponsesProvider: ModelProvider, CatalogReportingProvider {
 
     func stream(_ request: ModelRequest, session: URLSession?) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
+            let url = try HTTP.endpoint(baseURL, "/responses")
+            let contract = effectiveContractKey(for: request.model, endpointURL: url)
+            // Fail closed with explicit non-continuable status if active-turn reasoning continuation payloads are incompatible.
+            let hasActiveBoundPayloads = {
+                let turnStart = request.messages.lastIndex(where: { $0.role == .user }) ?? 0
+                return request.messages.enumerated().contains { idx, msg in
+                    idx > turnStart && msg.role == .assistant && !msg.toolCalls.isEmpty
+                        && (msg.continuationPayloads?.isEmpty == false)
+                }
+            }()
+            if hasActiveBoundPayloads,
+               case .missingOrIncompatible(let reason) = Self.verifyContinuation(
+                   request.messages,
+                   contractKey: contract,
+                   speakerOrThreadID: request.speakerOrThreadID,
+                   requiresStatelessReasoning: true
+               ) {
+                throw ProviderError(reason)
+            }
             let http = try urlRequest(request)
             let activeSession = session ?? (fixedRoute ? FixedModelRoute.session : nil)
-            let contract = effectiveContractKey(for: request.model, override: request.contractKey)
             let decoder = Self.makeDecoder(contractKey: contract, speakerOrThreadID: request.speakerOrThreadID)
             return HTTP.stream(
                 http,
@@ -61,6 +85,7 @@ public struct OpenAIResponsesProvider: ModelProvider, CatalogReportingProvider {
                 session: activeSession,
                 rejectAllRedirects: fixedRoute,
                 timeouts: request.streamTimeouts,
+                stopOnFinishEvent: true,
                 decode: decoder
             )
         } catch {
@@ -182,10 +207,11 @@ public struct OpenAIResponsesProvider: ModelProvider, CatalogReportingProvider {
                     }
                 }
                 if !message.text.isEmpty {
+                    // Use EasyInputMessage with string content so multi-turn history never omits required output_message fields (`id`, `status`, `annotations`).
                     input.append([
                         "type": "message",
                         "role": "assistant",
-                        "content": [["type": "output_text", "text": message.text]],
+                        "content": message.text,
                     ])
                 }
                 for call in message.toolCalls {

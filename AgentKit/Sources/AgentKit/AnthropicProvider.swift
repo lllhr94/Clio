@@ -149,11 +149,24 @@ public struct AnthropicProvider: ModelProvider {
         return http
     }
 
+    func effectiveContractKey(for model: String, endpointURL: URL? = nil) -> EndpointContractKey {
+        let resolvedURL = endpointURL ?? (try? HTTP.endpoint(baseURL, "/v1/messages"))
+        let route = resolvedURL?.path.isEmpty == false ? resolvedURL!.path : "/v1/messages"
+        return EndpointContractKey(origin: baseURL, protocolKind: "anthropic", route: route, modelID: model)
+    }
+
     func urlRequest(_ request: ModelRequest, overrideCacheTier: PromptCacheTier? = nil) throws -> URLRequest {
-        var http = signed(try HTTP.endpoint(baseURL, "/v1/messages"), requestHeaders: request.customHeaders)
+        let url = try HTTP.endpoint(baseURL, "/v1/messages")
+        let derivedContract = effectiveContractKey(for: request.model, endpointURL: url)
+        if let supplied = request.contractKey, !supplied.matches(derivedContract) {
+            throw ProviderError("请求契约与当前 Anthropic 服务地址或协议不匹配，已阻止发送。")
+        }
+        var boundRequest = request
+        boundRequest.contractKey = derivedContract
+        var http = signed(url, requestHeaders: request.customHeaders)
         http.httpMethod = "POST"
         let tier = overrideCacheTier ?? effectiveCacheTier
-        http.httpBody = try HTTP.json(Self.body(request, cacheTier: tier, stableSystemPrefix: stableSystemPrefix))
+        http.httpBody = try HTTP.json(Self.body(boundRequest, cacheTier: tier, stableSystemPrefix: stableSystemPrefix))
         return http
     }
 
@@ -164,6 +177,28 @@ public struct AnthropicProvider: ModelProvider {
     func stream(_ request: ModelRequest, session: URLSession?) -> AsyncThrowingStream<StreamEvent, Error> {
         let initialTier = effectiveCacheTier
         let activeSession = session ?? (fixedRoute ? FixedModelRoute.session : nil)
+        let url: URL
+        do {
+            url = try HTTP.endpoint(baseURL, "/v1/messages")
+        } catch {
+            return AsyncThrowingStream { $0.finish(throwing: error) }
+        }
+        let contract = effectiveContractKey(for: request.model, endpointURL: url)
+        let thinkingActive = !(request.isExplicitOff || request.thinking == .off)
+            && (request.thinking != .auto || request.messages.contains { $0.role == .assistant && $0.continuationPayloads?.isEmpty == false })
+        if case .missingOrIncompatible(let reason) = Self.verifyContinuation(
+            request.messages,
+            contractKey: contract,
+            speakerOrThreadID: request.speakerOrThreadID,
+            thinkingEnabled: thinkingActive
+        ) {
+            return AsyncThrowingStream { $0.finish(throwing: ProviderError(reason)) }
+        }
+
+        let makeDecoder: @Sendable () -> @Sendable (String) throws -> [StreamEvent] = {
+            Self.makeStreamDecoder(contractKey: contract, speakerOrThreadID: request.speakerOrThreadID)
+        }
+
         guard initialTier == .oneHour else {
             do {
                 let http = try urlRequest(request, overrideCacheTier: initialTier)
@@ -172,7 +207,8 @@ public struct AnthropicProvider: ModelProvider {
                     session: activeSession,
                     rejectAllRedirects: fixedRoute,
                     timeouts: request.streamTimeouts,
-                    decode: Self.decode
+                    stopOnFinishEvent: true,
+                    decode: makeDecoder()
                 )
             } catch {
                 return AsyncThrowingStream { $0.finish(throwing: error) }
@@ -190,7 +226,8 @@ public struct AnthropicProvider: ModelProvider {
                         session: activeSession,
                         rejectAllRedirects: fixedRoute,
                         timeouts: request.streamTimeouts,
-                        decode: Self.decode
+                        stopOnFinishEvent: true,
+                        decode: makeDecoder()
                     ) {
                         emittedAny = true
                         continuation.yield(event)
@@ -205,7 +242,8 @@ public struct AnthropicProvider: ModelProvider {
                                 session: activeSession,
                                 rejectAllRedirects: fixedRoute,
                                 timeouts: request.streamTimeouts,
-                                decode: Self.decode
+                                stopOnFinishEvent: true,
+                                decode: makeDecoder()
                             ) {
                                 continuation.yield(event)
                             }
@@ -219,6 +257,122 @@ public struct AnthropicProvider: ModelProvider {
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private final class ThinkingBlockTracker: @unchecked Sendable {
+        private let lock = NSLock()
+        private var thinkingTextByIndex: [Int: String] = [:]
+        private var signatureByIndex: [Int: String] = [:]
+        private var activeThinkingIndices: Set<Int> = []
+
+        func startThinking(at index: Int) {
+            lock.withLock {
+                activeThinkingIndices.insert(index)
+                thinkingTextByIndex[index] = ""
+                signatureByIndex[index] = ""
+            }
+        }
+
+        func appendThinking(_ delta: String, at index: Int) {
+            lock.withLock {
+                activeThinkingIndices.insert(index)
+                thinkingTextByIndex[index, default: ""] += delta
+            }
+        }
+
+        func appendSignature(_ delta: String, at index: Int) {
+            lock.withLock {
+                activeThinkingIndices.insert(index)
+                signatureByIndex[index, default: ""] += delta
+            }
+        }
+
+        func finishBlock(at index: Int) -> (thinking: String, signature: String)? {
+            lock.withLock {
+                guard activeThinkingIndices.remove(index) != nil else { return nil }
+                let thought = thinkingTextByIndex.removeValue(forKey: index) ?? ""
+                let sig = signatureByIndex.removeValue(forKey: index) ?? ""
+                guard !sig.isEmpty else { return nil }
+                return (thought, sig)
+            }
+        }
+    }
+
+    /// Block-indexed Anthropic SSE decoder that emits intact, individually signed `ProtocolContinuationPayload`
+    /// items per SSE block index (preserving multiple `thinking` / `redacted_thinking` blocks in exact order).
+    static func makeStreamDecoder(
+        contractKey: EndpointContractKey,
+        speakerOrThreadID: String? = nil
+    ) -> @Sendable (String) throws -> [StreamEvent] {
+        let tracker = ThinkingBlockTracker()
+        return { payload in
+            var events = try Self.decode(payload)
+            guard let json = JSONValue.parse(payload), let type = json["type"]?.string else { return events }
+            switch type {
+            case "content_block_start":
+                let index = json["index"]?.int ?? 0
+                let block = json["content_block"] ?? .null
+                switch block["type"]?.string {
+                case "thinking":
+                    tracker.startThinking(at: index)
+                    if let initial = block["thinking"]?.string, !initial.isEmpty {
+                        tracker.appendThinking(initial, at: index)
+                    }
+                    if let initialSig = block["signature"]?.string, !initialSig.isEmpty {
+                        tracker.appendSignature(initialSig, at: index)
+                    }
+                case "redacted_thinking":
+                    if let data = block["data"]?.string, !data.isEmpty {
+                        events.append(.continuationPayload(ProtocolContinuationPayload(
+                            origin: contractKey.origin,
+                            protocolKind: contractKey.protocolKind,
+                            route: contractKey.route,
+                            modelID: contractKey.modelID,
+                            speakerOrThreadID: speakerOrThreadID,
+                            wireKind: "anthropic_redacted_thinking",
+                            blockOrder: index,
+                            opaqueData: data,
+                            validScope: "turn"
+                        )))
+                    }
+                default:
+                    break
+                }
+            case "content_block_delta":
+                let index = json["index"]?.int ?? 0
+                let delta = json["delta"] ?? .null
+                switch delta["type"]?.string {
+                case "thinking_delta":
+                    if let thought = delta["thinking"]?.string { tracker.appendThinking(thought, at: index) }
+                case "signature_delta":
+                    if let sig = delta["signature"]?.string { tracker.appendSignature(sig, at: index) }
+                default:
+                    break
+                }
+            case "content_block_stop":
+                let index = json["index"]?.int ?? 0
+                if let completed = tracker.finishBlock(at: index),
+                   let data = try? JSONSerialization.data(
+                       withJSONObject: ["thinking": completed.thinking, "signature": completed.signature],
+                       options: [.sortedKeys, .withoutEscapingSlashes]
+                   ) {
+                    events.append(.continuationPayload(ProtocolContinuationPayload(
+                        origin: contractKey.origin,
+                        protocolKind: contractKey.protocolKind,
+                        route: contractKey.route,
+                        modelID: contractKey.modelID,
+                        speakerOrThreadID: speakerOrThreadID,
+                        wireKind: "anthropic_thinking",
+                        blockOrder: index,
+                        opaqueData: String(decoding: data, as: UTF8.self),
+                        validScope: "turn"
+                    )))
+                }
+            default:
+                break
+            }
+            return events
         }
     }
 
@@ -320,33 +474,27 @@ public struct AnthropicProvider: ModelProvider {
                 var blocks: [[String: Any]] = []
                 if !explicitOff {
                     if let payloads = message.continuationPayloads, !payloads.isEmpty {
-                        // Contract-bound continuation payloads: preserve even under `.auto`, strictly validating contract & speaker.
-                        let matching = payloads
-                            .filter { payload in
-                                guard payload.wireKind == "anthropic_thinking" || payload.wireKind == "anthropic_redacted_thinking" else {
-                                    return false
+                        // Contract-bound continuation payloads: NEVER replay without an explicit matching target contract.
+                        if let target = request.contractKey {
+                            let matching = payloads
+                                .filter { payload in
+                                    (payload.wireKind == "anthropic_thinking" || payload.wireKind == "anthropic_redacted_thinking")
+                                        && payload.isCompatible(with: target, speakerOrThreadID: request.speakerOrThreadID)
                                 }
-                                guard let target = request.contractKey else {
-                                    if let own = payload.speakerOrThreadID, let targetSpeaker = request.speakerOrThreadID {
-                                        return own == targetSpeaker
+                                .sorted { $0.blockOrder < $1.blockOrder }
+                            for payload in matching {
+                                if payload.wireKind == "anthropic_thinking" {
+                                    if let data = payload.opaqueData.data(using: .utf8),
+                                       let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                                       let thought = parsed["thinking"] as? String,
+                                       let sig = parsed["signature"] as? String, !sig.isEmpty {
+                                        blocks.append(["type": "thinking", "thinking": thought, "signature": sig])
+                                    } else if let thought = message.reasoning, !payload.opaqueData.isEmpty {
+                                        blocks.append(["type": "thinking", "thinking": thought, "signature": payload.opaqueData])
                                     }
-                                    return true
+                                } else if payload.wireKind == "anthropic_redacted_thinking", !payload.opaqueData.isEmpty {
+                                    blocks.append(["type": "redacted_thinking", "data": payload.opaqueData])
                                 }
-                                return payload.isCompatible(with: target, speakerOrThreadID: request.speakerOrThreadID)
-                            }
-                            .sorted { $0.blockOrder < $1.blockOrder }
-                        for payload in matching {
-                            if payload.wireKind == "anthropic_thinking" {
-                                if let data = payload.opaqueData.data(using: .utf8),
-                                   let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                                   let thought = parsed["thinking"] as? String,
-                                   let sig = parsed["signature"] as? String, !sig.isEmpty {
-                                    blocks.append(["type": "thinking", "thinking": thought, "signature": sig])
-                                } else if let thought = message.reasoning, !payload.opaqueData.isEmpty {
-                                    blocks.append(["type": "thinking", "thinking": thought, "signature": payload.opaqueData])
-                                }
-                            } else if payload.wireKind == "anthropic_redacted_thinking", !payload.opaqueData.isEmpty {
-                                blocks.append(["type": "redacted_thinking", "data": payload.opaqueData])
                             }
                         }
                     } else if let rawSignature = message.reasoningSignature, !rawSignature.isEmpty,

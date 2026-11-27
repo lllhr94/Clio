@@ -2524,12 +2524,14 @@ final class TeamModel: ObservableObject {
             recordPreRead: { path, preRead in await Snapshots.shared.keepPreRead(key, place: WorkPlace.desk.code, path: path, preRead: preRead) }
         )
         if phase != .demo, let selected = imageModelSelection {
+            let selectedEndpointID = selected.endpoint.id
             all.append(GenerateImage(
                 baseURL: selected.endpoint.baseURL,
                 model: selected.model,
                 apiKey: imageAPIKey,
                 endpointKind: selected.endpoint.kind,
-                customHeaders: selected.endpoint.customNonSecretHeaders
+                customHeaders: selected.endpoint.customNonSecretHeaders,
+                isEndpointDispatchable: { !UserDefaults.standard.bool(forKey: "clio.endpoint.paused.\(selectedEndpointID)") }
             ))
         }
         all += Phone.tools()

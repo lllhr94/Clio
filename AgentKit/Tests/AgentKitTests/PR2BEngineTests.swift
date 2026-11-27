@@ -614,5 +614,63 @@ final class PR2BEngineTests: XCTestCase {
         box.bumpGen()
         let staleSearch = try await search.run(.object(["query": .string("mcp_srv_26")]))
         XCTAssertTrue(staleSearch.isError)
+
+        // Duplicate stableIDs never trap when assembling >25 deferred MCP tools.
+        let dupEntries = (1...27).map { _ in
+            DeferredMCPTools.Entry(stableID: "mcp_dup__same", serverID: "srv_1", serverName: "Srv", tool: StubTool(name: "mcp_dup__same"))
+        }
+        let dupAssembled = DeferredMCPTools.assemble(builtInTools: builtIns, mcpEntries: dupEntries, policy: policy)
+        XCTAssertEqual(dupAssembled.count, 5)
+    }
+
+    func testAnthropicStreamDecoderPreservesMultipleSignedAndRedactedThinkingBlocksInOrder() throws {
+        let contract = EndpointContractKey(
+            origin: "https://api.anthropic.com",
+            protocolKind: "anthropic",
+            route: "/v1/messages",
+            modelID: "claude-sonnet-4-6"
+        )
+        let decoder = AnthropicProvider.makeStreamDecoder(contractKey: contract, speakerOrThreadID: "bot-1")
+        var payloads: [ProtocolContinuationPayload] = []
+        let frames = [
+            #"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            #"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"first thought"}}"#,
+            #"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig_1"}}"#,
+            #"{"type":"content_block_stop","index":0}"#,
+            #"{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"redacted_blob_1"}}"#,
+            #"{"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":""}}"#,
+            #"{"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":"second thought"}}"#,
+            #"{"type":"content_block_delta","index":2,"delta":{"type":"signature_delta","signature":"sig_2"}}"#,
+            #"{"type":"content_block_stop","index":2}"#,
+        ]
+        for frame in frames {
+            for ev in try decoder(frame) {
+                if case .continuationPayload(let p) = ev { payloads.append(p) }
+            }
+        }
+        XCTAssertEqual(payloads.count, 3)
+        XCTAssertEqual(payloads.map(\.blockOrder), [0, 1, 2])
+        XCTAssertEqual(payloads.map(\.wireKind), ["anthropic_thinking", "anthropic_redacted_thinking", "anthropic_thinking"])
+
+        var assistant = Message.assistant("final", reasoning: "first thoughtsecond thought")
+        assistant.continuationPayloads = payloads
+        let req = ModelRequest(
+            model: "claude-sonnet-4-6",
+            system: "",
+            messages: [.user("hi"), assistant, .user("next")],
+            thinking: .auto,
+            contractKey: contract,
+            speakerOrThreadID: "bot-1"
+        )
+        let turns = try XCTUnwrap(AnthropicProvider.body(req, cacheTier: .off)["messages"] as? [[String: Any]])
+        let blocks = try XCTUnwrap(turns[1]["content"] as? [[String: Any]])
+        XCTAssertEqual(blocks.count, 4)
+        XCTAssertEqual(blocks[0]["type"] as? String, "thinking")
+        XCTAssertEqual(blocks[0]["signature"] as? String, "sig_1")
+        XCTAssertEqual(blocks[1]["type"] as? String, "redacted_thinking")
+        XCTAssertEqual(blocks[1]["data"] as? String, "redacted_blob_1")
+        XCTAssertEqual(blocks[2]["type"] as? String, "thinking")
+        XCTAssertEqual(blocks[2]["signature"] as? String, "sig_2")
+        XCTAssertEqual(blocks[3]["type"] as? String, "text")
     }
 }
