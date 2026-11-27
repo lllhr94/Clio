@@ -240,7 +240,7 @@ struct ChatModelMenuView: View {
             }
             .menuOrder(.fixed)
             .accessibilityLabel("\(L.t("settings.models"))：\(rawName)")
-            .accessibilityValue("\(L.t("chat.thinking"))：\(level.title)")
+            .accessibilityValue("\(L.t("chat.thinking"))：\(saved.title)")
         }
     }
 }
