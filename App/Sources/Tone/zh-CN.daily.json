@@ -1,6 +1,6 @@
 {
   "companion": {
-    "missingPetDefault": "本机没有这只宠物，已使用默认名印。",
+    "missingPetDefault": "这台手机还没有它用的宠物，头像先用默认宠物。导入那只宠物后，可以点头像手动换回。",
     "missingPetStill": "这台手机还没有它用的宠物，头像先用资料卡附带的定格图。导入那只宠物后，可以点头像手动换回。",
     "temper": "性格"
   },
@@ -1515,5 +1515,33 @@
       "privateNotes": "有什么只用于你们相处的备注？可以留空。",
       "publicAgentsCard": "其他助手需要知道怎样和它协作？可以留空。"
     }
+  },
+  "subtask": {
+    "sheetTitle": "后台子任务",
+    "empty": "当前对话没有后台子任务记录。",
+    "capsuleActive": "%lld 个后台子任务进行中",
+    "capsuleNeedsReconcile": "%lld 个中断任务待核对",
+    "capsuleInterrupted": "%lld 个中断任务可重试",
+    "capsuleActiveAndReconcile": "%lld 个进行中 · %lld 个待核对",
+    "statusRunning": "进行中",
+    "statusWaiting": "等待确认",
+    "statusDone": "已完成",
+    "statusFailed": "已失败",
+    "statusCancelled": "已停止",
+    "statusInterrupted": "已中断",
+    "statusNeedsReconcile": "待核对",
+    "pendingEffectsHeader": "中断前记录的外部或文件操作：",
+    "cancelOne": "停止任务",
+    "retryClean": "重新运行",
+    "reconcileAndRetry": "核对后重跑",
+    "reconcileConfirmTitle": "确认已核对外部或文件改动？",
+    "reconcileConfirmBody": "该任务中断前已准备执行写入或外部操作，系统无法自动确认其是否生效。请先检查对应文件或远端状态，确认安全后再重跑。",
+    "reconcileConfirmAction": "已核对，重跑任务",
+    "stopMainOnly": "仅停当前主回复",
+    "stopAllWithSubtasks": "停主回复与全部子任务",
+    "stopLocalOnly": "停主回复与本地子任务（保留远端）",
+    "stopAllIncludingRemote": "停主回复、本地及远端后台任务",
+    "stopScopeNotice": "当前还有后台子任务在运行，请选择停止范围。",
+    "stopRemoteNotice": "当前有运行在远端主机的后台任务，可选择仅停本机或一并终止远端任务。"
   }
 }

@@ -171,7 +171,10 @@ extension TeamModel {
         setOptions(key, value)
     }
 
-    func place(of key: String) -> WorkPlace { WorkPlace(code: options(key).place) }
+    func place(of key: String) -> WorkPlace {
+        if let bound = ephemeralPlaces[key] { return bound }
+        return WorkPlace(code: options(key).place)
+    }
 
     /// The model this conversation will use.
     func model(for key: String, bot: BotInfo) -> String? { options(key).model ?? bot.model ?? settings.defaultModel }
