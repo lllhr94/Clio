@@ -111,6 +111,10 @@ final class TeamModel: ObservableObject {
     var memoryTaintedTurns: Set<String> = []
     var livePromptRefreshers: [UUID: MemoryRecallPromptRefresher] = [:]
     let liveChatMemoryGate = LiveChatMemoryGate()
+    var memoryWriteGuard: MemoryWriteGuard = .init()
+    let contextEstimateCache = ContextEstimateCache()
+    @Published var compressionFailures: [String: String] = [:]
+    @Published var toolOutputUndo: [String: SimpleCompaction.Undo<Entry>] = [:]
     var reviewingMemory = false
     var memoryReviewAttempts: [String: Date] = [:]
     var cleanReviewTails: [String: ReviewTail] = [:]
@@ -122,7 +126,14 @@ final class TeamModel: ObservableObject {
     /// Goes up each time a conversation's page is replaced (cleared, put aside, another brought back). A turn
     /// remembers the number it started with, and anything it says after the number has moved is dropped, so a
     /// stopped turn's last words cannot land in the new page (the review, #16).
-    var epochs: [String: Int] = [:]
+    var epochs: [String: Int] = [:] {
+        didSet {
+            for key in Set(oldValue.keys).union(epochs.keys) where oldValue[key] != epochs[key] {
+                if compressionFailures[key] != nil { compressionFailures[key] = nil }
+                if toolOutputUndo[key] != nil { toolOutputUndo[key] = nil }
+            }
+        }
+    }
     var doing: [String: String] = [:] {
         willSet {
             if Set(doing.keys) != Set(newValue.keys) { objectWillChange.send() }
@@ -1580,7 +1591,8 @@ final class TeamModel: ObservableObject {
             apiKey = resolvedKey
         }
         let traits = endpoint.traits(found.model)
-        let context = context(for: key, bot: bot, room: room, vision: traits.sees)
+        let canReceiveImages = traits.sees || canUseAuxiliaryVision(for: endpoint, model: found.model)
+        let context = context(for: key, bot: bot, room: room, vision: canReceiveImages, window: traits.window)
         let messages = await Task.detached(priority: .userInitiated) {
             _ = SkillShelf.enabled
             return context.resolvedMessages()
@@ -1588,7 +1600,9 @@ final class TeamModel: ObservableObject {
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         guard messages.contains(where: { $0.role == .user }) else { return false }
         // Web text read in an earlier turn is still in what the model reads now: the turn starts marked.
-        if messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) { taint.mark(key) }
+        if context.hasUntrustedMediaNotes || messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) {
+            taint.mark(key)
+        }
         let summaryIsTainted = summary(key) != nil && isSummaryTainted(key)
         if taint.isTainted(key) || context.hasTaintedHistory || summaryIsTainted { markTurnMemoryTainted(key) }
         let botId = bot.id
@@ -1632,7 +1646,7 @@ final class TeamModel: ObservableObject {
         )
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         let turnTools: [AgentTool] = traits.tools
-            ? await toolsAsync(for: bot, key: key, canSee: traits.sees, workplace: workplace, experienceSource: experienceSource)
+            ? await toolsAsync(for: bot, key: key, canSee: canReceiveImages, workplace: workplace, experienceSource: experienceSource)
             : []
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         let liveUsesMemory = !options(key).off.contains(Grant.memory.rawValue) && Grant.memory.policy != .off
@@ -1669,13 +1683,17 @@ final class TeamModel: ObservableObject {
         let assembled = refresher.currentPrompt()
         let baseProvider = overrideProvider ?? endpoint.provider(key: apiKey, stableSystemPrefix: assembled.prefix)
         var agent = Agent(
-            provider: recordingProvider(baseProvider, chat: key, refresher: refresher),
+            provider: outboundProvider(recordingProvider(baseProvider, chat: key, refresher: refresher),
+                                       endpoint: endpoint, model: found.model, chat: key),
             model: found.model,
             system: assembled.full,
             tools: turnTools,
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key, workplace: workplace) ?? false }
         )
         agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
+        agent.prepareToolResult = { [weak self] result in
+            await self?.prepareToolImageResult(result, chat: key, epoch: epoch) ?? result
+        }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         agent.maxSteps = Pref.maxSteps
@@ -1699,8 +1717,9 @@ final class TeamModel: ObservableObject {
         }
         defer { watch.cancel() }
         cutShort[key] = nil
+        let retries = WholeTurnRetryArbiter()
         do {
-            try await agent.run(history: messages) { [weak self] event in
+            try await agent.run(history: messages, retryArbiter: retries) { [weak self] event in
                 await self?.hear(event, chat: key, speaker: speaker, epoch: epoch)
             }
             // An answer that came back cut short is not 「done」: no 「做完了」, and what is waiting to be sent waits
@@ -1735,7 +1754,8 @@ final class TeamModel: ObservableObject {
             guard epochs[key, default: 0] == epoch, !Task.isCancelled else { return false }
             // One switch to the backup model, said out loud, never a silent swap.
             let used = "\(endpoint.id)/\(found.model)"
-            if forced == nil, let backup = settings.backupModel, backup != used, let other = resolve(backup) {
+            if retries.allowsBackup(after: error), forced == nil, let backup = settings.backupModel,
+               backup != used, let other = resolve(backup) {
                 let advice = Explain.model(error, service: endpoint.name)
                 streamed[key] = nil
                 pulseSplitters[key] = nil
@@ -1786,6 +1806,54 @@ final class TeamModel: ObservableObject {
         let tail = ToolTail()
         toolTails[key] = tail
         return tail
+    }
+
+    private func prepareToolImageResult(_ message: Message, chat key: String, epoch: Int) async -> Message {
+        guard keeping, !Task.isCancelled, !queueDispatchSuspended, epochs[key, default: 0] == epoch, !message.images.isEmpty,
+              message.mediaReferences == nil else { return message }
+        do {
+            return try await Task.detached(priority: .userInitiated) {
+                try MediaLoadRetire.save(message, write: { try Disk.writePhoto($0.data) }, remove: {
+                    Disk.remove("media/\($0)")
+                })
+            }.value
+        } catch {
+            Diag.note("工具图片没存进手机：\(error.localizedDescription)")
+            var result = message
+            result.text += "\n" + MediaLoadRetire.saveFailure
+            result.isError = true
+            return result
+        }
+    }
+
+    private func toolImageOwner(_ reference: String, chat key: String, botID: String, epoch: Int) -> Entry? {
+        guard !Disk.frozen, !queueDispatchSuspended, epochs[key, default: 0] == epoch else { return nil }
+        return history(key).first {
+            $0.message.role == .tool && ($0.message.mediaReferences ?? $0.photos).contains(reference)
+                && (!key.hasPrefix("room-") || $0.speaker == botID)
+        }
+    }
+
+    private func reloadToolImage(_ supplied: String, chat key: String, botID: String, epoch: Int) async -> ToolOutput {
+        guard let reference = MediaLoadRetire.reference(supplied),
+              toolImageOwner(reference, chat: key, botID: botID, epoch: epoch) != nil else {
+            return ConversationImageTools.unavailable
+        }
+        let image = await Task.detached(priority: .userInitiated) {
+            Disk.sendableToolPhoto(reference).map(MediaLoadRetire.imagePart)
+        }.value
+        guard let owner = toolImageOwner(reference, chat: key, botID: botID, epoch: epoch) else {
+            return ConversationImageTools.unavailable
+        }
+        guard let image else { return ToolOutput(MediaLoadRetire.expiredMarker(reference), isError: true) }
+        if owner.tainted == true || Taint.reads(owner.message.mediaSourceTool ?? owner.message.toolName ?? "") {
+            taint.mark(key)
+            markTurnMemoryTainted(key)
+        }
+        return ToolOutput(
+            "已重读图片。" + MediaLoadRetire.availableMarker([reference]), images: [image],
+            loadedMediaReference: reference, loadedMediaSourceTool: owner.message.mediaSourceTool ?? owner.message.toolName
+        )
     }
 
     func hear(_ event: AgentEvent, chat key: String, speaker: String?, epoch: Int? = nil) async {
@@ -1870,7 +1938,7 @@ final class TeamModel: ObservableObject {
                 if pausing[key] != nil, message.toolCalls.isEmpty { return }
             }
             var kept = message
-            let images = keeping ? message.images : []
+            let images = keeping && message.role != .tool ? message.images : []
             let toolText = message.role == .tool ? message.text : nil
             let keepCommandDetail = message.role == .tool
                 && kept.detail == nil
@@ -1901,7 +1969,7 @@ final class TeamModel: ObservableObject {
                 guard epochs[key, default: 0] == generation else { return }
                 if let short = prepared.0 { kept.text = short }
                 if let commandDetail = prepared.1 { kept.detail = commandDetail }
-                shots = prepared.2
+                shots = message.mediaReferences ?? prepared.2
             } else {
                 shots = []
             }
@@ -1909,7 +1977,7 @@ final class TeamModel: ObservableObject {
             if message.role == .tool {
                 label = message.toolCallId.flatMap { labels.removeValue(forKey: $0) }
             }
-            // Pictures a tool brought back are kept as photos for the trace, not inside the saved message.
+            // Persist media references and rebuild inline bytes for each request.
             kept.images = []
             var matchedInterjectId: UUID?
             if message.role == .user,
@@ -1945,6 +2013,13 @@ final class TeamModel: ObservableObject {
                     Task { @MainActor [weak self] in
                         self?.confirmQueuedRemoved([interjectId], for: key)
                     }
+                }
+            } else if keeping, message.role == .tool, !shots.isEmpty {
+                let saved: Bool = await withCheckedContinuation { continuation in
+                    append(entry, to: key) { continuation.resume(returning: $0) }
+                }
+                if !saved, !Disk.frozen, epochs[key, default: 0] == generation {
+                    append(Entry(id: UUID().uuidString, at: Now.ms, message: .assistant("工具图片已保存，但对话里没能记下图片编号。"), note: true), to: key)
                 }
             } else {
                 append(entry, to: key, event: message.role == .assistant ? .replyCommitted(entry.id) : .changed)
@@ -2082,36 +2157,78 @@ final class TeamModel: ObservableObject {
 
     struct RequestContext: Sendable {
         var messages: [Message] = []
-        var photos: [Int: [String]] = [:]
+        var entryIDs: [String] = []
+        var userPhotos: [Int: [String]] = [:]
+        var toolPhotos: [Int: [MediaReference]] = [:]
         var hasTaintedHistory = false
+        var hasUntrustedMediaNotes = false
 
-        func resolvedMessages() -> [Message] {
+        var photos: [Int: [String]] {
+            userPhotos.merging(toolPhotos.mapValues { $0.map(\.ref) }, uniquingKeysWith: { _, tool in tool })
+        }
+
+        func resolvedMessages(readToolPhoto: (String) -> Data? = Disk.sendableToolPhoto) -> [Message] {
             var result = messages
-            for (index, names) in photos {
-                let readable = names.compactMap { Disk.sendablePhoto($0) }
-                result[index].images = readable.map { ImagePart(data: $0) }
-                let lost = names.count - readable.count
-                if lost > 0 { result[index].text += "\n［有 \(lost) 张图片读不了，已经略过］" }
+            for (index, names) in userPhotos {
+                let readable = names.compactMap(Disk.sendablePhoto).map(MediaLoadRetire.imagePart)
+                result[index].images = readable
+                let missing = names.count - readable.count
+                if missing > 0 { result[index].text += "\n［有 \(missing) 张图片读不了，已经略过］" }
+            }
+            for (index, references) in toolPhotos {
+                result[index].images = []
+                for reference in references {
+                    let loaded = MediaLoadRetire.load(reference, read: readToolPhoto)
+                    if let image = loaded.image {
+                        result[index].images.append(image)
+                    } else {
+                        result[index].text += "\n" + loaded.reference.marker
+                    }
+                }
             }
             return Conversation.paired(result)
         }
 
-        func estimatedTokens(echoes: Bool) -> Int {
-            let text = Conversation.paired(messages).reduce(0) { total, message in
-                total + Tokens.estimate(message.text) + message.images.count * Tokens.perImage
-                    + message.toolCalls.reduce(0) { $0 + Tokens.estimate($1.name + $1.arguments) }
-                    + (echoes ? Tokens.estimate(message.reasoning ?? "") : 0)
-            }
-            return text + photos.values.reduce(0) { $0 + $1.count * Tokens.perImage }
-        }
     }
 
     /// The chat as the model reads it: the newest part, starting at a user message, with photos where they help.
-    func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool) -> RequestContext {
+    func context(for key: String, bot: BotInfo, room: RoomInfo?, vision: Bool, window: Int? = nil) -> RequestContext {
+        let history = history(key)
         let all = live(key).filter { $0.note != true }
-        let start = Conversation.windowStart(all.map(\.message), maxChars: Self.budget(window: window(of: key), share: Pref.contextShare), maxCount: Pref.contextCount)
+        let budget = Self.budget(window: window ?? self.window(of: key), share: Pref.contextShare)
+        let start = Conversation.windowStart(all.map(\.message), maxChars: budget, maxCount: Pref.contextCount)
         let recent = Array(all[start...])
-        let photoEntries = Set(recent.filter { !$0.photos.isEmpty }.suffix(3).map(\.id))
+        let photoEntries = Set(recent.filter { !$0.photos.isEmpty && $0.message.role != .tool }.suffix(3).map(\.id))
+        var imageNotes: [String: String] = [:]
+        for entry in history where room == nil || entry.speaker == bot.id {
+            if let note = MediaLoadRetire.note(in: entry.message) { imageNotes[note.reference] = note.text }
+        }
+        let recentIDs = Set(recent.map(\.id))
+        var visibleReferences: Set<String> = []
+        var seenArchived: Set<String> = []
+        var archived: [(image: MediaReference, tainted: Bool)] = []
+        var byEntry: [String: [MediaReference]] = [:]
+        let newestTurn = history.reduce(0) { $0 + (Self.startsImageTurn($1) ? 1 : 0) }
+        var turnIndex = newestTurn
+        for entry in history.reversed() {
+            if Self.startsImageTurn(entry) { turnIndex -= 1 }
+            let storedReferences = entry.message.mediaReferences ?? entry.photos
+            guard entry.message.role == .tool, !storedReferences.isEmpty,
+                  room == nil || entry.speaker == bot.id else { continue }
+            let source = entry.message.mediaSourceTool ?? entry.message.toolName
+            let images = storedReferences.compactMap { value -> MediaReference? in
+                guard let ref = MediaLoadRetire.reference(value) else { return nil }
+                return MediaReference(ref: ref, note: imageNotes[ref], sourceTool: source, turnIndex: turnIndex)
+            }
+            if recentIDs.contains(entry.id) {
+                byEntry[entry.id] = images
+                visibleReferences.formUnion(images.map(\.ref))
+            } else {
+                for image in images where archived.count < 6 && !visibleReferences.contains(image.ref) && seenArchived.insert(image.ref).inserted {
+                    archived.append((image, entry.tainted == true || Taint.reads(source ?? "")))
+                }
+            }
+        }
         var context = RequestContext()
         for entry in recent {
             var message = entry.message
@@ -2120,6 +2237,7 @@ final class TeamModel: ObservableObject {
                     guard !message.text.isEmpty else { continue }
                     let name = bots.first { $0.id == entry.speaker }?.name ?? "另一个 Bot"
                     context.messages.append(.user("【\(name)】\(message.text)"))
+                    context.entryIDs.append(entry.id)
                     if entry.tainted == true { context.hasTaintedHistory = true }
                     continue
                 }
@@ -2129,17 +2247,35 @@ final class TeamModel: ObservableObject {
             if entry.tainted == true || (message.role == .tool && Taint.reads(message.toolName ?? "")) {
                 context.hasTaintedHistory = true
             }
-            if !entry.photos.isEmpty, message.role != .tool {
+            if message.role == .tool {
+                let references = byEntry[entry.id] ?? []
+                let include = vision && references.first.map { MediaLoadRetire.retainImage(turnAge: newestTurn - $0.turnIndex) } == true
+                message = MediaLoadRetire.project(message, references: references, includeImages: include)
+                if include, !references.isEmpty { context.toolPhotos[context.messages.count] = references }
+            } else if !entry.photos.isEmpty {
                 if vision, photoEntries.contains(entry.id) {
-                    context.photos[context.messages.count] = entry.photos
+                    context.userPhotos[context.messages.count] = entry.photos
                 } else {
                     let ids = entry.photos.joined(separator: "、")
                     message.text += "\n［发了 \(entry.photos.count) 张图片，编号 \(ids)" + (vision ? "，已经看过" : "；你现在用的模型看不了图，要读图上的字就用 photo_text") + "］"
                 }
             }
             context.messages.append(message)
+            context.entryIDs.append(entry.id)
+        }
+        if !archived.isEmpty, let index = context.messages.lastIndex(where: { $0.role == .user }) {
+            let markers = archived.map { $0.image.marker }.joined(separator: "\n")
+            context.messages[index].text += "\n\n［以下是本对话较早的工具图片编号和观察笔记。要重看时可用 view_image 的 ref 参数。］\n" + markers
+            if archived.contains(where: { $0.tainted && $0.image.note != nil }) {
+                context.hasTaintedHistory = true
+                context.hasUntrustedMediaNotes = true
+            }
         }
         return context
+    }
+
+    private static func startsImageTurn(_ entry: Entry) -> Bool {
+        entry.message.role == .user && entry.note != true && entry.delegated != true
     }
 
     /// Every tool call gets its answer, even one cut off when a turn was stopped.
@@ -2260,11 +2396,25 @@ final class TeamModel: ObservableObject {
         hostBindings.set(boundHostID, for: key)
         let code = workplace.code
         let output = toolTail(for: key)
+        let mediaEpoch = epochs[key, default: 0]
+        let reloadImage: (@Sendable (String) async -> ToolOutput)?
+        if keeping, !helping {
+            reloadImage = { [weak self] reference in
+                await self?.reloadToolImage(reference, chat: key, botID: botId, epoch: mediaEpoch)
+                    ?? ConversationImageTools.unavailable
+            }
+            all.append(ConversationImageTools.note { [weak self] reference in
+                await self?.toolImageOwner(reference, chat: key, botID: botId, epoch: mediaEpoch) != nil
+            })
+        } else {
+            reloadImage = nil
+        }
         let kit = WorkspaceKit(
             canSee: canSee,
             secrets: { Vault.allStrings() },
             beforeChange: { host, path in await Snapshots.shared.keep(key, place: code, host: host, path: path) },
-            tail: { output.add($0) }
+            tail: { output.add($0) },
+            reloadImage: reloadImage
         )
         all += WorkspaceTools.all(host: host, kit: kit)
         let deskHost = LocalDeskHost()
@@ -2284,6 +2434,7 @@ final class TeamModel: ObservableObject {
         all += HealthTools.all()
         var grants: [String: Grant] = [:]
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
+        grants["image_note"] = workplace.grant(for: "view_image")
         let off = Set(options(key).off)
         let taintBook = taint
         let receipts = approvalReceipts
@@ -2379,10 +2530,16 @@ final class TeamModel: ObservableObject {
         defer { unregisterLivePromptRefresher(helperRefresherToken) }
         let helperPrompt = helperRefresher.currentPrompt()
         var agent = Agent(
-            provider: recordingProvider(found.endpoint.provider(key: apiKey, stableSystemPrefix: helperPrompt.prefix), chat: helperKey, refresher: helperRefresher),
+            provider: outboundProvider(
+                recordingProvider(found.endpoint.provider(key: apiKey, stableSystemPrefix: helperPrompt.prefix),
+                                  chat: helperKey, refresher: helperRefresher),
+                endpoint: found.endpoint, model: found.model, chat: helperKey
+            ),
             model: found.model,
             system: helperPrompt.full,
-            tools: traits.tools ? tools(for: helper, key: helperKey, canSee: traits.sees, helping: true, displayChat: key, workplace: helperPlace, imageAPIKey: helperImageAPIKey) : [],
+            tools: traits.tools ? tools(for: helper, key: helperKey,
+                                       canSee: traits.sees || canUseAuxiliaryVision(for: found.endpoint, model: found.model),
+                                       helping: true, displayChat: key, workplace: helperPlace, imageAPIKey: helperImageAPIKey) : [],
             approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key, executionChat: helperKey, workplace: helperPlace) ?? false }
         )
         agent.screen = Self.screen
@@ -2393,6 +2550,9 @@ final class TeamModel: ObservableObject {
         agent.maxSteps = min(Pref.maxSteps, 24)
         let before = doing[key]
         let helperEpoch = epochs[helperKey, default: 0]
+        agent.prepareToolResult = { [weak self] result in
+            await self?.prepareToolImageResult(result, chat: helperKey, epoch: helperEpoch) ?? result
+        }
         doing[key] = "\(helper.name)在帮忙"
         doing[helperKey] = "在帮\(asker.name)"
         notify(helperKey, .changed)
@@ -2994,7 +3154,9 @@ extension TeamModel {
     }
 
     /// A single tool-free request, shared by the automatic memory and diary jobs.
-    func memorySummary(system: String, prompt: String, outputLimit: Int, diary: Bool = false) async throws -> String {
+    func memorySummary(
+        system: String, prompt: String, outputLimit: Int, diary: Bool = false, writeGuardKey: String? = nil
+    ) async throws -> String {
         try Task.checkCancellation()
         let selected = resolve(settings.memoryModel).flatMap { found in
             found.endpoint.models.contains(found.model) ? settings.memoryModel : nil
@@ -3008,6 +3170,21 @@ extension TeamModel {
         }
         try Task.checkCancellation()
         guard let (endpoint, model, key) = chosen else { throw CancellationError() }
+        try requireMemoryOutboundConsent(endpoint)
+        if let writeGuardKey, !canWriteMemories(beforeCompressing: writeGuardKey) { throw CancellationError() }
+        let (safeSystem, safePrompt) = await Task.detached(priority: .utility) {
+            let secrets = Vault.allStrings().sorted { $0.count > $1.count }
+            let redactedSystem = MemoryReviewRules.clip(MemoryReviewRules.redacted(system, secrets: secrets), bytes: 1_200)
+            let redactedPrompt = MemoryReviewRules.clip(
+                MemoryReviewRules.redacted(prompt, secrets: secrets),
+                bytes: MemoryReviewRules.inputBytes - redactedSystem.utf8.count
+            )
+            return (redactedSystem, redactedPrompt)
+        }.value
+        try Task.checkCancellation()
+        try requireMemoryOutboundConsent(endpoint)
+        if let writeGuardKey, !canWriteMemories(beforeCompressing: writeGuardKey) { throw CancellationError() }
+
         let day = LogicalDay.day(of: Date())
         var book = memoryBook
         if book.budgetDay != day {
@@ -3025,16 +3202,6 @@ extension TeamModel {
         book.memories = memories
         try commitMemoryBook(book)
 
-        let (safeSystem, safePrompt) = await Task.detached(priority: .utility) {
-            let secrets = Vault.allStrings().sorted { $0.count > $1.count }
-            let redactedSystem = MemoryReviewRules.clip(MemoryReviewRules.redacted(system, secrets: secrets), bytes: 1_200)
-            let redactedPrompt = MemoryReviewRules.clip(
-                MemoryReviewRules.redacted(prompt, secrets: secrets),
-                bytes: MemoryReviewRules.inputBytes - redactedSystem.utf8.count
-            )
-            return (redactedSystem, redactedPrompt)
-        }.value
-        try Task.checkCancellation()
         let request = ModelRequest(model: model, system: safeSystem, messages: [.user(safePrompt)],
                                    outputLimit: min(outputLimit, MemoryReviewRules.outputTokens), thinking: .off)
         var text = ""

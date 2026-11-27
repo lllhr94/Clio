@@ -83,6 +83,7 @@ extension TeamModel {
                 for photo in entry.photos where !photo.isEmpty {
                     names.insert(photo)
                 }
+                names.formUnion(entry.message.mediaReferences ?? [])
             }
         }
         return names

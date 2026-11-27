@@ -37,12 +37,20 @@ public struct ToolOutput: Equatable, Sendable {
     public var images: [ImagePart]
     /// For the person only, never sent to the model: the full comparison of a changed file, say.
     public var detail: String?
+    /// An existing image to rehydrate instead of creating another stored copy.
+    public var loadedMediaReference: String?
+    public var loadedMediaSourceTool: String?
 
-    public init(_ text: String, isError: Bool = false, images: [ImagePart] = [], detail: String? = nil) {
+    public init(
+        _ text: String, isError: Bool = false, images: [ImagePart] = [], detail: String? = nil,
+        loadedMediaReference: String? = nil, loadedMediaSourceTool: String? = nil
+    ) {
         self.text = text
         self.isError = isError
         self.images = images
         self.detail = detail
+        self.loadedMediaReference = loadedMediaReference
+        self.loadedMediaSourceTool = loadedMediaSourceTool
     }
 }
 
@@ -50,6 +58,8 @@ public protocol AgentTool: Sendable {
     var spec: ToolSpec { get }
     /// Whether calling this tool has zero side effects and can safely run concurrently with other read-only tools.
     var isReadOnlySafe: Bool { get }
+    /// Whether a completed call can change state. An otherwise read-only tool can still require serial execution.
+    var hasSideEffects: Bool { get }
     /// What the user sees while it runs: 「搜索：重庆天气」.
     func label(for arguments: JSONValue) -> String
     /// Nil: runs without asking.
@@ -59,6 +69,7 @@ public protocol AgentTool: Sendable {
 
 public extension AgentTool {
     var isReadOnlySafe: Bool { false }
+    var hasSideEffects: Bool { !isReadOnlySafe }
     func approval(for arguments: JSONValue) -> ApprovalAsk? { nil }
 }
 
@@ -107,6 +118,8 @@ public struct Agent: Sendable {
     public var outputLimit: Int?
     /// Converts native reply images to caller-owned text (for example local Markdown links).
     public var renderReplyImages: (@Sendable ([ReplyImage]) async throws -> String)?
+    /// Converts tool imagery to caller-owned references before it can enter model history or persisted messages.
+    public var prepareToolResult: (@Sendable (Message) async -> Message)?
 
     /// How hard to think.
     public var thinking: Thinking = .auto
@@ -130,22 +143,34 @@ public struct Agent: Sendable {
     /// Asks once with no tools and returns the whole answer: for summaries and titles.
     public func ask(_ prompt: String) async throws -> String {
         var request = ModelRequest(model: model, system: system, messages: [.user(prompt)], temperature: temperature, outputLimit: outputLimit, thinking: thinking)
+        let retryArbiter = WholeTurnRetryArbiter()
         var text = ""
         var finished: String?
-        do {
-            for try await event in provider.stream(request) {
-                try Task.checkCancellation()
-                if case .text(let piece) = event { text += piece }
-                if case .finish(let reason) = event, finished == nil { finished = reason }
-            }
-        } catch let failure as ProviderError where text.isEmpty && request.thinking != .auto && (failure.status == 400 || failure.status == 422) {
-            // The model does not take the thinking setting: ask once more without it.
-            request.thinking = .auto
-            finished = nil
-            for try await event in provider.stream(request) {
-                try Task.checkCancellation()
-                if case .text(let piece) = event { text += piece }
-                if case .finish(let reason) = event, finished == nil { finished = reason }
+        var attempt = 0
+        while true {
+            var hasOutput = false
+            do {
+                for try await event in provider.stream(request) {
+                    try Task.checkCancellation()
+                    hasOutput = hasOutput || Self.output(event)
+                    if case .text(let piece) = event { text += piece }
+                    if case .finish(let reason) = event, finished == nil { finished = reason }
+                }
+                break
+            } catch {
+                switch retryArbiter.decide(after: error, requestHasOutput: hasOutput, thinking: request.thinking,
+                                           canTrimContext: false, hasTransientRetry: attempt < retryDelays.count) {
+                case .retryWithoutThinking:
+                    request.thinking = .auto
+                case .retryTransient:
+                    let wait = retryDelays[attempt]
+                    attempt += 1
+                    if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+                case .retryShorterContext, .stop:
+                    if WholeTurnRetryArbiter.cancelled(error) { throw CancellationError() }
+                    throw error
+                }
+                finished = nil
             }
         }
         // Half an answer is not an answer: a summary made from it would stand in for everything it covers
@@ -157,53 +182,41 @@ public struct Agent: Sendable {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Failures that usually pass on their own: a connection dropped or refused on the way, a server that is busy.
-    static func passing(_ error: Error) -> Bool {
-        if let url = error as? URLError {
-            let codes: [URLError.Code] = [.secureConnectionFailed, .networkConnectionLost, .timedOut, .cannotConnectToHost,
-                                          .notConnectedToInternet, .dnsLookupFailed, .cannotFindHost, .badServerResponse]
-            return codes.contains(url.code)
+    private static func output(_ event: StreamEvent) -> Bool {
+        switch event {
+        case .text(let piece), .reasoning(let piece), .reasoningSignature(let piece):
+            return !piece.isEmpty
+        case .image, .toolCallStart, .toolCallArguments:
+            return true
+        case .usage, .finish:
+            return false
         }
-        if let failure = error as? ProviderError, let status = failure.status { return status == 429 || status >= 500 }
-        return false
     }
 
     static let maxToolConcurrency = 4
-    static let repeatedLoopStopMessage = "（连续几步都在重复同样的操作没有新进展，我先停在这里。要接着试或换个做法就说一声。）"
-
-    struct CanonicalCall: Equatable, Sendable {
-        let name: String
-        let arguments: String
-    }
-
-    struct CanonicalOutcome: Equatable, Sendable {
-        let isError: Bool
-        let text: String
-        let detail: String?
-        let imageCount: Int
-    }
-
-    struct CanonicalStepKey: Equatable, Sendable {
-        let calls: [CanonicalCall]
-        let outcomes: [CanonicalOutcome]
-    }
 
     private struct PreparedCall: Sendable {
         let index: Int
         let call: ToolCall
-        let sameKey: String
+        let sameKey: ToolLoopDetector.CallKey
         let tool: AgentTool
         let arguments: JSONValue
         let title: String?
     }
 
-    public func run(history: [Message], emit: @escaping @Sendable (AgentEvent) async -> Void) async throws {
-        var messages = history
+    public func run(
+        history: [Message], retryArbiter: WholeTurnRetryArbiter = WholeTurnRetryArbiter(),
+        emit: @escaping @Sendable (AgentEvent) async -> Void
+    ) async throws {
+        var messages = ProtocolAtomicUnit.paired(history)
+        let activeTurnStart = messages.lastIndex(where: { $0.role == .user }) ?? 0
+        var retainedStart = 0
         let specs = tools.map { Self.titled($0.spec) }
+        let mutatingTools = Set(tools.filter(\.hasSideEffects).map { $0.spec.name })
         var thinking = self.thinking
-        var uncertain: Set<String> = []
-        var lastStepKey: CanonicalStepKey?
-        var consecutiveStepRepeats = 0
+        var uncertain: Set<ToolLoopDetector.CallKey> = []
+        var loopDetector = ToolLoopDetector()
+        var nudge: String?
         for step in 0..<maxSteps {
             try Task.checkCancellation()
             if step > 0, let inbox {
@@ -215,11 +228,21 @@ public struct Agent: Sendable {
                     heardAny = true
                 }
                 if heardAny {
-                    lastStepKey = nil
-                    consecutiveStepRepeats = 0
+                    loopDetector = ToolLoopDetector()
+                    nudge = nil
                 }
             }
-            var request = ModelRequest(model: model, system: system, messages: messages, tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking)
+            func requestMessages(startingAt start: Int) -> [Message] {
+                var outgoing = Array(messages[start...])
+                if let nudge, let index = outgoing.lastIndex(where: { $0.role == .tool }) {
+                    outgoing[index].text += "\n" + nudge
+                }
+                return outgoing
+            }
+            var request = ModelRequest(
+                model: model, system: system, messages: requestMessages(startingAt: retainedStart),
+                tools: specs, temperature: temperature, outputLimit: outputLimit, thinking: thinking
+            )
             var text = ""
             var images: [ReplyImage] = []
             var seenImages: Set<ReplyImage> = []
@@ -231,9 +254,14 @@ public struct Agent: Sendable {
             var lastWriting = clock.now
             var attempt = 0
             var finished: String?
+            var hasOutput = false
             while true {
                 do {
                     for try await event in provider.stream(request) {
+                        if !hasOutput, Self.output(event) {
+                            hasOutput = true
+                            retryArbiter.recordOutput()
+                        }
                         switch event {
                         case .text(let piece):
                             text += piece
@@ -271,36 +299,33 @@ public struct Agent: Sendable {
                     }
                     break
                 } catch {
-                    let cancelled = Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
-                    // Nothing came through yet and the failure looks passing (a dropped or refused connection, a busy server):
-                    // ask again, a couple of times, before telling the user.
-                    if !cancelled, text.isEmpty, reasoning.isEmpty, images.isEmpty, calls.isEmpty, attempt < retryDelays.count, Self.passing(error) {
+                    switch retryArbiter.decide(after: error, requestHasOutput: hasOutput, thinking: thinking,
+                                               canTrimContext: retainedStart < activeTurnStart, hasTransientRetry: attempt < retryDelays.count) {
+                    case .retryTransient:
                         let wait = retryDelays[attempt]
                         attempt += 1
-                        signature = ""
-                        finished = nil
                         await emit(.retrying(attempt: attempt))
                         if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
-                        continue
-                    }
-                    // A model that does not take the thinking setting says so with a 400: go on without it.
-                    if !cancelled, thinking != .auto, text.isEmpty, reasoning.isEmpty, images.isEmpty, calls.isEmpty,
-                       let failure = error as? ProviderError, failure.status == 400 || failure.status == 422 {
-                        await emit(.thinkingRefused(thinking, reason: failure.message))
+                    case .retryWithoutThinking:
+                        let reason = (error as? ProviderError)?.message ?? error.localizedDescription
+                        await emit(.thinkingRefused(thinking, reason: reason))
                         thinking = .auto
                         request.thinking = .auto
-                        signature = ""
-                        finished = nil
-                        continue
+                    case .retryShorterContext:
+                        retainedStart = activeTurnStart
+                        request.messages = requestMessages(startingAt: retainedStart)
+                    case .stop:
+                        // What was written so far stays.
+                        if !text.isEmpty {
+                            var partial = Message.assistant(text, reasoning: reasoning.isEmpty ? nil : reasoning)
+                            if !signature.isEmpty { partial.reasoningSignature = signature }
+                            await emit(.message(partial))
+                        }
+                        if WholeTurnRetryArbiter.cancelled(error) { throw CancellationError() }
+                        throw error
                     }
-                    // What was written so far stays.
-                    if !text.isEmpty {
-                        var partial = Message.assistant(text, reasoning: reasoning.isEmpty ? nil : reasoning)
-                        if !signature.isEmpty { partial.reasoningSignature = signature }
-                        await emit(.message(partial))
-                    }
-                    if cancelled { throw CancellationError() }
-                    throw error
+                    signature = ""
+                    finished = nil
                 }
             }
             if !images.isEmpty, let renderReplyImages {
@@ -344,45 +369,24 @@ public struct Agent: Sendable {
                 if Task.isCancelled { throw CancellationError() }
                 return
             }
-            let outcomes = try await executeToolCalls(made, messages: &messages, uncertain: &uncertain, emit: emit)
-            let stepKey = CanonicalStepKey(
-                calls: made.map { Self.canonicalCallSignature($0) },
-                outcomes: outcomes
+            let outcomes = try await executeToolCalls(
+                made, messages: &messages, uncertain: &uncertain, retryArbiter: retryArbiter, emit: emit
             )
-            if stepKey == lastStepKey {
-                consecutiveStepRepeats += 1
-            } else {
-                lastStepKey = stepKey
-                consecutiveStepRepeats = 1
-            }
-            if consecutiveStepRepeats >= 3 {
-                await emit(.message(.assistant(Self.repeatedLoopStopMessage)))
+            switch loopDetector.record(calls: made, results: outcomes, mutatingTools: mutatingTools) {
+            case .continue:
+                nudge = nil
+            case .nudge(let reminder):
+                nudge = reminder
+            case .stop(let notice):
+                await emit(.message(.assistant(notice)))
                 return
             }
         }
         await emit(.message(.assistant("（这件事步骤太多，我先停在这里。要我接着做就说一声。）")))
     }
 
-    static func canonicalCallSignature(_ call: ToolCall) -> CanonicalCall {
-        let source = call.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let parsed = JSONValue.parse(source.isEmpty ? "{}" : source) {
-            let (untitledArguments, _) = untitled(parsed)
-            return CanonicalCall(name: call.name, arguments: "json:" + untitledArguments.compact)
-        }
-        return CanonicalCall(name: call.name, arguments: "raw:" + source)
-    }
-
-    static func canonicalOutcome(_ message: Message) -> CanonicalOutcome {
-        CanonicalOutcome(
-            isError: message.isError,
-            text: message.text.trimmingCharacters(in: .whitespacesAndNewlines),
-            detail: message.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
-            imageCount: message.images.count
-        )
-    }
-
-    private func prepareConcurrentCandidate(_ call: ToolCall, at index: Int, uncertain: Set<String>) -> PreparedCall? {
-        let same = call.name + "\u{1}" + call.arguments
+    private func prepareConcurrentCandidate(_ call: ToolCall, at index: Int, uncertain: Set<ToolLoopDetector.CallKey>) -> PreparedCall? {
+        let same = ToolLoopDetector.CallKey(call)
         guard !uncertain.contains(same) else { return nil }
         guard let tool = tools.first(where: { $0.spec.name == call.name }) else { return nil }
         guard tool.isReadOnlySafe else { return nil }
@@ -403,10 +407,11 @@ public struct Agent: Sendable {
     private func executeToolCalls(
         _ made: [ToolCall],
         messages: inout [Message],
-        uncertain: inout Set<String>,
+        uncertain: inout Set<ToolLoopDetector.CallKey>,
+        retryArbiter: WholeTurnRetryArbiter,
         emit: @escaping @Sendable (AgentEvent) async -> Void
-    ) async throws -> [CanonicalOutcome] {
-        var outcomes: [CanonicalOutcome] = []
+    ) async throws -> [Message] {
+        var outcomes: [Message] = []
         outcomes.reserveCapacity(made.count)
         var cursor = 0
         while cursor < made.count {
@@ -419,32 +424,34 @@ public struct Agent: Sendable {
                 lookahead += 1
             }
             if batch.count >= 2 {
-                let results = try await performConcurrentBatch(batch, emit: emit)
+                let results = try await performConcurrentBatch(batch, retryArbiter: retryArbiter, emit: emit)
                 for (prepared, result) in zip(batch, results) {
                     if result.isError, result.text.hasPrefix(Self.unknownMark) {
                         uncertain.insert(prepared.sameKey)
+                        retryArbiter.recordUnknownOutcome()
                     }
                     messages.append(result)
                     await emit(.message(result))
-                    outcomes.append(Self.canonicalOutcome(result))
+                    outcomes.append(result)
                 }
                 try Task.checkCancellation()
                 cursor = lookahead
             } else {
                 let call = made[cursor]
-                let same = call.name + "\u{1}" + call.arguments
+                let same = ToolLoopDetector.CallKey(call)
                 let result: Message
                 if uncertain.contains(same) {
                     result = .toolResult("这一步刚才结果未知，同样的事没有再做一次。先查清现在的状态，或问用户要不要重做。", for: call, isError: true)
                 } else {
-                    result = await perform(call, emit: emit)
+                    result = await perform(call, retryArbiter: retryArbiter, emit: emit)
                     if result.isError, result.text.hasPrefix(Self.unknownMark) {
                         uncertain.insert(same)
+                        retryArbiter.recordUnknownOutcome()
                     }
                 }
                 messages.append(result)
                 await emit(.message(result))
-                outcomes.append(Self.canonicalOutcome(result))
+                outcomes.append(result)
                 try Task.checkCancellation()
                 cursor += 1
             }
@@ -454,6 +461,7 @@ public struct Agent: Sendable {
 
     private func performConcurrentBatch(
         _ batch: [PreparedCall],
+        retryArbiter: WholeTurnRetryArbiter,
         emit: @escaping @Sendable (AgentEvent) async -> Void
     ) async throws -> [Message] {
         var ordered: [Message?] = Array(repeating: nil, count: batch.count)
@@ -467,7 +475,7 @@ public struct Agent: Sendable {
                 next += 1
                 group.addTask {
                     try Task.checkCancellation()
-                    let message = await self.performPrepared(item, emit: emit)
+                    let message = await self.performPrepared(item, retryArbiter: retryArbiter, emit: emit)
                     return (offset: offset, message: message)
                 }
             }
@@ -483,7 +491,7 @@ public struct Agent: Sendable {
                     next += 1
                     group.addTask {
                         try Task.checkCancellation()
-                        let message = await self.performPrepared(item, emit: emit)
+                        let message = await self.performPrepared(item, retryArbiter: retryArbiter, emit: emit)
                         return (offset: offset, message: message)
                     }
                 }
@@ -533,7 +541,9 @@ public struct Agent: Sendable {
         return "\(label[..<colon])：\(title)"
     }
 
-    private func perform(_ call: ToolCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
+    private func perform(
+        _ call: ToolCall, retryArbiter: WholeTurnRetryArbiter, emit: @Sendable (AgentEvent) async -> Void
+    ) async -> Message {
         guard let tool = tools.first(where: { $0.spec.name == call.name }) else {
             return .toolResult("没有叫 \(call.name) 的工具。", for: call, isError: true)
         }
@@ -546,12 +556,15 @@ public struct Agent: Sendable {
         let invocationID = "\(call.id)-\(UUID().uuidString)"
         return await ToolInvocation.$currentID.withValue(invocationID) {
             await ToolInvocation.$isConcurrentBatch.withValue(false) {
-                await executeTool(call: call, tool: tool, arguments: arguments, title: title, allowApproval: true, emit: emit)
+                await executeTool(call: call, tool: tool, arguments: arguments, title: title,
+                                  allowApproval: true, retryArbiter: retryArbiter, emit: emit)
             }
         }
     }
 
-    private func performPrepared(_ prepared: PreparedCall, emit: @Sendable (AgentEvent) async -> Void) async -> Message {
+    private func performPrepared(
+        _ prepared: PreparedCall, retryArbiter: WholeTurnRetryArbiter, emit: @Sendable (AgentEvent) async -> Void
+    ) async -> Message {
         let invocationID = "\(prepared.call.id)-\(UUID().uuidString)"
         return await ToolInvocation.$currentID.withValue(invocationID) {
             await ToolInvocation.$isConcurrentBatch.withValue(true) {
@@ -561,6 +574,7 @@ public struct Agent: Sendable {
                     arguments: prepared.arguments,
                     title: prepared.title,
                     allowApproval: false,
+                    retryArbiter: retryArbiter,
                     emit: emit
                 )
             }
@@ -573,11 +587,11 @@ public struct Agent: Sendable {
         arguments: JSONValue,
         title: String?,
         allowApproval: Bool,
+        retryArbiter: WholeTurnRetryArbiter,
         emit: @Sendable (AgentEvent) async -> Void
     ) async -> Message {
         await emit(.toolStarted(id: call.id, name: call.name, label: Self.label(tool.label(for: arguments), title: title)))
         let ask = tool.approval(for: arguments)
-        let asked = ask != nil
         if let ask {
             guard allowApproval else {
                 await emit(.toolFinished(id: call.id, ok: false))
@@ -593,17 +607,21 @@ public struct Agent: Sendable {
             await emit(.toolFinished(id: call.id, ok: false))
             return .toolResult("这一轮已经停下，这一步没有做。", for: call, isError: true)
         }
+        if tool.hasSideEffects { retryArbiter.recordSideEffect() }
         do {
             let output = try await tool.run(arguments)
-            await emit(.toolFinished(id: call.id, ok: !output.isError))
             var result = Message.toolResult(screen?(output.text) ?? output.text, for: call, isError: output.isError)
             result.images = output.images
             result.detail = output.detail.map { screen?($0) ?? $0 }
+            result.mediaReferences = output.loadedMediaReference.map { [$0] }
+            result.mediaSourceTool = output.loadedMediaSourceTool
+            if let prepareToolResult { result = await prepareToolResult(result) }
+            await emit(.toolFinished(id: call.id, ok: !result.isError))
             return result
         } catch {
             await emit(.toolFinished(id: call.id, ok: false))
             // A step that changes things and broke off on the way may or may not have happened.
-            if asked, Self.unsure(error) {
+            if tool.hasSideEffects, Self.unsure(error) {
                 let rawBody = "这一步可能已经做了，也可能没做（\(error.localizedDescription)）。不要直接再做一次：先查清现在的状态，查不清就问用户。"
                 let safeBody = screen?(rawBody) ?? rawBody
                 return .toolResult(Self.unknownMark + safeBody, for: call, isError: true)

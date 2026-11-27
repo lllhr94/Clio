@@ -90,8 +90,18 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
 
     var id: String
     var name: String
-    var kind: Kind
-    var baseURL: String
+    var kind: Kind {
+        didSet { if kind != oldValue { bumpIdentityRevision() } }
+    }
+    var baseURL: String {
+        didSet { if baseURL != oldValue { bumpIdentityRevision() } }
+    }
+    private var storedIdentityRevision: UInt64?
+    var identityRevision: UInt64 { storedIdentityRevision ?? 0 }
+
+    private mutating func bumpIdentityRevision() {
+        storedIdentityRevision = identityRevision &+ 1
+    }
     /// The models in use: the ones offered when picking a model.
     var models: [String]
     /// Everything the service listed last time, in use or not.
@@ -274,13 +284,14 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
 
     func provider(key: String, stableSystemPrefix: String? = nil) -> ModelProvider {
         switch kind {
-        case .openai: return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle)
+        case .openai: return OpenAIProvider(baseURL: baseURL, apiKey: key, style: thinkingStyle, fixedRoute: true)
         case .anthropic:
             return AnthropicProvider(
                 baseURL: baseURL,
                 apiKey: key,
                 promptCache: usesPromptCache,
-                stableSystemPrefix: stableSystemPrefix
+                stableSystemPrefix: stableSystemPrefix,
+                fixedRoute: true
             )
         }
     }
@@ -295,7 +306,47 @@ struct TeamSettings: Codable, Equatable, Sendable {
     /// Optional OpenAI-compatible images model, using the existing endpoint/model reference.
     var imageModel: String?
     var memoryModel: String?
+    var visionModel: String?
+    private var outboundConsents: Set<OutboundConsent>?
+    private var outboundRevision: UInt64?
     var mainBotId: String?
+
+    var outboundConsentGeneration: UInt64 { outboundRevision ?? 0 }
+
+    func allowsOutbound(_ recipient: RecipientIdentity, _ category: OutboundDataCategory) -> Bool {
+        guard endpoints.contains(where: { $0.recipientIdentity == recipient }) else { return false }
+        return outboundConsents?.contains(OutboundConsent(recipient: recipient, category: category)) == true
+    }
+
+    mutating func setOutboundConsent(_ allowed: Bool, for recipient: RecipientIdentity, category: OutboundDataCategory) {
+        guard endpoints.contains(where: { $0.recipientIdentity == recipient }) else { return }
+        var records = outboundConsents ?? []
+        let record = OutboundConsent(recipient: recipient, category: category)
+        let changed = allowed ? records.insert(record).inserted : records.remove(record) != nil
+        guard changed else { return }
+        outboundConsents = records
+        outboundRevision = outboundConsentGeneration &+ 1
+    }
+
+    mutating func pruneOutboundConsents() {
+        guard let records = outboundConsents else { return }
+        let active = Set(endpoints.compactMap(\.recipientIdentity))
+        let kept = records.filter { active.contains($0.recipient) }
+        guard kept != records else { return }
+        outboundConsents = kept
+        outboundRevision = outboundConsentGeneration &+ 1
+    }
+
+    mutating func clearOutboundConsents() {
+        guard outboundConsents?.isEmpty == false else { return }
+        outboundConsents = nil
+        outboundRevision = outboundConsentGeneration &+ 1
+    }
+}
+
+private struct OutboundConsent: Codable, Hashable, Sendable {
+    let recipient: RecipientIdentity
+    let category: OutboundDataCategory
 }
 
 /// Everything the app keeps, as small JSON files in Application Support.

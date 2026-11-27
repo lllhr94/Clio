@@ -2,6 +2,11 @@ import AgentKit
 import Craft
 import Foundation
 
+struct MemoryWriteGuard: Sendable {
+    /// A mode can narrow the existing permission without changing who can read memory.
+    var modeAllowsWrite: @MainActor @Sendable (String) -> Bool = { _ in true }
+}
+
 extension Entry: MemoryExtractable {
     var isFold: Bool { fold == true }
     var hasToolCalls: Bool { !message.toolCalls.isEmpty }
@@ -67,6 +72,11 @@ struct LivePromptProvider: ModelProvider {
 
 extension TeamModel {
     // MARK: Memory safety & prompt assembly
+
+    func canWriteMemories(beforeCompressing key: String) -> Bool {
+        Grant.memory.policy != .off && liveChatMemoryGate.isAllowed(key)
+            && !options(key).off.contains(Grant.memory.rawValue) && memoryWriteGuard.modeAllowsWrite(key)
+    }
 
     private static let retractedMemoryFile = "memory-retracted.json"
 
@@ -322,10 +332,11 @@ extension TeamModel {
         eligibleIDs: Set<String>,
         bot: BotInfo,
         startEpoch: Int,
-        firstKeptID: String
+        firstKeptID: String,
+        extract: (@MainActor @Sendable (String, String) async throws -> String)? = nil
     ) async {
         guard phase == .ready, keeping, !Disk.frozen else { return }
-        guard Grant.memory.policy == .allow, !options(key).off.contains(Grant.memory.rawValue) else { return }
+        guard canWriteMemories(beforeCompressing: key) else { return }
         guard epochs[key, default: 0] == startEpoch, canAcceptInput(for: key) else { return }
         ensureRetractedFlushHashesLoaded()
 
@@ -396,7 +407,9 @@ extension TeamModel {
         do {
             reply = try await withThrowingTaskGroup(of: String?.self) { group in
                 group.addTask {
-                    try await self.memorySummary(system: system, prompt: prompt, outputLimit: MemoryReviewRules.outputTokens)
+                    if let extract { return try await extract(system, prompt) }
+                    return try await self.memorySummary(system: system, prompt: prompt,
+                                                        outputLimit: MemoryReviewRules.outputTokens, writeGuardKey: key)
                 }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 12_000_000_000)
@@ -410,8 +423,7 @@ extension TeamModel {
             reply = nil
         }
         guard !Task.isCancelled, let reply, !reply.isEmpty else { return }
-        guard Grant.memory.policy == .allow, !options(key).off.contains(Grant.memory.rawValue),
-              keeping, !Disk.frozen else { return }
+        guard keeping, !Disk.frozen else { return }
         guard canAcceptInput(for: key),
               MemorySafety.isFlushCommitValid(
                   preparedIDs: prepared.entryIDs,
@@ -478,7 +490,13 @@ extension TeamModel {
             )
             book.reviews = Array(book.reviews.prefix(100))
         }
-        guard (try? commitMemoryBook(book)) != nil else { return }
+        guard canWriteMemories(beforeCompressing: key) else { return }
+        do {
+            try commitMemoryBook(book)
+        } catch {
+            Diag.note("压缩前提取的记忆没有保存：\(error.localizedDescription)")
+            return
+        }
         invalidateMemoryPromptCache()
     }
 }

@@ -175,7 +175,7 @@ enum Backup {
                     walker.skipDescendants()
                     continue
                 }
-                if file.lastPathComponent.hasPrefix(".") {
+                if file.lastPathComponent.hasPrefix(".") || DeskTrash.isReservedName(file.lastPathComponent) {
                     if mode == S_IFDIR { walker.skipDescendants() }
                     continue
                 }
@@ -232,7 +232,7 @@ enum Backup {
                         walker.skipDescendants()
                         continue
                     }
-                    if file.lastPathComponent.hasPrefix(".") {
+                    if file.lastPathComponent.hasPrefix(".") || DeskTrash.isReservedName(file.lastPathComponent) {
                         if mode == S_IFDIR { walker.skipDescendants() }
                         continue
                     }
@@ -407,7 +407,7 @@ enum Backup {
                 UInt64(bigEndian: $0.loadUnaligned(as: UInt64.self))
             }
             let range = try take(length)
-            if !path.hasPrefix("#"), !BackupArchivePolicy.isExcludedArchivePath(path), path.hasPrefix("Skills/") {
+            if !path.hasPrefix("#"), !isTrashArchivePath(path), !BackupArchivePolicy.isExcludedArchivePath(path), path.hasPrefix("Skills/") {
                 guard length <= UInt64(maxSkillSingleFileBytes),
                       skillFileCount < maxSkillFileCount,
                       skillTotalBytes + Int(length) <= maxSkillTotalBytes else {
@@ -443,6 +443,7 @@ enum Backup {
                 }
                 let stagedFolder = staging.appendingPathComponent(folder, isDirectory: true)
                 try manager.copyItem(at: live, to: stagedFolder)
+                try stripStagedTrashArtifacts(in: stagedFolder)
                 try verifyNoSymlinks(under: stagedFolder, root: staging)
             }
         }
@@ -454,7 +455,7 @@ enum Backup {
         var count = 0
 
         for item in items where !item.path.hasPrefix("#") {
-            guard !BackupArchivePolicy.isExcludedArchivePath(item.path),
+            guard !isTrashArchivePath(item.path), !BackupArchivePolicy.isExcludedArchivePath(item.path),
                   let parts = BackupArchivePolicy.normalizeRelativePath(item.path),
                   let root = parts.first else {
                 continue
@@ -541,6 +542,8 @@ enum Backup {
                     throw TeamError(message: "没能保存备份里的模型服务密钥。请解锁手机后再试，原来的密钥还在。")
                 }
                 settings.endpoints = preparedEndpoints
+                // An older backup must not re-enable a permission revoked on this device.
+                settings.clearOutboundConsents()
                 try JSONEncoder().encode(settings).write(
                     to: stagedSettings,
                     options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
@@ -702,7 +705,32 @@ enum Backup {
         }
     }
 
-    /// Removes any SQLite / WAL / SHM artifacts, journal files, or device-local mount tables (`mounts.json`)
+    private static func isTrashArchivePath(_ path: String) -> Bool {
+        path.split(separator: "/").contains { DeskTrash.isReservedName(String($0)) }
+    }
+
+    /// Removes device-local trash from staged copies before any restored data can become live.
+    static func stripStagedTrashArtifacts(in root: URL) throws {
+        let manager = FileManager.default
+        guard let walker = manager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        ) else { return }
+        var artifacts: [URL] = []
+        for case let entry as URL in walker {
+            if DeskTrash.isReservedName(entry.lastPathComponent) {
+                if let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                   values.isDirectory == true,
+                   values.isSymbolicLink != true {
+                    walker.skipDescendants()
+                }
+                artifacts.append(entry)
+            }
+        }
+        for artifact in artifacts { try manager.removeItem(at: artifact) }
+    }
+
+    /// Removes any SQLite / WAL / SHM artifacts, journal files, device-local trash, or mount tables (`mounts.json`)
     /// that should never stay inside `Team/` across restores while preserving `Team/secrets.json`
     /// (Vault metadata belongs exclusively to the local device) and `Team/experiences.json` / `Team/memory-revisions/rev-*.json`.
     @discardableResult
@@ -714,7 +742,7 @@ enum Backup {
         var toDelete: [URL] = []
         if let walker = manager.enumerator(
             at: teamStaging,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
             options: []
         ) {
             for case let entry as URL in walker {
@@ -722,7 +750,14 @@ enum Backup {
                 if name == "mounts.json" {
                     strippedMounts = true
                     toDelete.append(entry)
-                } else if name == "trash-index.json" || BackupArchivePolicy.isSQLiteOrCacheArtifact(entry.lastPathComponent) {
+                } else if DeskTrash.isReservedName(name) {
+                    if let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                       values.isDirectory == true,
+                       values.isSymbolicLink != true {
+                        walker.skipDescendants()
+                    }
+                    toDelete.append(entry)
+                } else if BackupArchivePolicy.isSQLiteOrCacheArtifact(entry.lastPathComponent) {
                     toDelete.append(entry)
                 }
             }

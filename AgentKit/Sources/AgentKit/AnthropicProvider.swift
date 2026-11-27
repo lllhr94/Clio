@@ -6,17 +6,20 @@ public struct AnthropicProvider: ModelProvider {
     public var apiKey: String
     public var promptCache: Bool?
     public let stableSystemPrefix: String?
+    private let fixedRoute: Bool
 
     public init(
         baseURL: String = "https://api.anthropic.com",
         apiKey: String,
         promptCache: Bool? = nil,
-        stableSystemPrefix: String? = nil
+        stableSystemPrefix: String? = nil,
+        fixedRoute: Bool = false
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.promptCache = promptCache
         self.stableSystemPrefix = stableSystemPrefix
+        self.fixedRoute = fixedRoute
     }
 
     private func signed(_ url: URL) -> URLRequest {
@@ -37,7 +40,8 @@ public struct AnthropicProvider: ModelProvider {
 
     public func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
-            return HTTP.stream(try urlRequest(request), decode: Self.decode)
+            let session = fixedRoute ? FixedModelRoute.session : HTTP.session
+            return HTTP.stream(try urlRequest(request), session: session, decode: Self.decode)
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }

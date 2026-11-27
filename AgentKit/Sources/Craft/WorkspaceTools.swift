@@ -5,12 +5,14 @@ import Foundation
 public struct HostTool: AgentTool {
     public let spec: ToolSpec
     public let isReadOnlySafe: Bool
+    public let hasSideEffects: Bool
     let shown: @Sendable (JSONValue) -> String
     let act: @Sendable (JSONValue) async throws -> ToolOutput
 
-    public init(name: String, description: String, parameters: JSONValue, isReadOnlySafe: Bool = false, label: @escaping @Sendable (JSONValue) -> String, act: @escaping @Sendable (JSONValue) async throws -> ToolOutput) {
+    public init(name: String, description: String, parameters: JSONValue, isReadOnlySafe: Bool = false, hasSideEffects: Bool? = nil, label: @escaping @Sendable (JSONValue) -> String, act: @escaping @Sendable (JSONValue) async throws -> ToolOutput) {
         spec = ToolSpec(name: name, description: description, parameters: parameters)
         self.isReadOnlySafe = isReadOnlySafe
+        self.hasSideEffects = hasSideEffects ?? !isReadOnlySafe
         shown = label
         self.act = act
     }
@@ -29,12 +31,15 @@ public struct WorkspaceKit: Sendable {
     public var beforeChange: @Sendable (_ host: WorkspaceHost, _ path: String) async -> Void
     /// Each line a command prints, as it prints it.
     public var tail: @Sendable (String) -> Void
+    /// Conversation-scoped loader for a saved tool image, when the host has one.
+    public var reloadImage: (@Sendable (String) async -> ToolOutput)?
 
-    public init(canSee: Bool, secrets: @escaping @Sendable () -> [String] = { [] }, beforeChange: @escaping @Sendable (WorkspaceHost, String) async -> Void = { _, _ in }, tail: @escaping @Sendable (String) -> Void = { _ in }) {
+    public init(canSee: Bool, secrets: @escaping @Sendable () -> [String] = { [] }, beforeChange: @escaping @Sendable (WorkspaceHost, String) async -> Void = { _, _ in }, tail: @escaping @Sendable (String) -> Void = { _ in }, reloadImage: (@Sendable (String) async -> ToolOutput)? = nil) {
         self.canSee = canSee
         self.secrets = secrets
         self.beforeChange = beforeChange
         self.tail = tail
+        self.reloadImage = reloadImage
     }
 }
 
@@ -52,7 +57,7 @@ public enum WorkspaceTools {
         tools.append(listDir(host))
         tools.append(glob(host))
         tools.append(grep(host, kit))
-        if kit.canSee { tools.append(viewImage(host)) }
+        if kit.canSee { tools.append(viewImage(host, reload: kit.reloadImage)) }
         return tools
     }
 
@@ -231,8 +236,26 @@ public enum WorkspaceTools {
         }
     }
 
-    static func viewImage(_ host: WorkspaceHost) -> AgentTool {
-        HostTool(name: "view_image", description: "看\(host.title)里的一张图片（jpg、png、heic 等）：用户发来的截图、扫描件、画出来的图表。会缩到长边 1280 像素。", parameters: ["type": "object", "properties": ["path": path(host)], "required": ["path"]], isReadOnlySafe: true, label: { "\(host.title)：看图 \($0["path"]?.string ?? "")" }) { arguments in
+    static func viewImage(_ host: WorkspaceHost, reload: (@Sendable (String) async -> ToolOutput)?) -> AgentTool {
+        var description = "看\(host.title)里的一张图片（jpg、png、heic 等）：用户发来的截图、扫描件、画出来的图表。会缩到长边 1280 像素。"
+        var parameters: [String: JSONValue] = ["type": "object", "properties": ["path": path(host)], "required": ["path"]]
+        if reload != nil {
+            description += "要重看本对话的工具图片，只填 ref（图片编号）。path 和 ref 只能填一个。"
+            parameters["properties"] = ["path": path(host), "ref": ["type": "string", "description": "本对话工具结果给出的图片编号"]]
+            parameters["required"] = []
+            parameters["additionalProperties"] = false
+        }
+        return HostTool(name: "view_image", description: description, parameters: .object(parameters), isReadOnlySafe: reload == nil, hasSideEffects: false, label: { arguments in
+            if arguments["ref"] != nil { return "重看对话里的图片" }
+            return "\(host.title)：看图 \(arguments["path"]?.string ?? "")"
+        }) { arguments in
+            if let value = arguments["ref"] {
+                guard let reload, case .string(let reference) = value,
+                      case .object(let fields) = arguments, fields.count == 1 else {
+                    return ToolOutput("重看图片时请只填 ref。", isError: true)
+                }
+                return await reload(reference)
+            }
             let target = arguments["path"]?.string ?? ""
             do {
                 let shot = try await host.viewImage(target)

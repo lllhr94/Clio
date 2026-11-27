@@ -1328,7 +1328,7 @@ final class A13EngineRegressionTests: XCTestCase {
         let ask = ApprovalAsk(title: "执行命令", reason: "跑脚本", detail: "说明", code: "echo 123", forced: true)
         XCTAssertEqual(ask.code, "echo 123")
 
-        // 1. Retry resets signature/finished from aborted attempt.
+        // 1. Retry resets finish metadata from an attempt that did not deliver output.
         final class SignatureFlakyProvider: ModelProvider, @unchecked Sendable {
             var count = 0
             func stream(_ request: ModelRequest) -> AsyncThrowingStream<StreamEvent, Error> {
@@ -1336,7 +1336,7 @@ final class A13EngineRegressionTests: XCTestCase {
                 let attempt = count
                 return AsyncThrowingStream { continuation in
                     if attempt == 1 {
-                        continuation.yield(.reasoningSignature("stale_sig_"))
+                        continuation.yield(.finish(reason: "length"))
                         continuation.finish(throwing: URLError(.networkConnectionLost))
                     } else {
                         continuation.yield(.reasoning("新思考"))

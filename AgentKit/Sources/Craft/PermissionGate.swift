@@ -319,6 +319,7 @@ public struct LiveGatedTool: AgentTool {
 
     public var spec: ToolSpec { inner.spec }
     public var isReadOnlySafe: Bool { inner.isReadOnlySafe }
+    public var hasSideEffects: Bool { inner.hasSideEffects }
     public func label(for arguments: JSONValue) -> String { inner.label(for: arguments) }
 
     public func approval(for arguments: JSONValue) -> ApprovalAsk? {

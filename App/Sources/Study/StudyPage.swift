@@ -173,6 +173,7 @@ struct StudyFolder: View {
     @State private var unmounting: MountedFolder?
     @State private var reauthorizing: MountedFolder?
     @State private var importing = false
+    @State private var showingTrash = false
     @State private var pickingMount = false
     @State private var naming = false
     @State private var newFolder = ""
@@ -240,11 +241,11 @@ struct StudyFolder: View {
                 .fileImporter(isPresented: $pickingMount, allowedContentTypes: [.folder], allowsMultipleSelection: false, onCompletion: handlePickMount)
             Color.clear
                 .confirmationDialog(
-                    L.format("files.deleteConfirm", deleting?.url.lastPathComponent ?? ""),
+                    L.format("files.trashMoveConfirm", deleting?.url.lastPathComponent ?? ""),
                     isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
                     titleVisibility: .visible
                 ) {
-                    Button(L.t("actions.delete"), role: .destructive) {
+                    Button(L.t("files.trashMove"), role: .destructive) {
                         deleteSelectedItem()
                     }
                     Button(L.t("actions.cancel"), role: .cancel) { deleting = nil }
@@ -277,6 +278,9 @@ struct StudyFolder: View {
             Button(L.t("actions.create")) { createSubfolder() }
             Button(L.t("actions.cancel"), role: .cancel) {}
         }
+        .sheet(isPresented: $showingTrash, onDismiss: { Task { await load() } }) {
+            DeskTrashPage()
+        }
         .task(id: folder) { await load() }
         .onReceive(NotificationCenter.default.publisher(for: MountedFolders.changed)) { _ in
             guard top else { return }
@@ -302,6 +306,11 @@ struct StudyFolder: View {
         if let close {
             ToolbarItem(placement: .topBarTrailing) {
                 Button(L.t("actions.done")) { close() }
+            }
+        }
+        if top {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(L.t("files.trash"), systemImage: "trash") { showingTrash = true }
             }
         }
         if !mountBroken {
@@ -404,7 +413,7 @@ struct StudyFolder: View {
                         if let shareURL = item.shareURL {
                             ShareLink(item: shareURL) { Label(L.t("actions.share"), systemImage: "square.and.arrow.up") }
                         }
-                        Button(L.t("actions.delete"), systemImage: "trash", role: .destructive) { deleting = item }
+                        Button(L.t("files.trashMove"), systemImage: "trash", role: .destructive) { deleting = item }
                     }
                     if item.id != items.last?.id { Kit.divider }
                 }
@@ -552,25 +561,22 @@ struct StudyFolder: View {
     private func deleteSelectedItem() {
         guard let item = deleting else { return }
         deleting = nil
-        let currentMount = mount
-        let fallbackRoot = mountRoot ?? Workspace.root
-        let itemURL = item.url
+        let currentRoot = mountRoot
         Task {
-            let removed = await Task.detached(priority: .userInitiated) { () -> Bool in
-                let opened = currentMount.flatMap { MountedFolders.openForUI($0) }
-                defer { opened?.token.stop() }
-                if currentMount != nil && opened == nil { return false }
-                let activeRoot = opened?.url ?? fallbackRoot
-                guard Workspace.isInsideRealRoot(itemURL, root: activeRoot),
-                      itemURL.resolvingSymlinksInPath().standardizedFileURL.path != activeRoot.resolvingSymlinksInPath().standardizedFileURL.path else {
-                    return false
-                }
-                try? FileManager.default.removeItem(at: itemURL)
-                return true
-            }.value
-            if removed {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    if let mount = item.mount {
+                        guard let currentRoot else { throw DeskTrash.Failure.offline }
+                        let relative = try DeskTrash.relativePath(of: item.url, in: currentRoot)
+                        _ = try DeskTrash.shared.move(mount: mount, relativePath: relative, expectedRoot: currentRoot)
+                    } else {
+                        _ = try DeskTrash.shared.move(deskItem: item.url)
+                    }
+                }.value
                 Haptics.lock()
                 await load()
+            } catch {
+                ToastCenter.shared.show(error.localizedDescription, symbol: "exclamationmark.circle", tint: Ink.warn)
             }
         }
     }
@@ -614,6 +620,7 @@ struct StudyFolder: View {
 
         isMountRootFolder = false
         let loaded = await Task.detached(priority: .utility) { () -> ([StudyPage.Item], [MountedFolders.Inspection]) in
+            if top { _ = try? DeskTrash.shared.entries() }
             let files = Self.readFolder(folder, root: Workspace.root, mount: nil)
             let inspections = top ? MountedFolders.all(fresh: true).map(MountedFolders.inspect) : []
             return (files, inspections)
@@ -650,6 +657,114 @@ struct StudyFolder: View {
             )
         }
         .sorted { ($0.folder ? 0 : 1, $1.changed) < ($1.folder ? 0 : 1, $0.changed) }
+    }
+}
+
+private struct DeskTrashPage: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var entries: [DeskTrash.Record] = []
+    @State private var loading = true
+    @State private var busy = false
+    @State private var confirmEmpty = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Ink.Space.l) {
+                    Text(L.t("files.trashRetention"))
+                        .font(Ink.secondary)
+                        .foregroundStyle(Ink.inkSoft)
+                    if loading {
+                        ProgressView(L.t("loading.generic"))
+                    } else if let errorMessage {
+                        Text(errorMessage)
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.warn)
+                    }
+                    if !loading && entries.isEmpty && errorMessage == nil {
+                        Text(L.t("files.trashEmpty"))
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                    } else if !entries.isEmpty {
+                        rows
+                    }
+                }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(Ink.paper.ignoresSafeArea())
+            .navigationTitle(L.t("files.trash"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(L.t("actions.done")) { dismiss() }
+                }
+                if !entries.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(L.t("files.trashEmptyAction"), systemImage: "trash.slash") { confirmEmpty = true }
+                            .disabled(busy)
+                    }
+                }
+            }
+            .confirmationDialog(L.t("files.trashEmptyAction"), isPresented: $confirmEmpty, titleVisibility: .visible) {
+                Button(L.t("files.trashEmptyAction"), role: .destructive) { run { try DeskTrash.shared.empty() } }
+                Button(L.t("actions.cancel"), role: .cancel) {}
+            } message: {
+                Text(L.t("errors.cannotUndo"))
+            }
+            .task { await load() }
+            .refreshable { await load() }
+        }
+    }
+
+    private var rows: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(entries) { entry in
+                HStack(spacing: Ink.Space.s) {
+                    RowLabel(
+                        entry.isFolder ? "folder" : "doc",
+                        tint: entry.isFolder ? Ink.Tile.accent : Ink.Tile.mo,
+                        title: entry.relativePath,
+                        line: [entry.mountName, entry.deletedAt.formatted(date: .abbreviated, time: .shortened)]
+                            .compactMap { $0 }.joined(separator: " · "),
+                        end: .none
+                    )
+                    Button(L.t("files.trashRestore")) { run { try DeskTrash.shared.restore(id: entry.id) } }
+                        .buttonStyle(.glass)
+                        .buttonBorderShape(.capsule)
+                        .padding(.trailing, Ink.Space.m)
+                        .disabled(busy)
+                }
+                if entry.id != entries.last?.id { Kit.divider }
+            }
+        }
+        .paperCard()
+    }
+
+    private func load() async {
+        errorMessage = nil
+        do {
+            entries = try await Task.detached(priority: .utility) { try DeskTrash.shared.entries() }.value
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        loading = false
+    }
+
+    private func run(_ action: @escaping @Sendable () throws -> Void) {
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                try await Task.detached(priority: .userInitiated, operation: action).value
+                await load()
+            } catch {
+                await load()
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }
 
