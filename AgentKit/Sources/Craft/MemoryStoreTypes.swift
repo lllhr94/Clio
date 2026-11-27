@@ -1,10 +1,56 @@
 import Foundation
+import SQLite3
 
-/// Cross-store epoch tracker so SQLite connections sharing `ClioMemory/clio-memory.db`
-/// (`MemoryStore` and `ExperienceStore`) immediately detect unlinked/recreated files and reopen cleanly.
+/// Boxed SQLite handle shared with `ClioMemoryDatabaseCoordinator` so peer DB replacement
+/// and last-reference `deinit` close idempotently under the per-path coordinator lock.
+final class ClioManagedSQLiteHandle: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pointer: OpaquePointer?
+
+    var rawPointer: OpaquePointer? {
+        lock.lock()
+        defer { lock.unlock() }
+        return pointer
+    }
+
+    func install(_ newPointer: OpaquePointer) {
+        lock.lock()
+        let previous = pointer
+        pointer = newPointer
+        lock.unlock()
+        if let previous {
+            sqlite3_close_v2(previous)
+        }
+    }
+
+    func close() {
+        lock.lock()
+        let current = pointer
+        pointer = nil
+        lock.unlock()
+        if let current {
+            sqlite3_close_v2(current)
+        }
+    }
+}
+
+/// Cross-store coordinator for shared `ClioMemory/clio-memory.db` (`MemoryStore` and `ExperienceStore`):
+/// serializes DB access per canonical path, closes peer handles before destructive DB replacement/unlink,
+/// and bumps epochs so surviving store objects reopen and resync cleanly.
 enum ClioMemoryDatabaseCoordinator {
     private static let lock = NSLock()
     private static var epochs: [String: UInt64] = [:]
+    private static var pathLocks: [String: NSRecursiveLock] = [:]
+    private static var activeHandles: [String: [UUID: ClioManagedSQLiteHandle]] = [:]
+    #if DEBUG
+    private static var databaseLockContentionHook: (@Sendable (_ normalizedPath: String) -> Void)?
+
+    static func setDatabaseLockContentionHookForTesting(_ hook: (@Sendable (_ normalizedPath: String) -> Void)?) {
+        lock.lock()
+        databaseLockContentionHook = hook
+        lock.unlock()
+    }
+    #endif
 
     static func key(for url: URL) -> String {
         url.resolvingSymlinksInPath().standardizedFileURL.path
@@ -23,6 +69,74 @@ enum ClioMemoryDatabaseCoordinator {
         let normalized = key(for: url)
         epochs[normalized, default: 0] &+= 1
         lock.unlock()
+    }
+
+    private static func pathLock(for normalizedPath: String) -> NSRecursiveLock {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = pathLocks[normalizedPath] {
+            return existing
+        }
+        let created = NSRecursiveLock()
+        pathLocks[normalizedPath] = created
+        return created
+    }
+
+    static func withDatabaseLock<T>(for url: URL?, _ body: () throws -> T) rethrows -> T {
+        guard let url else {
+            return try body()
+        }
+        let normalizedPath = key(for: url)
+        let dbLock = pathLock(for: normalizedPath)
+        if !dbLock.try() {
+            #if DEBUG
+            let hook: (@Sendable (_ normalizedPath: String) -> Void)? = {
+                lock.lock()
+                defer { lock.unlock() }
+                return databaseLockContentionHook
+            }()
+            hook?(normalizedPath)
+            #endif
+            dbLock.lock()
+        }
+        defer { dbLock.unlock() }
+        return try body()
+    }
+
+    static func registerHandle(_ handle: ClioManagedSQLiteHandle, for url: URL?) -> UUID? {
+        guard let url else { return nil }
+        let id = UUID()
+        let normalized = key(for: url)
+        lock.lock()
+        activeHandles[normalized, default: [:]][id] = handle
+        lock.unlock()
+        return id
+    }
+
+    static func unregisterHandle(id: UUID?, for url: URL?) {
+        guard let id, let url else { return }
+        let normalized = key(for: url)
+        lock.lock()
+        if var map = activeHandles[normalized] {
+            map.removeValue(forKey: id)
+            activeHandles[normalized] = map.isEmpty ? nil : map
+        }
+        lock.unlock()
+    }
+
+    /// Closes all peer handles registered for `url` (caller MUST hold `withDatabaseLock`).
+    static func closeOtherConnections(for url: URL?, excluding ownerID: UUID?) {
+        guard let url else { return }
+        let normalized = key(for: url)
+        lock.lock()
+        let peers = activeHandles[normalized]?.compactMap { entry -> ClioManagedSQLiteHandle? in
+            if entry.key == ownerID { return nil }
+            return entry.value
+        } ?? []
+        lock.unlock()
+        for handle in peers {
+            handle.close()
+        }
     }
 }
 
@@ -360,7 +474,8 @@ public struct CanonicalMemoryBook: Codable, Equatable, Sendable {
             try container.encode(archived, forKey: .archived)
         }
         try container.encode(reviews, forKey: .reviews)
-        try container.encode(processed, forKey: .processed)
+        let sortedProcessed = processed.mapValues { $0.sorted() }
+        try container.encode(sortedProcessed, forKey: .processed)
         try container.encodeIfPresent(reviewFromDay, forKey: .reviewFromDay)
         try container.encodeIfPresent(budgetDay, forKey: .budgetDay)
         try container.encode(requests, forKey: .requests)

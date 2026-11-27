@@ -51,7 +51,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         case decoded(CanonicalMemoryBook, digest: String)
     }
 
-    static let shared = MemoryStoreBridge()
+    static let shared = MemoryStoreBridge(experienceBridge: .shared)
 
     private static let pendingRestoreRebuildDefaultsKey = "clio.memoryStore.pendingRestoreRebuild"
     private static let retractedFileName = "memory-retracted.json"
@@ -78,24 +78,44 @@ final class MemoryStoreBridge: @unchecked Sendable {
     private var lastSyncedMemories: [Memory] = []
     private var lastSyncedBookDigest: String = ""
     private var syncSequence: UInt64 = 0
+    private var canonicalStateEpoch: UInt64 = 0
     private var botSummaries: [MemoryMirrorBot] = []
     private var canonicalLoadFailed: Bool = false
+    private let experienceBridge: ExperienceStoreBridge?
+    #if DEBUG
+    var beforeRestoreCommitForTesting: (@Sendable () -> Void)?
+    var onCommitAsyncEnqueuedForTesting: (@Sendable () -> Void)?
+    #endif
 
     @MainActor private var observerCancellables: Set<AnyCancellable> = []
     @MainActor private weak var observedTeam: TeamModel?
 
+    private var coordinatorExperienceBridge: ExperienceStoreBridge? {
+        experienceBridge ?? (self === MemoryStoreBridge.shared ? .shared : nil)
+    }
+
     init(
         databaseURL: URL = MemoryStoreBridge.defaultDatabaseURL,
         teamRoot: URL = Disk.root,
-        mirrorRoot: URL = MemoryMarkdownMirror.defaultRoot
+        mirrorRoot: URL = MemoryMarkdownMirror.defaultRoot,
+        experienceBridge: ExperienceStoreBridge? = nil
     ) {
         self.store = MemoryStore(databaseURL: databaseURL)
         self.teamRoot = teamRoot
         self.mirrorRoot = mirrorRoot
+        self.experienceBridge = experienceBridge
         self.revisionStore = MemoryRevisionStore(
             memoryFileURL: teamRoot.appendingPathComponent(Self.memoryFileName),
             retractedFileURL: teamRoot.appendingPathComponent(Self.retractedFileName),
             revisionsDirectoryURL: teamRoot.appendingPathComponent("memory-revisions", isDirectory: true)
+        )
+        experienceBridge?.setCoordinatorHooks(
+            recoveryBlockedCheck: { [weak self] in
+                self?.isSQLiteRecoveryBlockedForCoordinator ?? false
+            },
+            tombstoneHashesProvider: { [weak self] in
+                self?.tombstoneHashesSnapshot() ?? []
+            }
         )
     }
 
@@ -103,6 +123,14 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
     var isCanonicalReadOnly: Bool {
         stateLock.withLock { canonicalLoadFailed }
+    }
+
+    var isSQLiteRecoveryBlockedForCoordinator: Bool {
+        isSQLiteRecoveryBlocked
+    }
+
+    private var isSQLiteRecoveryBlocked: Bool {
+        Disk.frozen || stateLock.withLock { canonicalLoadFailed } || revisionStore.hasPendingProjectionRebuild
     }
 
     func pinnedIDsSnapshot() -> Set<String> {
@@ -119,10 +147,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
     }
 
     func withBackupBarrier<T>(_ work: () throws -> T) rethrows -> T {
-        if self === MemoryStoreBridge.shared {
+        if let expBridge = coordinatorExperienceBridge {
             return try commitQueue.sync {
                 try queue.sync {
-                    try ExperienceStoreBridge.shared.queue.sync {
+                    try expBridge.queue.sync {
                         try work()
                     }
                 }
@@ -183,16 +211,16 @@ final class MemoryStoreBridge: @unchecked Sendable {
         let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
         let secrets = Self.orderedSecrets(Vault.allStrings())
 
+        let expBridge = coordinatorExperienceBridge
         let retractedHashes = loadRetractedHashes(at: retractedURL)
-        var pendingRebuild = UserDefaults.standard.bool(forKey: Self.pendingRestoreRebuildDefaultsKey)
-        if pendingRebuild {
-            UserDefaults.standard.removeObject(forKey: Self.pendingRestoreRebuildDefaultsKey)
-        }
+        let hadDefaultsRebuildFlag = (self === MemoryStoreBridge.shared)
+            && UserDefaults.standard.bool(forKey: Self.pendingRestoreRebuildDefaultsKey)
+        var pendingRebuild = hadDefaultsRebuildFlag
         if revisionStore.hasPendingProjectionRebuild {
             pendingRebuild = true
         }
         var journalRecoveryFailed = false
-        if !Disk.frozen && !pendingRebuild {
+        if !Disk.frozen {
             do {
                 let recovery = try revisionStore.recoverPendingJournalIfNeeded(
                     extraRetractedHashes: retractedHashes,
@@ -205,10 +233,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 journalRecoveryFailed = true
             }
         }
-        if pendingRebuild || revisionStore.hasPendingProjectionRebuild {
+        if revisionStore.hasPendingProjectionRebuild {
             pendingRebuild = true
-            store.destroyFiles()
-            MemoryMarkdownMirror.clearMirrors(mirrorsRoot: mirrorRoot)
         }
 
         let diskLoad = loadCanonicalBookFromDisk(at: memoryURL)
@@ -228,15 +254,24 @@ final class MemoryStoreBridge: @unchecked Sendable {
             initialDigest = nil
             jsonNeedsRewrite = false
         case .corrupt(let rawData):
-            stateLock.withLock { canonicalLoadFailed = journalRecoveryFailed }
-            if !Disk.frozen {
-                let aside = memoryURL.deletingLastPathComponent()
-                    .appendingPathComponent("memory.broken-\(Int(Date().timeIntervalSince1970)).json")
-                try? rawData.write(to: aside, options: .atomic)
+            if pendingRebuild || journalRecoveryFailed {
+                // Corrupt `memory.json` while a projection rebuild/journal recovery is pending must block
+                // destructive SQLite reset & marker deletion so old SQLite data is preserved read-only.
+                stateLock.withLock { canonicalLoadFailed = true }
+                incomingBook = nil
+                initialDigest = nil
+                jsonNeedsRewrite = false
+            } else {
+                stateLock.withLock { canonicalLoadFailed = false }
+                if !Disk.frozen {
+                    let aside = memoryURL.deletingLastPathComponent()
+                        .appendingPathComponent("memory.broken-\(Int(Date().timeIntervalSince1970)).json")
+                    try? rawData.write(to: aside, options: .atomic)
+                }
+                incomingBook = nil
+                initialDigest = nil
+                jsonNeedsRewrite = true
             }
-            incomingBook = nil
-            initialDigest = nil
-            jsonNeedsRewrite = true
         case .decoded(let decoded, let digest):
             stateLock.withLock { canonicalLoadFailed = journalRecoveryFailed }
             incomingBook = decoded
@@ -244,34 +279,76 @@ final class MemoryStoreBridge: @unchecked Sendable {
             jsonNeedsRewrite = false
         }
 
-        do {
-            _ = try store.openOrRecover()
+        let isCanonicalReadable = !stateLock.withLock { canonicalLoadFailed }
+        if journalRecoveryFailed || !isCanonicalReadable {
+            let fallbackCanonical = Self.redactCanonicalBook(
+                incomingBook ?? CanonicalMemoryBook(),
+                orderedSecrets: secrets
+            )
+            let hydrated = hydrateShadowsFromCanonical(
+                fallbackCanonical,
+                retractedHashes: retractedHashes,
+                secrets: secrets
+            )
+            let currentBots = stateLock.withLock { botSummaries }
+            if !Disk.frozen {
+                MemoryMarkdownMirror.sync(
+                    records: hydrated.liveRecords,
+                    bots: currentBots,
+                    secrets: secrets,
+                    mirrorsRoot: mirrorRoot
+                )
+            }
+            return hydrated.result
+        }
+        let shouldResetProjection = !Disk.frozen && pendingRebuild
 
+        do {
             var bookToReconcile = incomingBook ?? CanonicalMemoryBook()
             var combinedSuppressed = Set(bookToReconcile.suppressedFlushHashes)
             combinedSuppressed.formUnion(retractedHashes)
             bookToReconcile.suppressedFlushHashes = combinedSuppressed.sorted()
 
-            let reconciled = try store.reconcile(
-                book: bookToReconcile,
-                secrets: secrets,
-                nowMs: Now.ms,
-                jsonDigest: initialDigest
-            )
-            try? store.checkpoint()
+            let canWriteJSON = !Disk.frozen && isCanonicalReadable
 
-            let liveRecords = try store.list(layer: nil, includeDeleted: false, secrets: secrets)
-            let canWriteJSON = !Disk.frozen && !stateLock.withLock { canonicalLoadFailed }
-
-            if canWriteJSON && (jsonNeedsRewrite || (incomingBook != nil && reconciled != bookToReconcile) || (incomingBook == nil && !liveRecords.isEmpty)) {
-                if let newDigest = try? writeCanonicalBookToDisk(reconciled, at: memoryURL) {
-                    _ = try? store.reconcile(book: reconciled, secrets: secrets, nowMs: Now.ms, jsonDigest: newDigest)
-                    try? store.checkpoint()
+            let executeReconcile: () throws -> (reconciled: CanonicalMemoryBook, liveRecords: [MemoryRecord]) = {
+                if shouldResetProjection {
+                    try self.store.destroyFilesThrowing()
+                    MemoryMarkdownMirror.clearMirrors(mirrorsRoot: self.mirrorRoot)
                 }
+                _ = try self.store.openOrRecover()
+
+                var reconciled = try self.store.reconcile(
+                    book: bookToReconcile,
+                    secrets: secrets,
+                    nowMs: Now.ms,
+                    jsonDigest: initialDigest
+                )
+                try? self.store.checkpoint()
+
+                var liveRecords = try self.store.list(layer: nil, includeDeleted: false, secrets: secrets)
+                if canWriteJSON && (jsonNeedsRewrite || (incomingBook != nil && reconciled != bookToReconcile) || (incomingBook == nil && !liveRecords.isEmpty)) {
+                    let newDigest = try self.writeCanonicalBookToDisk(reconciled, at: memoryURL)
+                    reconciled = try self.store.reconcile(book: reconciled, secrets: secrets, nowMs: Now.ms, jsonDigest: newDigest)
+                    try? self.store.checkpoint()
+                    liveRecords = try self.store.list(layer: nil, includeDeleted: false, secrets: secrets)
+                }
+                return (reconciled: reconciled, liveRecords: liveRecords)
             }
 
+            let outcome: (reconciled: CanonicalMemoryBook, liveRecords: [MemoryRecord])
+            if let expBridge, shouldResetProjection {
+                outcome = try expBridge.performDatabaseResetSync {
+                    try executeReconcile()
+                }
+            } else {
+                outcome = try executeReconcile()
+            }
+            let reconciled = outcome.reconciled
+            let liveRecords = outcome.liveRecords
+
             if canWriteJSON {
-                syncRetractedHashesFileIfNeeded(
+                try syncRetractedHashesFileThrowing(
                     Set(reconciled.suppressedFlushHashes),
                     existing: retractedHashes,
                     at: retractedURL
@@ -279,11 +356,13 @@ final class MemoryStoreBridge: @unchecked Sendable {
             }
 
             let appBook = Self.toAppMemoryBook(reconciled)
-            updateShadowState(
+            let stampedEpoch = updateShadowState(
                 liveRecords: liveRecords,
                 tombstones: reconciled.tombstones,
                 appBook: appBook
             )
+            var stampedBook = appBook
+            stampedBook.storeEpoch = stampedEpoch
 
             let currentBots = stateLock.withLock { botSummaries }
             if !Disk.frozen {
@@ -294,10 +373,15 @@ final class MemoryStoreBridge: @unchecked Sendable {
                     mirrorsRoot: mirrorRoot
                 )
             }
-            revisionStore.clearPendingProjectionRebuild()
+            if !Disk.frozen && !journalRecoveryFailed && isCanonicalReadable {
+                if hadDefaultsRebuildFlag {
+                    UserDefaults.standard.removeObject(forKey: Self.pendingRestoreRebuildDefaultsKey)
+                }
+                revisionStore.clearPendingProjectionRebuild()
+            }
 
             return BootstrapResult(
-                book: appBook,
+                book: stampedBook,
                 suppressedHashes: Set(reconciled.suppressedFlushHashes),
                 pinnedIDs: Set(liveRecords.filter { $0.layer == .pinned }.map(\.id))
             )
@@ -395,11 +479,27 @@ final class MemoryStoreBridge: @unchecked Sendable {
     /// Marks `ClioMemory` for clean unconditional rebuild on next launch and closes/quarantines
     /// the current SQLite DB + sidecars + mirrors immediately after `Backup.restore` succeeds.
     func prepareForBackupRestore() {
-        UserDefaults.standard.set(true, forKey: Self.pendingRestoreRebuildDefaultsKey)
-        queue.async { [weak self] in
+        if self === MemoryStoreBridge.shared {
+            UserDefaults.standard.set(true, forKey: Self.pendingRestoreRebuildDefaultsKey)
+        }
+        let expBridge = coordinatorExperienceBridge
+        commitQueue.async { [weak self] in
             guard let self else { return }
-            self.store.destroyFiles()
-            MemoryMarkdownMirror.clearMirrors(mirrorsRoot: self.mirrorRoot)
+            self.queue.sync {
+                let resetWork: () throws -> Void = {
+                    try self.store.destroyFilesThrowing()
+                    MemoryMarkdownMirror.clearMirrors(mirrorsRoot: self.mirrorRoot)
+                }
+                do {
+                    if let expBridge {
+                        try expBridge.performWithoutReopeningSync(resetWork)
+                    } else {
+                        try resetWork()
+                    }
+                } catch {
+                    Diag.note("备份恢复清理旧索引失败：\(error.localizedDescription)")
+                }
+            }
         }
     }
 
@@ -422,9 +522,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return restored.text.isEmpty ? nil : restored
         }
-        guard !Disk.frozen else { return nil }
+        guard !isSQLiteRecoveryBlocked else { return nil }
         let dbRecord: MemoryRecord? = queue.sync {
-            try? store.record(id: id, includeDeleted: true)
+            guard !isSQLiteRecoveryBlocked else { return nil }
+            return try? store.record(id: id, includeDeleted: true)
         }
         guard let dbRecord, dbRecord.layer == .archived || dbRecord.deletedAtMs != nil else {
             return nil
@@ -448,9 +549,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return snapshot.text.isEmpty ? nil : snapshot
         }
-        guard !Disk.frozen else { return nil }
+        guard !isSQLiteRecoveryBlocked else { return nil }
         let dbRecord: MemoryRecord? = queue.sync {
-            try? store.record(id: id, includeDeleted: false)
+            guard !isSQLiteRecoveryBlocked else { return nil }
+            return try? store.record(id: id, includeDeleted: false)
         }
         guard let dbRecord, dbRecord.layer == .archived, dbRecord.deletedAtMs == nil else {
             return nil
@@ -478,14 +580,23 @@ final class MemoryStoreBridge: @unchecked Sendable {
         suppressedHashes: Set<String>,
         bots: [BotInfo],
         mainBotId: String?,
-        secrets: [String]
+        secrets: [String],
+        expectedEpoch: UInt64? = nil
     ) throws -> CommitPromptPayload {
         guard !Disk.frozen else {
             throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
         }
-        let loadBlocked = stateLock.withLock { canonicalLoadFailed }
+        let (loadBlocked, currentEpoch) = stateLock.withLock {
+            (canonicalLoadFailed, canonicalStateEpoch)
+        }
         guard !loadBlocked else {
             throw TeamError(message: "记忆文件暂不可读，已跳过覆盖写入以防丢失原有记忆。")
+        }
+        guard !revisionStore.hasPendingProjectionRebuild else {
+            throw TeamError(message: "记忆档案或检索投影正在等待修复，已跳过覆盖写入以防覆盖最新恢复内容。")
+        }
+        if let expectedEpoch, currentEpoch != expectedEpoch {
+            throw TeamError(message: "记忆档案版本已更新，已跳过过期覆盖写入。")
         }
 
         let orderedSecrets = Self.orderedSecrets(secrets)
@@ -542,8 +653,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
             )
         }
 
+        var stampedAppBook = prepared.sanitizedAppBook
+        stampedAppBook.storeEpoch = currentEpoch
         return CommitPromptPayload(
-            sanitizedAppBook: prepared.sanitizedAppBook,
+            sanitizedAppBook: stampedAppBook,
             retractItems: prepared.retractItems,
             clearRetractions: prepared.clearRetractions,
             shouldInvalidatePromptCache: prepared.shouldInvalidatePromptCache
@@ -574,8 +687,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
         promptState: MemorySafety.PromptState? = nil,
         bots: [BotInfo],
         mainBotId: String?,
-        secrets: [String]
+        secrets: [String],
+        expectedEpoch: UInt64? = nil
     ) throws -> (book: MemoryBook, editedTexts: [String]) {
+        let capturedEpoch = expectedEpoch ?? book.storeEpoch ?? stateLock.withLock { canonicalStateEpoch }
         let payload = try commitQueue.sync {
             try performSerializedCommitOnCommitQueue(
                 book,
@@ -584,7 +699,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 suppressedHashes: suppressedHashes,
                 bots: bots,
                 mainBotId: mainBotId,
-                secrets: secrets
+                secrets: secrets,
+                expectedEpoch: capturedEpoch
             )
         }
         applyPromptState(payload, to: promptState)
@@ -601,8 +717,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
         promptState: MemorySafety.PromptState? = nil,
         bots: [BotInfo],
         mainBotId: String?,
-        secrets: [String]
+        secrets: [String],
+        expectedEpoch: UInt64? = nil
     ) async throws -> (book: MemoryBook, editedTexts: [String]) {
+        let capturedEpoch = expectedEpoch ?? book.storeEpoch ?? stateLock.withLock { canonicalStateEpoch }
         let payload: CommitPromptPayload = try await withCheckedThrowingContinuation { continuation in
             commitQueue.async { [weak self] in
                 guard let self else {
@@ -617,13 +735,17 @@ final class MemoryStoreBridge: @unchecked Sendable {
                         suppressedHashes: suppressedHashes,
                         bots: bots,
                         mainBotId: mainBotId,
-                        secrets: secrets
+                        secrets: secrets,
+                        expectedEpoch: capturedEpoch
                     )
                     continuation.resume(returning: result)
                 } catch {
                     continuation.resume(throwing: error)
                 }
             }
+            #if DEBUG
+            self.onCommitAsyncEnqueuedForTesting?()
+            #endif
         }
         applyPromptState(payload, to: promptState)
         return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
@@ -634,8 +756,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
         let summaries = Self.makeBotSummaries(bots: team.bots, mainBotId: team.mainBotId)
         let memoryURL = teamRoot.appendingPathComponent(Self.memoryFileName)
         let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
-        commitQueue.sync {
-            stateLock.withLock {
+        let nextEpoch: UInt64 = commitQueue.sync {
+            let epoch: UInt64 = stateLock.withLock {
                 pinnedIDs.removeAll()
                 archivedRecords.removeAll()
                 tombstoneShadow.removeAll()
@@ -645,8 +767,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 botSummaries = summaries
                 canonicalLoadFailed = false
                 syncSequence &+= 1
+                canonicalStateEpoch &+= 1
+                return canonicalStateEpoch
             }
-            guard !Disk.frozen else { return }
+            guard !Disk.frozen else { return epoch }
             let emptyBook = CanonicalMemoryBook()
             _ = try? writeCanonicalBookToDisk(emptyBook, at: memoryURL)
             try? FileManager.default.removeItem(at: retractedURL)
@@ -656,7 +780,9 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 try? self.store.resetAll(clearTombstones: true)
                 MemoryMarkdownMirror.sync(records: [], bots: summaries, secrets: secrets, mirrorsRoot: self.mirrorRoot)
             }
+            return epoch
         }
+        team.memoryBook.storeEpoch = nextEpoch
     }
 
     func flushSync() {
@@ -1122,7 +1248,32 @@ final class MemoryStoreBridge: @unchecked Sendable {
         var nextPinnedIDs: Set<String> = []
         var canonicalItems: [CanonicalMemoryItem] = []
 
-        for mem in book.memories {
+        // When `.recall` arrives from an asynchronous task, `book.memories` may predate concurrent `.remember`/`.edit`
+        // commits that landed on `commitQueue` inside the same `canonicalStateEpoch`. Rebuild active memories from live
+        // `workingRecordsByID` (already updated by `applyPreLoopMutation`), only falling back to `book.memories` if
+        // `workingRecordsByID` is empty on an unbootstrapped bridge.
+        let sourceMemories: [Memory]
+        if case .recall = mutation, !workingRecordsByID.isEmpty {
+            var remainingByID = workingRecordsByID
+            var merged: [Memory] = []
+            merged.reserveCapacity(remainingByID.count)
+            for oldMem in book.memories {
+                if let liveRec = remainingByID.removeValue(forKey: oldMem.id) {
+                    merged.append(Self.toAppMemory(liveRec))
+                }
+            }
+            let extraRecords = remainingByID.values.sorted {
+                if $0.createdAtMs != $1.createdAtMs { return $0.createdAtMs < $1.createdAtMs }
+                return $0.id < $1.id
+            }
+            merged.append(contentsOf: extraRecords.map(Self.toAppMemory))
+            TeamModel.settleMemory(&merged, pinnedIDs: workingPinnedIDs)
+            sourceMemories = merged
+        } else {
+            sourceMemories = book.memories
+        }
+
+        for mem in sourceMemories {
             guard !skippedBatchIDs.contains(mem.id) else { continue }
             let safeText = Self.redact(mem.text, orderedSecrets: secrets)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1338,6 +1489,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         sqliteActions: SQLitePersistActions,
         nowMs: Double
     ) {
+        guard !isSQLiteRecoveryBlocked else { return }
         do {
             _ = try store.openOrRecover()
             for restoreEvent in sqliteActions.restoreEvents {
@@ -1429,10 +1581,17 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
     private func checkpointAsync() {
         queue.async { [weak self] in
-            guard let self, !Disk.frozen else { return }
+            guard let self, !self.isSQLiteRecoveryBlocked else { return }
             try? self.store.checkpoint()
         }
     }
+
+    #if DEBUG
+    func checkpointForTestingSync() {
+        checkpointAsync()
+        queue.sync {}
+    }
+    #endif
 
     // MARK: - Revision Snapshots & Health
 
@@ -1442,13 +1601,21 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
     func recordReviewFailure(message: String) {
         queue.async { [revisionStore] in
-            _ = revisionStore.recordReviewFailure(message: message, atMs: Now.ms)
+            do {
+                _ = try revisionStore.recordReviewFailureThrowing(message: message, atMs: Now.ms)
+            } catch {
+                Diag.note("记录记忆整理失败状态写盘出错：\(error.localizedDescription)")
+            }
         }
     }
 
     func recordReviewSuccess() {
         queue.async { [revisionStore] in
-            _ = revisionStore.recordReviewSuccess(atMs: Now.ms)
+            do {
+                _ = try revisionStore.recordReviewSuccessThrowing(atMs: Now.ms)
+            } catch {
+                Diag.note("记录记忆整理成功状态写盘出错：\(error.localizedDescription)")
+            }
         }
     }
 
@@ -1494,12 +1661,16 @@ final class MemoryStoreBridge: @unchecked Sendable {
         let summaries = Self.makeBotSummaries(bots: bots, mainBotId: mainBotId)
         let secrets = Self.orderedSecrets(Vault.allStrings())
         let isShared = (self === MemoryStoreBridge.shared)
+        let expBridge = coordinatorExperienceBridge
         return try await withCheckedThrowingContinuation { continuation in
             commitQueue.async { [weak self] in
                 guard let self else {
                     continuation.resume(throwing: TeamError(message: "恢复快照已取消。"))
                     return
                 }
+                #if DEBUG
+                self.beforeRestoreCommitForTesting?()
+                #endif
                 self.queue.sync {
                     guard !Disk.frozen else {
                         continuation.resume(throwing: TeamError(message: "刚恢复了备份，重新打开 Clio 后才能恢复快照。"))
@@ -1510,38 +1681,67 @@ final class MemoryStoreBridge: @unchecked Sendable {
                         return
                     }
                     do {
-                        let extraTombstones = self.tombstoneHashesSnapshot()
-                        let restored = try self.revisionStore.restoreSnapshot(
-                            id: id,
-                            extraRetractedHashes: extraTombstones,
-                            nowMs: Now.ms
-                        )
-                        let retractedURL = self.teamRoot.appendingPathComponent(Self.retractedFileName)
-                        let existingRetracted = self.loadRetractedHashes(at: retractedURL)
-                        self.syncRetractedHashesFileIfNeeded(
-                            Set(restored.book.suppressedFlushHashes),
-                            existing: existingRetracted,
-                            at: retractedURL
-                        )
+                        // Hold ExperienceStoreBridge exclusively across marking `projection-rebuild.journal`,
+                        // canonical snapshot restore, and SQLite projection reset so no experience operation
+                        // can slip between checking the recovery block and setting the marker / rebuilding SQLite.
+                        let restoreAndResetSQLite: () throws -> (
+                            reconciled: CanonicalMemoryBook,
+                            liveRecords: [MemoryRecord],
+                            preRestoreSnapshot: MemoryRevisionSnapshot?
+                        ) = {
+                            let extraTombstones = self.tombstoneHashesSnapshot()
+                            let restored = try self.revisionStore.restoreSnapshot(
+                                id: id,
+                                extraRetractedHashes: extraTombstones,
+                                nowMs: Now.ms
+                            )
+                            let retractedURL = self.teamRoot.appendingPathComponent(Self.retractedFileName)
+                            let existingRetracted = self.loadRetractedHashes(at: retractedURL)
+                            try self.syncRetractedHashesFileThrowing(
+                                Set(restored.book.suppressedFlushHashes),
+                                existing: existingRetracted,
+                                at: retractedURL
+                            )
 
-                        // Reset SQLite index and rehydrate solely from the restored canonical snapshot.
-                        self.store.destroyFiles()
-                        _ = try self.store.openOrRecover()
-                        let reconciled = try self.store.reconcile(
-                            book: restored.book,
-                            secrets: secrets,
-                            nowMs: Now.ms,
-                            jsonDigest: restored.digest
-                        )
-                        try? self.store.checkpoint()
+                            try self.store.destroyFilesThrowing()
+                            _ = try self.store.openOrRecover()
+                            let reconciled = try self.store.reconcile(
+                                book: restored.book,
+                                secrets: secrets,
+                                nowMs: Now.ms,
+                                jsonDigest: restored.digest
+                            )
+                            try? self.store.checkpoint()
+                            let liveRecords = try self.store.list(layer: nil, includeDeleted: false, secrets: secrets)
+                            return (
+                                reconciled: reconciled,
+                                liveRecords: liveRecords,
+                                preRestoreSnapshot: restored.preRestoreSnapshot
+                            )
+                        }
 
-                        let liveRecords = try self.store.list(layer: nil, includeDeleted: false, secrets: secrets)
+                        let outcome: (
+                            reconciled: CanonicalMemoryBook,
+                            liveRecords: [MemoryRecord],
+                            preRestoreSnapshot: MemoryRevisionSnapshot?
+                        )
+                        if let expBridge {
+                            outcome = try expBridge.performDatabaseResetSync {
+                                try restoreAndResetSQLite()
+                            }
+                        } else {
+                            outcome = try restoreAndResetSQLite()
+                        }
+                        let reconciled = outcome.reconciled
+                        let liveRecords = outcome.liveRecords
                         let appBook = Self.toAppMemoryBook(reconciled)
-                        self.updateShadowState(
+                        let restoredEpoch = self.updateShadowState(
                             liveRecords: liveRecords,
                             tombstones: reconciled.tombstones,
                             appBook: appBook
                         )
+                        var stampedBook = appBook
+                        stampedBook.storeEpoch = restoredEpoch
                         if !Disk.frozen {
                             MemoryMarkdownMirror.sync(
                                 records: liveRecords,
@@ -1551,11 +1751,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                             )
                         }
                         if isShared {
-                            ExperienceStoreBridge.shared.rebuildFromCanonicalSync()
                             MemoryRecallBridge.shared.scheduleSync()
                         }
                         self.revisionStore.clearPendingProjectionRebuild()
-                        continuation.resume(returning: (book: appBook, preRestore: restored.preRestoreSnapshot))
+                        continuation.resume(returning: (book: stampedBook, preRestore: outcome.preRestoreSnapshot))
                     } catch {
                         continuation.resume(throwing: error)
                     }
@@ -1709,22 +1908,25 @@ final class MemoryStoreBridge: @unchecked Sendable {
         }
 
         let appBook = Self.toAppMemoryBook(filteredCanonical)
-        updateShadowState(
+        let epoch = updateShadowState(
             liveRecords: liveRecords,
             tombstones: filteredCanonical.tombstones,
             appBook: appBook
         )
+        var stampedBook = appBook
+        stampedBook.storeEpoch = epoch
         return (
-            BootstrapResult(book: appBook, suppressedHashes: combinedSuppressed, pinnedIDs: pins),
+            BootstrapResult(book: stampedBook, suppressedHashes: combinedSuppressed, pinnedIDs: pins),
             liveRecords
         )
     }
 
+    @discardableResult
     private func updateShadowState(
         liveRecords: [MemoryRecord],
         tombstones: [MemoryTombstone],
         appBook: MemoryBook
-    ) {
+    ) -> UInt64 {
         stateLock.lock()
         var byID: [String: MemoryRecord] = [:]
         var archived: [MemoryRecord] = []
@@ -1745,7 +1947,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
         })
         lastSyncedMemories = appBook.memories
         lastSyncedBookDigest = Self.bookDigest(appBook)
+        canonicalStateEpoch &+= 1
+        let epoch = canonicalStateEpoch
         stateLock.unlock()
+        return epoch
     }
 
     // MARK: - Disk I/O Helpers
@@ -1790,13 +1995,22 @@ final class MemoryStoreBridge: @unchecked Sendable {
     }
 
     private func syncRetractedHashesFileIfNeeded(_ merged: Set<String>, existing: Set<String>, at url: URL) {
-        guard !Disk.frozen else { return }
+        try? syncRetractedHashesFileThrowing(merged, existing: existing, at: url)
+    }
+
+    private func syncRetractedHashesFileThrowing(_ merged: Set<String>, existing: Set<String>, at url: URL) throws {
+        guard !Disk.frozen else {
+            throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
+        }
         let clean = merged.filter(MemorySafety.isSHA256Hex).sorted()
         guard Set(clean) != existing else { return }
         if clean.isEmpty {
-            try? FileManager.default.removeItem(at: url)
-        } else if let data = try? JSONEncoder().encode(clean) {
-            try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        } else {
+            let data = try JSONEncoder().encode(clean)
+            try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         }
     }
 

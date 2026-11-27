@@ -289,9 +289,7 @@ extension TeamModel {
         phase = settings.endpoints.isEmpty ? .setup : .ready
         var restored: [String: [Queued]] = [:]
         for (chatKey, stored) in data.queued {
-            restored[chatKey] = stored.map {
-                Queued(id: $0.id, text: $0.text, photos: $0.photos, interject: $0.interject, userInitiated: $0.userInitiated)
-            }
+            restored[chatKey] = stored.map(Queued.fromStored)
         }
         queued = restored
         inFlightQueued = [:]

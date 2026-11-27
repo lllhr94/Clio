@@ -87,9 +87,15 @@ extension TeamModel {
     func resumePaused() {
         let waiting = pausedAway
         pausedAway.removeAll()
-        for key in waiting {
+        for (key, away) in waiting {
             // Still winding down: picked up when it has (see where the pause note is written).
-            if runs[key] == nil { resume(key) } else { pausedAway.insert(key) }
+            if runs[key] == nil {
+                let lastUserID = history(key).last(where: { $0.note != true && $0.message.role == .user })?.id
+                guard away.triggerEntryID == nil || away.triggerEntryID == lastUserID else { continue }
+                resume(key)
+            } else if runs[key]?.token == away.token {
+                pausedAway[key] = away
+            }
         }
     }
 

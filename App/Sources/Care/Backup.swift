@@ -522,8 +522,12 @@ enum Backup {
         do {
             // Drain all live memory/experience writers inside the barrier while `Disk.frozen == true`,
             // then capture final local tombstones and apply atomic tombstone union before swap.
-            let localRetractedHashes = MemoryStoreBridge.shared.withBackupBarrier {
-                collectLocalRetractedHashes()
+            let liveTeam = support.appendingPathComponent("Team", isDirectory: true)
+            let localRetractedHashes = try MemoryStoreBridge.shared.withBackupBarrier {
+                try collectLocalRetractedHashes(
+                    in: liveTeam,
+                    memoryStoreTombstones: MemoryStoreBridge.shared.tombstoneHashesSnapshot()
+                )
             }
             try applyTombstoneUnionToStagedTeam(stagedTeam: stagedTeam, localRetractedHashes: localRetractedHashes)
 
@@ -730,82 +734,114 @@ enum Backup {
     }
 
     /// Collects retracted/tombstoned SHA-256 digests from the live device before swapping in a restored backup.
-    private static func collectLocalRetractedHashes() -> Set<String> {
-        var hashes = MemoryStoreBridge.shared.tombstoneHashesSnapshot()
-        let liveTeam = support.appendingPathComponent("Team", isDirectory: true)
+    /// Throws if any existing tombstone/memory/experience file is unreadable or corrupt so deletions can never be dropped silently.
+    static func collectLocalRetractedHashes(
+        in liveTeam: URL,
+        memoryStoreTombstones: Set<String>
+    ) throws -> Set<String> {
+        let fm = FileManager.default
+        var hashes = Set(MemorySafety.normalizedRetractionHashes(Array(memoryStoreTombstones)))
+
         let retractedURL = liveTeam.appendingPathComponent("memory-retracted.json")
-        if let data = try? Data(contentsOf: retractedURL),
-           let list = try? JSONDecoder().decode([String].self, from: data) {
-            hashes.formUnion(list.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        if fm.fileExists(atPath: retractedURL.path) {
+            let data = try Data(contentsOf: retractedURL)
+            let list = try JSONDecoder().decode([String].self, from: data)
+            hashes.formUnion(MemorySafety.normalizedRetractionHashes(list))
         }
+
         let expURL = liveTeam.appendingPathComponent("experiences.json")
-        if let data = try? Data(contentsOf: expURL),
-           let expBook = try? JSONDecoder().decode(CanonicalExperienceBook.self, from: data) {
-            hashes.formUnion(expBook.retractedHashes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        if fm.fileExists(atPath: expURL.path) {
+            let data = try Data(contentsOf: expURL)
+            let expBook = try JSONDecoder().decode(CanonicalExperienceBook.self, from: data)
+            hashes.formUnion(MemorySafety.normalizedRetractionHashes(expBook.retractedHashes))
+            for record in expBook.records where record.deletedAtMs != nil {
+                let hash = record.contentSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if MemorySafety.isSHA256Hex(hash) { hashes.insert(hash) }
+            }
         }
+
+        let memoryURL = liveTeam.appendingPathComponent("memory.json")
+        if fm.fileExists(atPath: memoryURL.path) {
+            let data = try Data(contentsOf: memoryURL)
+            let book = try CanonicalMemoryBook.decodeFlexible(from: data)
+            hashes.formUnion(MemorySafety.normalizedRetractionHashes(book.suppressedFlushHashes))
+            for ts in book.tombstones {
+                let hash = ts.textSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if MemorySafety.isSHA256Hex(hash) { hashes.insert(hash) }
+            }
+        }
+
         return hashes
     }
 
     /// Unions local retracted/tombstone hashes into the staged restore directory so a restored older archive
-    /// can never resurrect facts or experiences deleted on this device. Fails cleanly before swap if staged JSON
-    /// cannot be updated.
+    /// can never resurrect facts or experiences deleted on this device. Always validates existing staged ledgers
+    /// and fails cleanly before swap if any staged JSON cannot be read, decoded, or updated.
     static func applyTombstoneUnionToStagedTeam(
         stagedTeam: URL,
         localRetractedHashes: Set<String>,
         nowMs: Double = Now.ms
     ) throws {
-        let normalizedLocal = Set(
-            localRetractedHashes
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-                .filter { MemorySafety.isSHA256Hex($0) }
-        )
-        guard !normalizedLocal.isEmpty, FileManager.default.fileExists(atPath: stagedTeam.path) else {
-            return
-        }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: stagedTeam.path) else { return }
+
+        var mergedHashes = Set(MemorySafety.normalizedRetractionHashes(Array(localRetractedHashes)))
 
         let stagedRetractedURL = stagedTeam.appendingPathComponent("memory-retracted.json")
-        var mergedHashes = normalizedLocal
-        if FileManager.default.fileExists(atPath: stagedRetractedURL.path) {
+        if fm.fileExists(atPath: stagedRetractedURL.path) {
             let existingData = try Data(contentsOf: stagedRetractedURL)
-            if !existingData.isEmpty {
-                let existingList = try JSONDecoder().decode([String].self, from: existingData)
-                mergedHashes.formUnion(
-                    existingList
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-                        .filter { MemorySafety.isSHA256Hex($0) }
-                )
-            }
+            let existingList = try JSONDecoder().decode([String].self, from: existingData)
+            mergedHashes.formUnion(MemorySafety.normalizedRetractionHashes(existingList))
         }
+
+        let stagedMemoryURL = stagedTeam.appendingPathComponent("memory.json")
+        var decodedMemBook: CanonicalMemoryBook?
+        if fm.fileExists(atPath: stagedMemoryURL.path) {
+            let memData = try Data(contentsOf: stagedMemoryURL)
+            let book = try CanonicalMemoryBook.decodeFlexible(from: memData)
+            mergedHashes.formUnion(MemorySafety.normalizedRetractionHashes(book.suppressedFlushHashes))
+            for ts in book.tombstones {
+                let hash = ts.textSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if MemorySafety.isSHA256Hex(hash) { mergedHashes.insert(hash) }
+            }
+            decodedMemBook = book
+        }
+
+        let stagedExpURL = stagedTeam.appendingPathComponent("experiences.json")
+        var decodedExpBook: CanonicalExperienceBook?
+        if fm.fileExists(atPath: stagedExpURL.path) {
+            let expData = try Data(contentsOf: stagedExpURL)
+            let expBook = try JSONDecoder().decode(CanonicalExperienceBook.self, from: expData)
+            mergedHashes.formUnion(MemorySafety.normalizedRetractionHashes(expBook.retractedHashes))
+            for record in expBook.records where record.deletedAtMs != nil {
+                let hash = record.contentSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if MemorySafety.isSHA256Hex(hash) { mergedHashes.insert(hash) }
+            }
+            decodedExpBook = expBook
+        }
+
+        guard !mergedHashes.isEmpty else { return }
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let encodedRetracted = try encoder.encode(mergedHashes.sorted())
         try encodedRetracted.write(to: stagedRetractedURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
 
-        let stagedMemoryURL = stagedTeam.appendingPathComponent("memory.json")
-        if FileManager.default.fileExists(atPath: stagedMemoryURL.path) {
-            let memData = try Data(contentsOf: stagedMemoryURL)
-            if !memData.isEmpty {
-                let decodedBook = try CanonicalMemoryBook.decodeFlexible(from: memData)
-                let pruned = MemoryRevisionStore.applyTombstoneUnion(
-                    to: decodedBook,
-                    retractedHashes: mergedHashes,
-                    minimumGeneration: decodedBook.generation,
-                    nowMs: nowMs
-                )
-                let encodedMem = try encoder.encode(pruned)
-                try encodedMem.write(to: stagedMemoryURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            }
+        if let decodedMemBook {
+            let pruned = MemoryRevisionStore.applyTombstoneUnion(
+                to: decodedMemBook,
+                retractedHashes: mergedHashes,
+                minimumGeneration: decodedMemBook.generation,
+                nowMs: nowMs
+            )
+            let encodedMem = try encoder.encode(pruned)
+            try encodedMem.write(to: stagedMemoryURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         }
 
-        let stagedExpURL = stagedTeam.appendingPathComponent("experiences.json")
-        if FileManager.default.fileExists(atPath: stagedExpURL.path) {
-            let expData = try Data(contentsOf: stagedExpURL)
-            if !expData.isEmpty {
-                var expBook = try JSONDecoder().decode(CanonicalExperienceBook.self, from: expData)
-                expBook.mergeRetractionsAndPrune(hashes: mergedHashes, nowMs: nowMs)
-                let encodedExp = try encoder.encode(expBook)
-                try encodedExp.write(to: stagedExpURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-            }
+        if var expBook = decodedExpBook {
+            expBook.mergeRetractionsAndPrune(hashes: mergedHashes, nowMs: nowMs)
+            let encodedExp = try encoder.encode(expBook)
+            try encodedExp.write(to: stagedExpURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         }
     }
 }

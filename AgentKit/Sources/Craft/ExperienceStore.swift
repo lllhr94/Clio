@@ -211,12 +211,14 @@ public final class ExperienceStore: @unchecked Sendable {
     public let canonicalFileURL: URL?
     public let databaseURL: URL?
     private let forceDisableFTS5: Bool
-    private let lock = NSLock()
-    private var db: OpaquePointer?
+    private let lock = NSRecursiveLock()
+    private let sqliteHandle = ClioManagedSQLiteHandle()
+    private var db: OpaquePointer? { sqliteHandle.rawPointer }
     private var fts5Enabled = false
     private var lastSyncedCanonicalKey: String?
     private var openedDatabaseEpoch: UInt64 = 0
     private var openedFileInode: UInt64?
+    private var coordinatorToken: UUID?
 
     public init(
         canonicalFileURL: URL?,
@@ -226,6 +228,7 @@ public final class ExperienceStore: @unchecked Sendable {
         self.canonicalFileURL = canonicalFileURL
         self.databaseURL = databaseURL
         self.forceDisableFTS5 = forceDisableFTS5ForTesting
+        self.coordinatorToken = ClioMemoryDatabaseCoordinator.registerHandle(sqliteHandle, for: databaseURL)
     }
 
     public static func inMemory(forceDisableFTS5ForTesting: Bool = false) -> ExperienceStore {
@@ -237,42 +240,75 @@ public final class ExperienceStore: @unchecked Sendable {
     }
 
     deinit {
-        lock.lock()
-        closeLocked()
-        lock.unlock()
+        ClioMemoryDatabaseCoordinator.withDatabaseLock(for: databaseURL) {
+            sqliteHandle.close()
+            ClioMemoryDatabaseCoordinator.unregisterHandle(id: coordinatorToken, for: databaseURL)
+        }
+    }
+
+    private func withStoreLock<T>(_ body: () throws -> T) rethrows -> T {
+        try ClioMemoryDatabaseCoordinator.withDatabaseLock(for: databaseURL) {
+            lock.lock()
+            defer { lock.unlock() }
+            return try body()
+        }
     }
 
     public var isFTS5Active: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try? openOrSyncLocked(secrets: [])
-        return fts5Enabled
+        withStoreLock {
+            _ = try? openOrSyncLocked(secrets: [])
+            return fts5Enabled
+        }
     }
 
-    public func loadAll(includeDeleted: Bool = false, secrets: [String] = []) throws -> [ExperienceRecord] {
-        lock.lock()
-        defer { lock.unlock() }
+    public func loadAll(
+        includeDeleted: Bool = false,
+        suppressedHashes: Set<String> = [],
+        secrets: [String] = []
+    ) throws -> [ExperienceRecord] {
+        try withStoreLock {
+            let orderedSecrets = Self.orderSecrets(secrets)
+            let normalizedSuppressed = Set(
+                suppressedHashes
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                    .filter { !$0.isEmpty }
+            )
+            if canonicalFileURL != nil {
+                let book = try readCanonicalBookLocked()
+                return book.records
+                    .filter { includeDeleted || $0.deletedAtMs == nil }
+                    .compactMap { record -> ExperienceRecord? in
+                        let rawStoredHash = record.contentSHA256
+                        let redacted = Self.redactedRecord(record, orderedSecrets: orderedSecrets)
+                        guard !Self.isSuppressedRecord(
+                            storedHash: rawStoredHash,
+                            redactedTitle: redacted.title,
+                            redactedContent: redacted.content,
+                            suppressedHashes: normalizedSuppressed
+                        ) else {
+                            return nil
+                        }
+                        return redacted
+                    }
+                    .sorted { lhs, rhs in
+                        if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
+                        return lhs.id < rhs.id
+                    }
+            }
 
-        let orderedSecrets = Self.orderSecrets(secrets)
-        if canonicalFileURL != nil {
-            let book = try readCanonicalBookLocked()
-            return book.records
-                .filter { includeDeleted || $0.deletedAtMs == nil }
-                .map { Self.redactedRecord($0, orderedSecrets: orderedSecrets) }
-                .sorted { lhs, rhs in
-                    if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
-                    return lhs.id < rhs.id
-                }
+            try openOrSyncLocked(secrets: orderedSecrets)
+            return try readSQLiteRecordsLocked(
+                includeDeleted: includeDeleted,
+                suppressedHashes: normalizedSuppressed,
+                orderedSecrets: orderedSecrets
+            )
         }
-
-        try openOrSyncLocked(secrets: orderedSecrets)
-        return try readSQLiteRecordsLocked(includeDeleted: includeDeleted, orderedSecrets: orderedSecrets)
     }
 
     public func readBook() throws -> CanonicalExperienceBook {
-        lock.lock()
-        defer { lock.unlock() }
-        return try readCanonicalBookLocked()
+        try withStoreLock {
+            try readCanonicalBookLocked()
+        }
     }
 
     @discardableResult
@@ -308,70 +344,85 @@ public final class ExperienceStore: @unchecked Sendable {
         let contentHash = MemorySafety.retractionHash(safeContent)
         let externalSuppressed = Set(suppressedHashes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
 
-        lock.lock()
-        defer { lock.unlock() }
-
-        var book = canonicalFileURL != nil ? try readCanonicalBookLocked() : CanonicalExperienceBook(
-            records: (try? loadInMemorySQLiteSnapshotLocked(orderedSecrets: orderedSecrets)) ?? []
-        )
-
-        let storedSuppressed = Set(book.retractedHashes.map { $0.lowercased() })
-        let allSuppressed = externalSuppressed.union(storedSuppressed)
-        if source != .user && source != .importAction {
-            if allSuppressed.contains(safeHash) || (!contentHash.isEmpty && allSuppressed.contains(contentHash)) {
-                throw ExperienceStoreError.suppressedByTombstone
+        return try withStoreLock {
+            let loadedState: (book: CanonicalExperienceBook, digest: String)
+            if canonicalFileURL != nil {
+                loadedState = try readCanonicalBookWithDigestLocked()
+            } else {
+                let snapshot = (try? loadInMemorySQLiteSnapshotLocked(orderedSecrets: orderedSecrets)) ?? []
+                loadedState = (CanonicalExperienceBook(records: snapshot), "missing")
             }
-        }
+            var book = loadedState.book
+            let preWriteDigest = loadedState.digest
 
-        let existingIndex = id.flatMap { targetID in book.records.firstIndex(where: { $0.id == targetID }) }
-            ?? book.records.firstIndex(where: {
-                $0.deletedAtMs == nil &&
-                MemorySafety.normalizedFactKey($0.title) == MemorySafety.normalizedFactKey(safeTitle) &&
-                MemorySafety.normalizedFactKey($0.content) == MemorySafety.normalizedFactKey(safeContent)
-            })
+            let storedSuppressed = Set(book.retractedHashes.map { $0.lowercased() })
+            let allSuppressed = externalSuppressed.union(storedSuppressed)
+            if source != .user && source != .importAction {
+                if allSuppressed.contains(safeHash) || (!contentHash.isEmpty && allSuppressed.contains(contentHash)) {
+                    throw ExperienceStoreError.suppressedByTombstone
+                }
+            }
 
-        let saved: ExperienceRecord
-        if let idx = existingIndex {
-            var updated = book.records[idx]
-            updated.title = safeTitle
-            updated.content = safeContent
-            updated.tags = safeTags
-            updated.contentSHA256 = safeHash
-            updated.updatedAtMs = max(updated.updatedAtMs, nowMs)
-            updated.deletedAtMs = nil
-            updated.source = source
-            book.records[idx] = updated
-            saved = updated
-        } else {
-            let candidate = ExperienceRecord(
-                id: id ?? UUID().uuidString.lowercased(),
-                title: safeTitle,
-                content: safeContent,
-                tags: safeTags,
-                contentSHA256: safeHash,
-                createdAtMs: nowMs,
-                updatedAtMs: nowMs,
-                usedAtMs: nil,
-                useCount: 0,
-                deletedAtMs: nil,
-                source: source
+            let existingIndex = id.flatMap { targetID in book.records.firstIndex(where: { $0.id == targetID }) }
+                ?? book.records.firstIndex(where: {
+                    $0.deletedAtMs == nil &&
+                    MemorySafety.normalizedFactKey($0.title) == MemorySafety.normalizedFactKey(safeTitle) &&
+                    MemorySafety.normalizedFactKey($0.content) == MemorySafety.normalizedFactKey(safeContent)
+                })
+
+            let saved: ExperienceRecord
+            if let idx = existingIndex {
+                var updated = book.records[idx]
+                updated.title = safeTitle
+                updated.content = safeContent
+                updated.tags = safeTags
+                updated.contentSHA256 = safeHash
+                updated.updatedAtMs = max(updated.updatedAtMs, nowMs)
+                updated.deletedAtMs = nil
+                updated.source = source
+                book.records[idx] = updated
+                saved = updated
+            } else {
+                let candidate = ExperienceRecord(
+                    id: id ?? UUID().uuidString.lowercased(),
+                    title: safeTitle,
+                    content: safeContent,
+                    tags: safeTags,
+                    contentSHA256: safeHash,
+                    createdAtMs: nowMs,
+                    updatedAtMs: nowMs,
+                    usedAtMs: nil,
+                    useCount: 0,
+                    deletedAtMs: nil,
+                    source: source
+                )
+                book.records.append(candidate)
+                saved = candidate
+            }
+
+            if source == .user || source == .importAction {
+                book.retractedHashes.removeAll { $0 == safeHash || $0 == contentHash }
+            }
+            book.updatedAtMs = max(book.updatedAtMs, nowMs)
+
+            let currentEpoch = databaseURL.map { ClioMemoryDatabaseCoordinator.epoch(for: $0) } ?? 0
+            let currentInode = databaseURL.flatMap(Self.fileInode(at:))
+            let canSkipFullSync = (
+                canonicalFileURL != nil
+                && db != nil
+                && currentEpoch == openedDatabaseEpoch
+                && currentInode == openedFileInode
+                && lastSyncedCanonicalKey == Self.syncKey(digest: preWriteDigest, orderedSecrets: orderedSecrets)
             )
-            book.records.append(candidate)
-            saved = candidate
+            let writtenDigest = try writeCanonicalBookIfConfiguredLocked(book)
+            lastSyncedCanonicalKey = nil
+            try openOrSyncLocked(secrets: orderedSecrets, skipSyncIfAlreadyOpen: canSkipFullSync)
+            try upsertSQLiteRecordLocked(saved, orderedSecrets: orderedSecrets)
+            if let writtenDigest {
+                lastSyncedCanonicalKey = Self.syncKey(digest: writtenDigest, orderedSecrets: orderedSecrets)
+            }
+            return saved
         }
-
-        if source == .user || source == .importAction {
-            book.retractedHashes.removeAll { $0 == safeHash || $0 == contentHash }
-        }
-        book.updatedAtMs = max(book.updatedAtMs, nowMs)
-
-        let writtenDigest = try writeCanonicalBookIfConfiguredLocked(book)
-        try openOrSyncLocked(secrets: orderedSecrets, skipSyncIfAlreadyOpen: db != nil && canonicalFileURL != nil)
-        try upsertSQLiteRecordLocked(saved, orderedSecrets: orderedSecrets)
-        if let writtenDigest {
-            lastSyncedCanonicalKey = Self.syncKey(digest: writtenDigest, orderedSecrets: orderedSecrets)
-        }
-        return saved
     }
 
     public func delete(
@@ -380,38 +431,43 @@ public final class ExperienceStore: @unchecked Sendable {
         secrets: [String] = []
     ) throws {
         let orderedSecrets = Self.orderSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
+        try withStoreLock {
+            if canonicalFileURL != nil {
+                let loadedState = try readCanonicalBookWithDigestLocked()
+                var book = loadedState.book
+                let preWriteDigest = loadedState.digest
+                if let idx = book.records.firstIndex(where: { $0.id == id }) {
+                    var target = book.records[idx]
+                    target.deletedAtMs = nowMs
+                    target.updatedAtMs = max(target.updatedAtMs, nowMs)
+                    book.records[idx] = target
+                    var hashes = Set(book.retractedHashes)
+                    if !target.contentSHA256.isEmpty { hashes.insert(target.contentSHA256.lowercased()) }
+                    let bodyHash = MemorySafety.retractionHash(target.content)
+                    if !bodyHash.isEmpty { hashes.insert(bodyHash) }
+                    book.retractedHashes = hashes.sorted()
+                    book.updatedAtMs = max(book.updatedAtMs, nowMs)
 
-        var deletedRecord: ExperienceRecord?
-        if canonicalFileURL != nil {
-            var book = try readCanonicalBookLocked()
-            if let idx = book.records.firstIndex(where: { $0.id == id }) {
-                var target = book.records[idx]
-                target.deletedAtMs = nowMs
-                target.updatedAtMs = max(target.updatedAtMs, nowMs)
-                book.records[idx] = target
-                deletedRecord = target
-                var hashes = Set(book.retractedHashes)
-                if !target.contentSHA256.isEmpty { hashes.insert(target.contentSHA256.lowercased()) }
-                let bodyHash = MemorySafety.retractionHash(target.content)
-                if !bodyHash.isEmpty { hashes.insert(bodyHash) }
-                book.retractedHashes = hashes.sorted()
-                book.updatedAtMs = max(book.updatedAtMs, nowMs)
-                let writtenDigest = try writeCanonicalBookIfConfiguredLocked(book)
-                try openOrSyncLocked(secrets: orderedSecrets, skipSyncIfAlreadyOpen: db != nil)
-                try upsertSQLiteRecordLocked(target, orderedSecrets: orderedSecrets)
-                if let writtenDigest {
-                    lastSyncedCanonicalKey = Self.syncKey(digest: writtenDigest, orderedSecrets: orderedSecrets)
+                    let currentEpoch = databaseURL.map { ClioMemoryDatabaseCoordinator.epoch(for: $0) } ?? 0
+                    let currentInode = databaseURL.flatMap(Self.fileInode(at:))
+                    let canSkipFullSync = (
+                        db != nil
+                        && currentEpoch == openedDatabaseEpoch
+                        && currentInode == openedFileInode
+                        && lastSyncedCanonicalKey == Self.syncKey(digest: preWriteDigest, orderedSecrets: orderedSecrets)
+                    )
+                    let writtenDigest = try writeCanonicalBookIfConfiguredLocked(book)
+                    lastSyncedCanonicalKey = nil
+                    try openOrSyncLocked(secrets: orderedSecrets, skipSyncIfAlreadyOpen: canSkipFullSync)
+                    try upsertSQLiteRecordLocked(target, orderedSecrets: orderedSecrets)
+                    if let writtenDigest {
+                        lastSyncedCanonicalKey = Self.syncKey(digest: writtenDigest, orderedSecrets: orderedSecrets)
+                    }
+                    return
                 }
-                return
             }
-        }
 
-        try openOrSyncLocked(secrets: orderedSecrets)
-        if let deletedRecord {
-            try upsertSQLiteRecordLocked(deletedRecord, orderedSecrets: orderedSecrets)
-        } else {
+            try openOrSyncLocked(secrets: orderedSecrets)
             try runPreparedLocked("UPDATE experiences SET deleted_at_ms = ?, updated_at_ms = ? WHERE id = ?;", bindings: [
                 .double(nowMs),
                 .double(nowMs),
@@ -435,65 +491,132 @@ public final class ExperienceStore: @unchecked Sendable {
         let orderedSecrets = Self.orderSecrets(secrets)
         let normalizedSuppressed = Set(suppressedHashes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
 
-        lock.lock()
-        defer { lock.unlock() }
-
-        let bookRetracted: Set<String>
-        if canonicalFileURL != nil {
-            let book = try readCanonicalBookLocked()
-            bookRetracted = Set(book.retractedHashes.map { $0.lowercased() })
-        } else {
-            bookRetracted = []
-        }
-        let allSuppressed = normalizedSuppressed.union(bookRetracted)
-
-        try openOrSyncLocked(secrets: orderedSecrets)
-        var hits = try searchSQLiteLocked(
-            cleanQuery: cleanQuery,
-            analysis: analysis,
-            limit: limit,
-            suppressedHashes: allSuppressed,
-            orderedSecrets: orderedSecrets
-        )
-
-        if let markUsedNowMs, !hits.isEmpty {
-            let hitIDs = Set(hits.map(\.id))
-            if canonicalFileURL != nil {
-                var book = try readCanonicalBookLocked()
-                for idx in book.records.indices where hitIDs.contains(book.records[idx].id) {
-                    book.records[idx].useCount = ExperienceRecord.clampedIncrement(book.records[idx].useCount)
-                    book.records[idx].usedAtMs = max(book.records[idx].usedAtMs ?? 0, markUsedNowMs)
-                    book.records[idx].updatedAtMs = max(book.records[idx].updatedAtMs, markUsedNowMs)
+        return try withStoreLock {
+            if markUsedNowMs == nil {
+                if canonicalFileURL != nil {
+                    let book = try readCanonicalBookLocked()
+                    let bookRetracted = Set(book.retractedHashes.map { $0.lowercased() })
+                    let allSuppressed = normalizedSuppressed.union(bookRetracted)
+                    return searchCanonicalReadOnlyLocked(
+                        book: book,
+                        analysis: analysis,
+                        limit: limit,
+                        suppressedHashes: allSuppressed,
+                        orderedSecrets: orderedSecrets
+                    )
                 }
-                book.updatedAtMs = max(book.updatedAtMs, markUsedNowMs)
-                if let writtenDigest = try writeCanonicalBookIfConfiguredLocked(book) {
+                if let databaseURL {
+                    let fm = FileManager.default
+                    guard fm.fileExists(atPath: databaseURL.path) else {
+                        return []
+                    }
+                    var roDB: OpaquePointer?
+                    let walExists = fm.fileExists(atPath: databaseURL.path + "-wal")
+                    let rc: Int32
+                    if walExists {
+                        rc = sqlite3_open_v2(databaseURL.path, &roDB, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
+                    } else {
+                        var components = URLComponents()
+                        components.scheme = "file"
+                        components.path = databaseURL.path
+                        components.queryItems = [URLQueryItem(name: "immutable", value: "1")]
+                        let uri = components.string ?? databaseURL.path
+                        rc = sqlite3_open_v2(uri, &roDB, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI | SQLITE_OPEN_FULLMUTEX, nil)
+                    }
+                    guard rc == SQLITE_OK, let roDB else {
+                        if let roDB { sqlite3_close(roDB) }
+                        throw ExperienceStoreError.sqlite(code: rc, message: "read-only open failed")
+                    }
+                    defer { sqlite3_close(roDB) }
+                    return try searchSQLiteConnectionLocked(
+                        roDB,
+                        fts5Enabled: hasFTS5TableLocked(on: roDB),
+                        cleanQuery: cleanQuery,
+                        analysis: analysis,
+                        limit: limit,
+                        suppressedHashes: normalizedSuppressed,
+                        orderedSecrets: orderedSecrets
+                    )
+                }
+                if db != nil {
+                    return try searchSQLiteLocked(
+                        cleanQuery: cleanQuery,
+                        analysis: analysis,
+                        limit: limit,
+                        suppressedHashes: normalizedSuppressed,
+                        orderedSecrets: orderedSecrets
+                    )
+                }
+                return []
+            }
+
+            let bookRetracted: Set<String>
+            if canonicalFileURL != nil {
+                let book = try readCanonicalBookLocked()
+                bookRetracted = Set(book.retractedHashes.map { $0.lowercased() })
+            } else {
+                bookRetracted = []
+            }
+            let allSuppressed = normalizedSuppressed.union(bookRetracted)
+
+            try openOrSyncLocked(secrets: orderedSecrets)
+            var hits = try searchSQLiteLocked(
+                cleanQuery: cleanQuery,
+                analysis: analysis,
+                limit: limit,
+                suppressedHashes: allSuppressed,
+                orderedSecrets: orderedSecrets
+            )
+
+            if let markUsedNowMs, !hits.isEmpty {
+                let hitIDs = Set(hits.map(\.id))
+                var writtenDigest: String?
+                if canonicalFileURL != nil {
+                    var book = try readCanonicalBookLocked()
+                    for idx in book.records.indices where hitIDs.contains(book.records[idx].id) {
+                        book.records[idx].useCount = ExperienceRecord.clampedIncrement(book.records[idx].useCount)
+                        book.records[idx].usedAtMs = max(book.records[idx].usedAtMs ?? 0, markUsedNowMs)
+                        book.records[idx].updatedAtMs = max(book.records[idx].updatedAtMs, markUsedNowMs)
+                    }
+                    book.updatedAtMs = max(book.updatedAtMs, markUsedNowMs)
+                    lastSyncedCanonicalKey = nil
+                    writtenDigest = try writeCanonicalBookIfConfiguredLocked(book)
+                }
+                try execLocked("BEGIN IMMEDIATE;")
+                do {
+                    for id in hitIDs {
+                        try runPreparedLocked(
+                            """
+                            UPDATE experiences
+                            SET use_count = CASE WHEN use_count >= 2147483647 THEN 2147483647 ELSE use_count + 1 END,
+                                used_at_ms = CASE WHEN used_at_ms IS NULL OR used_at_ms < ? THEN ? ELSE used_at_ms END,
+                                updated_at_ms = CASE WHEN updated_at_ms < ? THEN ? ELSE updated_at_ms END
+                            WHERE id = ? AND deleted_at_ms IS NULL;
+                            """,
+                            bindings: [
+                                .double(markUsedNowMs), .double(markUsedNowMs),
+                                .double(markUsedNowMs), .double(markUsedNowMs),
+                                .text(id),
+                            ]
+                        )
+                    }
+                    try execLocked("COMMIT;")
+                } catch {
+                    try? execLocked("ROLLBACK;")
+                    throw error
+                }
+                if let writtenDigest {
                     lastSyncedCanonicalKey = Self.syncKey(digest: writtenDigest, orderedSecrets: orderedSecrets)
                 }
+                for idx in hits.indices {
+                    hits[idx].useCount = ExperienceRecord.clampedIncrement(hits[idx].useCount)
+                    hits[idx].usedAtMs = max(hits[idx].usedAtMs ?? 0, markUsedNowMs)
+                    hits[idx].updatedAtMs = max(hits[idx].updatedAtMs, markUsedNowMs)
+                }
             }
-            for id in hitIDs {
-                try runPreparedLocked(
-                    """
-                    UPDATE experiences
-                    SET use_count = CASE WHEN use_count >= 2147483647 THEN 2147483647 ELSE use_count + 1 END,
-                        used_at_ms = CASE WHEN used_at_ms IS NULL OR used_at_ms < ? THEN ? ELSE used_at_ms END,
-                        updated_at_ms = CASE WHEN updated_at_ms < ? THEN ? ELSE updated_at_ms END
-                    WHERE id = ? AND deleted_at_ms IS NULL;
-                    """,
-                    bindings: [
-                        .double(markUsedNowMs), .double(markUsedNowMs),
-                        .double(markUsedNowMs), .double(markUsedNowMs),
-                        .text(id),
-                    ]
-                )
-            }
-            for idx in hits.indices {
-                hits[idx].useCount = ExperienceRecord.clampedIncrement(hits[idx].useCount)
-                hits[idx].usedAtMs = max(hits[idx].usedAtMs ?? 0, markUsedNowMs)
-                hits[idx].updatedAtMs = max(hits[idx].updatedAtMs, markUsedNowMs)
-            }
-        }
 
-        return hits
+            return hits
+        }
     }
 
     public func mergeRetractedHashesAndPrune(
@@ -503,46 +626,51 @@ public final class ExperienceStore: @unchecked Sendable {
     ) throws {
         guard canonicalFileURL != nil else { return }
         let orderedSecrets = Self.orderSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        var book = try readCanonicalBookLocked()
-        book.mergeRetractionsAndPrune(hashes: externalHashes, nowMs: nowMs)
-        try writeCanonicalBookIfConfiguredLocked(book)
-        if db != nil || databaseURL != nil {
-            try openOrSyncLocked(secrets: orderedSecrets)
+        try withStoreLock {
+            var book = try readCanonicalBookLocked()
+            book.mergeRetractionsAndPrune(hashes: externalHashes, nowMs: nowMs)
+            try writeCanonicalBookIfConfiguredLocked(book)
+            if db != nil || databaseURL != nil {
+                try openOrSyncLocked(secrets: orderedSecrets)
+            }
         }
     }
 
     /// Rebuilds the SQLite projection directly from Canonical `experiences.json`.
     public func rebuildFromCanonical(secrets: [String] = []) throws {
         let orderedSecrets = Self.orderSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        guard canonicalFileURL != nil else { return }
-        closeLocked()
-        lastSyncedCanonicalKey = nil
-        let book = try readCanonicalBookLocked()
-        try ensureDatabaseOpenLocked()
-        try syncSQLiteFromBookLocked(book, orderedSecrets: orderedSecrets)
-        if let raw = try? Data(contentsOf: canonicalFileURL!) {
-            lastSyncedCanonicalKey = Self.syncKey(
-                digest: MemoryRevisionStore.sha256Hex(raw),
-                orderedSecrets: orderedSecrets
-            )
+        try withStoreLock {
+            guard canonicalFileURL != nil else { return }
+            closeLocked()
+            lastSyncedCanonicalKey = nil
+            let (book, digest) = try readCanonicalBookWithDigestLocked()
+            try ensureDatabaseOpenLocked()
+            try syncSQLiteFromBookLocked(book, orderedSecrets: orderedSecrets)
+            if digest != "missing" {
+                lastSyncedCanonicalKey = Self.syncKey(
+                    digest: digest,
+                    orderedSecrets: orderedSecrets
+                )
+            }
         }
     }
 
     // MARK: - Canonical JSON Helpers
 
     private func readCanonicalBookLocked() throws -> CanonicalExperienceBook {
-        guard let url = canonicalFileURL else { return CanonicalExperienceBook() }
+        try readCanonicalBookWithDigestLocked().book
+    }
+
+    private func readCanonicalBookWithDigestLocked() throws -> (book: CanonicalExperienceBook, digest: String) {
+        guard let url = canonicalFileURL else { return (CanonicalExperienceBook(), "missing") }
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else {
-            return CanonicalExperienceBook()
+            return (CanonicalExperienceBook(), "missing")
         }
         let data = try Data(contentsOf: url)
-        guard !data.isEmpty else { return CanonicalExperienceBook() }
-        return try JSONDecoder().decode(CanonicalExperienceBook.self, from: data)
+        let digest = MemoryRevisionStore.sha256Hex(data)
+        guard !data.isEmpty else { return (CanonicalExperienceBook(), digest) }
+        return (try JSONDecoder().decode(CanonicalExperienceBook.self, from: data), digest)
     }
 
     @discardableResult
@@ -582,20 +710,32 @@ public final class ExperienceStore: @unchecked Sendable {
         case optionalDouble(Double?)
     }
 
-    private func closeLocked() {
-        if let db {
-            sqlite3_close(db)
-            self.db = nil
+    public func close() {
+        withStoreLock {
+            closeLocked()
         }
     }
 
-    private func openOrSyncLocked(secrets orderedSecrets: [String], skipSyncIfAlreadyOpen: Bool = false) throws {
-        let wasClosed = (db == nil)
-        try ensureDatabaseOpenLocked()
-        guard let canonicalURL = canonicalFileURL else { return }
-        if skipSyncIfAlreadyOpen && !wasClosed { return }
+    private func closeLocked() {
+        sqliteHandle.close()
+        fts5Enabled = false
+        lastSyncedCanonicalKey = nil
+        openedDatabaseEpoch = 0
+        openedFileInode = nil
+    }
 
-        let diskData = try? Data(contentsOf: canonicalURL)
+    private func openOrSyncLocked(secrets orderedSecrets: [String], skipSyncIfAlreadyOpen: Bool = false) throws {
+        let didOpenOrReopen = try ensureDatabaseOpenLocked()
+        guard let canonicalURL = canonicalFileURL else { return }
+        if skipSyncIfAlreadyOpen && !didOpenOrReopen { return }
+
+        let fm = FileManager.default
+        let diskData: Data?
+        if fm.fileExists(atPath: canonicalURL.path) {
+            diskData = try Data(contentsOf: canonicalURL)
+        } else {
+            diskData = nil
+        }
         let digest = diskData.map(MemoryRevisionStore.sha256Hex) ?? "missing"
         let currentKey = Self.syncKey(digest: digest, orderedSecrets: orderedSecrets)
         if currentKey != lastSyncedCanonicalKey || sqliteRowCountLocked() == 0 {
@@ -620,7 +760,7 @@ public final class ExperienceStore: @unchecked Sendable {
         }
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
-        return Int(sqlite3_column_int(stmt, 0))
+        return Int(clamping: sqlite3_column_int64(stmt, 0))
     }
 
     private static func syncKey(digest: String, orderedSecrets: [String]) -> String {
@@ -628,20 +768,24 @@ public final class ExperienceStore: @unchecked Sendable {
         return digest + "|" + MemoryRevisionStore.sha256Hex(secretsData)
     }
 
-    private func ensureDatabaseOpenLocked() throws {
+    @discardableResult
+    private func ensureDatabaseOpenLocked() throws -> Bool {
         if db != nil {
             if let databaseURL {
                 let currentEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
                 let currentInode = Self.fileInode(at: databaseURL)
                 if currentEpoch != openedDatabaseEpoch || currentInode != openedFileInode {
                     closeLocked()
-                    lastSyncedCanonicalKey = nil
                 } else {
-                    return
+                    return false
                 }
             } else {
-                return
+                return false
             }
+        } else {
+            lastSyncedCanonicalKey = nil
+            openedDatabaseEpoch = 0
+            openedFileInode = nil
         }
 
         if let databaseURL {
@@ -651,6 +795,7 @@ public final class ExperienceStore: @unchecked Sendable {
             // `ClioMemory/clio-memory.db` always carries `user_version == 1` and `store_meta`.
             let baseStore = MemoryStore(databaseURL: databaseURL)
             _ = try baseStore.openOrRecover()
+            baseStore.close()
         }
 
         let path = databaseURL?.path ?? ":memory:"
@@ -659,75 +804,90 @@ public final class ExperienceStore: @unchecked Sendable {
         let rc = sqlite3_open_v2(path, &opened, flags, nil)
         guard rc == SQLITE_OK, let opened else {
             let msg = opened.map { String(cString: sqlite3_errmsg($0)) } ?? "open failed"
-            if let opened { sqlite3_close(opened) }
+            if let opened { sqlite3_close_v2(opened) }
             throw ExperienceStoreError.sqlite(code: rc, message: msg)
         }
-        self.db = opened
+        sqliteHandle.install(opened)
         self.openedDatabaseEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
         self.openedFileInode = databaseURL.flatMap(Self.fileInode(at:))
 
-        try execLocked("PRAGMA busy_timeout = 5000;")
-        if databaseURL != nil {
-            try execLocked("PRAGMA journal_mode = WAL;")
-        }
+        do {
+            try execLocked("PRAGMA busy_timeout = 5000;")
+            if databaseURL != nil {
+                try execLocked("PRAGMA journal_mode = WAL;")
+            }
 
-        try execLocked(
-            """
-            CREATE TABLE IF NOT EXISTS experiences (
-                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                id TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                tags_json TEXT NOT NULL,
-                tags_text TEXT NOT NULL,
-                content_sha256 TEXT NOT NULL,
-                source TEXT NOT NULL,
-                use_count INTEGER NOT NULL DEFAULT 0,
-                created_at_ms REAL NOT NULL,
-                updated_at_ms REAL NOT NULL,
-                used_at_ms REAL,
-                deleted_at_ms REAL,
-                normalized_text TEXT NOT NULL,
-                body_tokens TEXT NOT NULL,
-                cjk_unigrams TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_experiences_active ON experiences(deleted_at_ms, updated_at_ms DESC);
-            """
-        )
+            try execLocked(
+                """
+                CREATE TABLE IF NOT EXISTS experiences (
+                    row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    tags_json TEXT NOT NULL,
+                    tags_text TEXT NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    created_at_ms REAL NOT NULL,
+                    updated_at_ms REAL NOT NULL,
+                    used_at_ms REAL,
+                    deleted_at_ms REAL,
+                    normalized_text TEXT NOT NULL,
+                    body_tokens TEXT NOT NULL,
+                    cjk_unigrams TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_experiences_active ON experiences(deleted_at_ms, updated_at_ms DESC);
+                """
+            )
 
-        if !forceDisableFTS5 {
-            do {
-                try execLocked(
-                    """
-                    CREATE VIRTUAL TABLE IF NOT EXISTS experiences_fts USING fts5(
-                        body_tokens,
-                        cjk_unigrams,
-                        content='experiences',
-                        content_rowid='row_id',
-                        tokenize='unicode61 remove_diacritics 1'
-                    );
-                    CREATE TRIGGER IF NOT EXISTS experiences_ai AFTER INSERT ON experiences BEGIN
-                        INSERT INTO experiences_fts(rowid, body_tokens, cjk_unigrams)
-                        VALUES (new.row_id, new.body_tokens, new.cjk_unigrams);
-                    END;
-                    CREATE TRIGGER IF NOT EXISTS experiences_ad AFTER DELETE ON experiences BEGIN
-                        INSERT INTO experiences_fts(experiences_fts, rowid, body_tokens, cjk_unigrams)
-                        VALUES ('delete', old.row_id, old.body_tokens, old.cjk_unigrams);
-                    END;
-                    CREATE TRIGGER IF NOT EXISTS experiences_au AFTER UPDATE ON experiences BEGIN
-                        INSERT INTO experiences_fts(experiences_fts, rowid, body_tokens, cjk_unigrams)
-                        VALUES ('delete', old.row_id, old.body_tokens, old.cjk_unigrams);
-                        INSERT INTO experiences_fts(rowid, body_tokens, cjk_unigrams)
-                        VALUES (new.row_id, new.body_tokens, new.cjk_unigrams);
-                    END;
-                    """
-                )
-                fts5Enabled = true
-            } catch {
+            if !forceDisableFTS5 {
+                try execLocked("SAVEPOINT exp_fts_init;")
+                do {
+                    try execLocked(
+                        """
+                        CREATE VIRTUAL TABLE IF NOT EXISTS experiences_fts USING fts5(
+                            body_tokens,
+                            cjk_unigrams,
+                            content='experiences',
+                            content_rowid='row_id',
+                            tokenize='unicode61 remove_diacritics 1'
+                        );
+                        CREATE TRIGGER IF NOT EXISTS experiences_ai AFTER INSERT ON experiences BEGIN
+                            INSERT INTO experiences_fts(rowid, body_tokens, cjk_unigrams)
+                            VALUES (new.row_id, new.body_tokens, new.cjk_unigrams);
+                        END;
+                        CREATE TRIGGER IF NOT EXISTS experiences_ad AFTER DELETE ON experiences BEGIN
+                            INSERT INTO experiences_fts(experiences_fts, rowid, body_tokens, cjk_unigrams)
+                            VALUES ('delete', old.row_id, old.body_tokens, old.cjk_unigrams);
+                        END;
+                        CREATE TRIGGER IF NOT EXISTS experiences_au AFTER UPDATE ON experiences BEGIN
+                            INSERT INTO experiences_fts(experiences_fts, rowid, body_tokens, cjk_unigrams)
+                            VALUES ('delete', old.row_id, old.body_tokens, old.cjk_unigrams);
+                            INSERT INTO experiences_fts(rowid, body_tokens, cjk_unigrams)
+                            VALUES (new.row_id, new.body_tokens, new.cjk_unigrams);
+                        END;
+                        """
+                    )
+                    try execLocked("RELEASE SAVEPOINT exp_fts_init;")
+                    fts5Enabled = true
+                } catch {
+                    fts5Enabled = false
+                    guard Self.isMissingFTS5ModuleError(error) else {
+                        try? execLocked("ROLLBACK TO SAVEPOINT exp_fts_init;")
+                        try? execLocked("RELEASE SAVEPOINT exp_fts_init;")
+                        throw error
+                    }
+                    try execLocked("ROLLBACK TO SAVEPOINT exp_fts_init;")
+                    try execLocked("RELEASE SAVEPOINT exp_fts_init;")
+                }
+            } else {
                 fts5Enabled = false
             }
-        } else {
-            fts5Enabled = false
+            return true
+        } catch {
+            closeLocked()
+            throw error
         }
     }
 
@@ -747,6 +907,8 @@ public final class ExperienceStore: @unchecked Sendable {
 
     private func upsertSQLiteRecordLocked(_ record: ExperienceRecord, orderedSecrets: [String]) throws {
         let redacted = Self.redactedRecord(record, orderedSecrets: orderedSecrets)
+        let preservedHash = record.contentSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let storedHash = preservedHash.isEmpty ? redacted.contentSHA256 : preservedHash
         let tagsJoined = redacted.tags.joined(separator: " ")
         let indexable = [redacted.title, redacted.content, tagsJoined]
             .filter { !$0.isEmpty }
@@ -785,7 +947,7 @@ public final class ExperienceStore: @unchecked Sendable {
                 .text(redacted.content),
                 .text(tagsJSON),
                 .text(tagsJoined),
-                .text(redacted.contentSHA256),
+                .text(storedHash),
                 .text(redacted.source.rawValue),
                 .int(Int32(ExperienceRecord.clampUseCount(redacted.useCount))),
                 .double(redacted.createdAtMs),
@@ -804,7 +966,11 @@ public final class ExperienceStore: @unchecked Sendable {
         return try readSQLiteRecordsLocked(includeDeleted: true, orderedSecrets: orderedSecrets)
     }
 
-    private func readSQLiteRecordsLocked(includeDeleted: Bool, orderedSecrets: [String]) throws -> [ExperienceRecord] {
+    private func readSQLiteRecordsLocked(
+        includeDeleted: Bool,
+        suppressedHashes: Set<String> = [],
+        orderedSecrets: [String]
+    ) throws -> [ExperienceRecord] {
         guard let db else { throw ExperienceStoreError.sqlite(code: SQLITE_MISUSE, message: "database closed") }
         let whereClause = includeDeleted ? "" : "WHERE deleted_at_ms IS NULL"
         let sql = """
@@ -829,7 +995,7 @@ public final class ExperienceStore: @unchecked Sendable {
                 let tagsJSON = Self.columnText(stmt, 3)
                 let hash = Self.columnText(stmt, 4)
                 let sourceRaw = Self.columnText(stmt, 5)
-                let useCount = Int(sqlite3_column_int(stmt, 6))
+                let useCount = ExperienceRecord.clampUseCount(Int(clamping: sqlite3_column_int64(stmt, 6)))
                 let createdAt = sqlite3_column_double(stmt, 7)
                 let updatedAt = sqlite3_column_double(stmt, 8)
                 let usedAt = Self.columnOptionalDouble(stmt, 9)
@@ -848,7 +1014,16 @@ public final class ExperienceStore: @unchecked Sendable {
                     deletedAtMs: deletedAt,
                     source: ExperienceWriteSource(rawValue: sourceRaw) ?? .mainChat
                 )
-                results.append(Self.redactedRecord(rec, orderedSecrets: orderedSecrets))
+                let redacted = Self.redactedRecord(rec, orderedSecrets: orderedSecrets)
+                guard !Self.isSuppressedRecord(
+                    storedHash: hash,
+                    redactedTitle: redacted.title,
+                    redactedContent: redacted.content,
+                    suppressedHashes: suppressedHashes
+                ) else {
+                    continue
+                }
+                results.append(redacted)
             } else if stepRC == SQLITE_DONE {
                 break
             } else {
@@ -866,10 +1041,30 @@ public final class ExperienceStore: @unchecked Sendable {
         orderedSecrets: [String]
     ) throws -> [ExperienceHit] {
         guard let db else { throw ExperienceStoreError.sqlite(code: SQLITE_MISUSE, message: "database closed") }
+        return try searchSQLiteConnectionLocked(
+            db,
+            fts5Enabled: fts5Enabled,
+            cleanQuery: cleanQuery,
+            analysis: analysis,
+            limit: limit,
+            suppressedHashes: suppressedHashes,
+            orderedSecrets: orderedSecrets
+        )
+    }
+
+    private func searchSQLiteConnectionLocked(
+        _ connection: OpaquePointer,
+        fts5Enabled useFTS5: Bool,
+        cleanQuery: String,
+        analysis: MemoryRecall.QueryAnalysis,
+        limit: Int,
+        suppressedHashes: Set<String>,
+        orderedSecrets: [String]
+    ) throws -> [ExperienceHit] {
         var whereClauses = ["e.deleted_at_ms IS NULL"]
         var bindings: [SQLBinding] = []
 
-        if fts5Enabled, let matchExpr = MemoryRecall.buildFTS5OrMatchExpression(for: cleanQuery) {
+        if useFTS5, let matchExpr = MemoryRecall.buildFTS5OrMatchExpression(for: cleanQuery) {
             whereClauses.append("experiences_fts MATCH ?")
             bindings.append(.text(matchExpr))
         } else {
@@ -886,7 +1081,7 @@ public final class ExperienceStore: @unchecked Sendable {
         bindings.append(.int(candidateCap))
 
         let sql: String
-        if fts5Enabled && whereClauses.contains("experiences_fts MATCH ?") {
+        if useFTS5 && whereClauses.contains("experiences_fts MATCH ?") {
             sql = """
             SELECT
                 e.id, e.title, e.content, e.tags_json, e.content_sha256,
@@ -910,8 +1105,10 @@ public final class ExperienceStore: @unchecked Sendable {
         }
 
         var stmt: OpaquePointer?
-        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-        guard rc == SQLITE_OK, let stmt else { throw sqliteErrorLocked(code: rc) }
+        let rc = sqlite3_prepare_v2(connection, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            throw ExperienceStoreError.sqlite(code: rc, message: String(cString: sqlite3_errmsg(connection)))
+        }
         defer { sqlite3_finalize(stmt) }
         try bind(bindings, to: stmt)
 
@@ -924,57 +1121,32 @@ public final class ExperienceStore: @unchecked Sendable {
                 let rawContent = Self.columnText(stmt, 2)
                 let tagsJSON = Self.columnText(stmt, 3)
                 let storedHash = Self.columnText(stmt, 4).lowercased()
-                let useCount = Int(sqlite3_column_int(stmt, 5))
+                let useCount = ExperienceRecord.clampUseCount(Int(clamping: sqlite3_column_int64(stmt, 5)))
                 let updatedAtMs = sqlite3_column_double(stmt, 6)
                 let usedAtMs = Self.columnOptionalDouble(stmt, 7)
                 let bm25Rank = sqlite3_column_double(stmt, 8)
                 let rawTags = (try? JSONDecoder().decode([String].self, from: Data(tagsJSON.utf8))) ?? []
 
-                let safeTitle = MemorySafety.redactSecrets(rawTitle, secrets: orderedSecrets)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let safeContent = MemorySafety.redactSecrets(rawContent, secrets: orderedSecrets)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let withoutMask = safeContent.replacingOccurrences(of: "〔隐去〕", with: "")
-                guard !safeContent.isEmpty, !MemorySafety.normalizedFactKey(withoutMask).isEmpty else { continue }
-
-                let safeTags = rawTags
-                    .map { MemorySafety.redactSecrets($0, secrets: orderedSecrets).trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                let bodyHash = MemorySafety.retractionHash(safeContent)
-                let fullHashInput = safeTitle.isEmpty ? safeContent : "\(safeTitle)\n\(safeContent)"
-                let fullHash = MemorySafety.retractionHash(fullHashInput)
-                guard !suppressedHashes.contains(storedHash),
-                      !suppressedHashes.contains(fullHash),
-                      !suppressedHashes.contains(bodyHash) else {
-                    continue
-                }
-
-                let combinedText = safeTitle.isEmpty ? safeContent : "\(safeTitle) \(safeContent)"
-                let relevance = MemoryRecall.scoreText(
-                    analysis: analysis,
-                    text: combinedText,
-                    topic: safeTags.joined(separator: " "),
-                    bm25Rank: fts5Enabled ? bm25Rank : nil
-                )
-                guard relevance > 0 else { continue }
-
-                let usageBonus = min(3.0, Double(max(0, useCount)) * 0.25)
-                let hit = ExperienceHit(
+                if let entry = Self.scoreCandidate(
                     id: id,
-                    title: safeTitle,
-                    content: safeContent,
-                    tags: safeTags,
-                    contentSHA256: fullHash,
-                    score: relevance + usageBonus,
+                    rawTitle: rawTitle,
+                    rawContent: rawContent,
+                    rawTags: rawTags,
+                    storedHash: storedHash,
                     useCount: useCount,
                     updatedAtMs: updatedAtMs,
-                    usedAtMs: usedAtMs
-                )
-                scored.append((hit: hit, recency: usedAtMs ?? updatedAtMs))
+                    usedAtMs: usedAtMs,
+                    bm25Rank: useFTS5 ? bm25Rank : nil,
+                    analysis: analysis,
+                    suppressedHashes: suppressedHashes,
+                    orderedSecrets: orderedSecrets
+                ) {
+                    scored.append(entry)
+                }
             } else if stepRC == SQLITE_DONE {
                 break
             } else {
-                throw sqliteErrorLocked(code: stepRC)
+                throw ExperienceStoreError.sqlite(code: stepRC, message: String(cString: sqlite3_errmsg(connection)))
             }
         }
 
@@ -984,6 +1156,110 @@ public final class ExperienceStore: @unchecked Sendable {
             return lhs.hit.id < rhs.hit.id
         }
         return Array(scored.prefix(limit).map(\.hit))
+    }
+
+    private func searchCanonicalReadOnlyLocked(
+        book: CanonicalExperienceBook,
+        analysis: MemoryRecall.QueryAnalysis,
+        limit: Int,
+        suppressedHashes: Set<String>,
+        orderedSecrets: [String]
+    ) -> [ExperienceHit] {
+        var scored: [(hit: ExperienceHit, recency: Double)] = []
+        scored.reserveCapacity(book.records.count)
+        for record in book.records where record.deletedAtMs == nil {
+            if let entry = Self.scoreCandidate(
+                id: record.id,
+                rawTitle: record.title,
+                rawContent: record.content,
+                rawTags: record.tags,
+                storedHash: record.contentSHA256.lowercased(),
+                useCount: ExperienceRecord.clampUseCount(record.useCount),
+                updatedAtMs: record.updatedAtMs,
+                usedAtMs: record.usedAtMs,
+                bm25Rank: nil,
+                analysis: analysis,
+                suppressedHashes: suppressedHashes,
+                orderedSecrets: orderedSecrets
+            ) {
+                scored.append(entry)
+            }
+        }
+        scored.sort { lhs, rhs in
+            if lhs.hit.score != rhs.hit.score { return lhs.hit.score > rhs.hit.score }
+            if lhs.recency != rhs.recency { return lhs.recency > rhs.recency }
+            return lhs.hit.id < rhs.hit.id
+        }
+        return Array(scored.prefix(limit).map(\.hit))
+    }
+
+    private static func scoreCandidate(
+        id: String,
+        rawTitle: String,
+        rawContent: String,
+        rawTags: [String],
+        storedHash: String,
+        useCount: Int,
+        updatedAtMs: Double,
+        usedAtMs: Double?,
+        bm25Rank: Double?,
+        analysis: MemoryRecall.QueryAnalysis,
+        suppressedHashes: Set<String>,
+        orderedSecrets: [String]
+    ) -> (hit: ExperienceHit, recency: Double)? {
+        let safeTitle = MemorySafety.redactSecrets(rawTitle, secrets: orderedSecrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeContent = MemorySafety.redactSecrets(rawContent, secrets: orderedSecrets)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutMask = safeContent.replacingOccurrences(of: "〔隐去〕", with: "")
+        guard !safeContent.isEmpty, !MemorySafety.normalizedFactKey(withoutMask).isEmpty else { return nil }
+
+        let safeTags = rawTags
+            .map { MemorySafety.redactSecrets($0, secrets: orderedSecrets).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !isSuppressedRecord(
+            storedHash: storedHash,
+            redactedTitle: safeTitle,
+            redactedContent: safeContent,
+            suppressedHashes: suppressedHashes
+        ) else {
+            return nil
+        }
+        let fullHashInput = safeTitle.isEmpty ? safeContent : "\(safeTitle)\n\(safeContent)"
+        let fullHash = MemorySafety.retractionHash(fullHashInput)
+
+        let combinedText = safeTitle.isEmpty ? safeContent : "\(safeTitle) \(safeContent)"
+        let relevance = MemoryRecall.scoreText(
+            analysis: analysis,
+            text: combinedText,
+            topic: safeTags.joined(separator: " "),
+            bm25Rank: bm25Rank
+        )
+        guard relevance > 0 else { return nil }
+
+        let usageBonus = min(3.0, Double(max(0, useCount)) * 0.25)
+        let hit = ExperienceHit(
+            id: id,
+            title: safeTitle,
+            content: safeContent,
+            tags: safeTags,
+            contentSHA256: fullHash,
+            score: relevance + usageBonus,
+            useCount: useCount,
+            updatedAtMs: updatedAtMs,
+            usedAtMs: usedAtMs
+        )
+        return (hit: hit, recency: usedAtMs ?? updatedAtMs)
+    }
+
+    private func hasFTS5TableLocked(on connection: OpaquePointer) -> Bool {
+        var stmt: OpaquePointer?
+        let sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'experiences_fts' LIMIT 1;"
+        guard sqlite3_prepare_v2(connection, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            return false
+        }
+        defer { sqlite3_finalize(stmt) }
+        return sqlite3_step(stmt) == SQLITE_ROW
     }
 
     // MARK: - Low-Level SQLite Helpers
@@ -996,6 +1272,22 @@ public final class ExperienceStore: @unchecked Sendable {
         var st = stat()
         guard stat(url.path, &st) == 0 else { return nil }
         return UInt64(st.st_ino)
+    }
+
+    private static func isSuppressedRecord(
+        storedHash: String,
+        redactedTitle: String,
+        redactedContent: String,
+        suppressedHashes: Set<String>
+    ) -> Bool {
+        guard !suppressedHashes.isEmpty else { return false }
+        let normalizedStored = storedHash.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let bodyHash = MemorySafety.retractionHash(redactedContent)
+        let fullInput = redactedTitle.isEmpty ? redactedContent : "\(redactedTitle)\n\(redactedContent)"
+        let fullHash = MemorySafety.retractionHash(fullInput)
+        return suppressedHashes.contains(normalizedStored)
+            || suppressedHashes.contains(fullHash)
+            || suppressedHashes.contains(bodyHash)
     }
 
     private static func redactedRecord(_ record: ExperienceRecord, orderedSecrets: [String]) -> ExperienceRecord {
@@ -1068,6 +1360,14 @@ public final class ExperienceStore: @unchecked Sendable {
     private func sqliteErrorLocked(code: Int32) -> ExperienceStoreError {
         let msg = db.map { String(cString: sqlite3_errmsg($0)) } ?? "sqlite error"
         return .sqlite(code: code, message: msg)
+    }
+
+    private static func isMissingFTS5ModuleError(_ error: Error) -> Bool {
+        guard case let ExperienceStoreError.sqlite(_, message) = error else {
+            return false
+        }
+        let lower = message.lowercased()
+        return lower.contains("no such module") && lower.contains("fts5")
     }
 
     private static func columnText(_ stmt: OpaquePointer, _ index: Int32) -> String {

@@ -960,6 +960,23 @@ final class TeamModel: ObservableObject {
             self.userInitiated = userInitiated
             self.experienceSource = experienceSource ?? (userInitiated ? .mainChat : .routine)
         }
+
+        static func fromStored(_ item: StoredQueuedMessage) -> Queued {
+            let source: ExperienceWriteSource
+            if let raw = item.experienceSourceRaw {
+                source = ExperienceWriteSource(rawValue: raw) ?? .routine
+            } else {
+                source = item.userInitiated ? .mainChat : .routine
+            }
+            return Queued(
+                id: item.id,
+                text: item.text,
+                photos: item.photos,
+                interject: item.interject,
+                userInitiated: item.userInitiated,
+                experienceSource: source
+            )
+        }
     }
 
     /// Messages waiting for the turn in progress to finish, by chat (and by shelved leaf key `base~leafId`).
@@ -1072,10 +1089,12 @@ final class TeamModel: ObservableObject {
             persistQueued(key)
             return true
         }
+        pausedExperienceSource.removeValue(forKey: key)
+        pausedAway.removeValue(forKey: key)
         let names = keeping ? photos.map(Disk.keepPhoto) : []
         // A finished checklist goes when the next thing is asked; one still under way stays.
         if let plan = plans[key], plan.allSatisfy({ $0.state == "done" }) { clearPlan(key) }
-        append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names), to: key)
+        append(Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names, experienceSource: resolvedSource.rawValue), to: key)
         touch(key, preview: nil)
         start(key, userInitiated: userInitiated, experienceSource: resolvedSource)
         return true
@@ -1138,47 +1157,64 @@ final class TeamModel: ObservableObject {
         return item
     }
 
-    /// Everything queued goes out as one message, as if written at once.
+    /// Queued messages go out in contiguous batches sharing provenance so a background `.routine` message
+    /// mixed with a user message never inherits `.mainChat` experience-write privileges.
     func flushQueue(_ key: String) {
         guard phase != .demo, canAcceptInput(for: key) else { return }
         guard runs[key] == nil, !helping.contains(key) else { return }
-        guard let waiting = queued[key], !waiting.isEmpty else { return }
-        let text = waiting.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
-        let allPhotos = waiting.flatMap(\.photos)
-        let ids = waiting.map(\.id)
-        guard !text.isEmpty || !allPhotos.isEmpty else {
-            withAnimation(.smooth) { queued[key] = nil }
-            persistQueued(key)
+        while let waiting = queued[key], !waiting.isEmpty {
+            let lead = waiting[0]
+            let splitIndex = waiting.firstIndex {
+                $0.experienceSource != lead.experienceSource || $0.userInitiated != lead.userInitiated
+            } ?? waiting.endIndex
+            let batch = Array(waiting[..<splitIndex])
+            let remainder = Array(waiting[splitIndex...])
+            let text = batch.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+            let allPhotos = batch.flatMap(\.photos)
+            let ids = batch.map(\.id)
+            guard !text.isEmpty || !allPhotos.isEmpty else {
+                withAnimation(.smooth) { queued[key] = remainder.isEmpty ? nil : remainder }
+                persistQueued(key)
+                continue
+            }
+            withAnimation(.smooth) { queued[key] = remainder.isEmpty ? nil : remainder }
+            inFlightQueued[key, default: []].append(contentsOf: batch)
+            var names: [String] = []
+            if keeping, !allPhotos.isEmpty {
+                do {
+                    for photo in allPhotos {
+                        names.append(try Disk.writePhoto(photo))
+                    }
+                } catch {
+                    for name in names { Disk.remove("media/\(name)") }
+                    restoreInFlightQueued(Set(ids), to: key)
+                    Diag.note("排队照片没存进手机，原消息已留在排队里：\(error.localizedDescription)")
+                    return
+                }
+            }
+            if archived.contains(key) { archive(key, false) }
+            if let plan = plans[key], plan.allSatisfy({ $0.state == "done" }) { clearPlan(key) }
+            let entry = Entry(
+                id: UUID().uuidString,
+                at: Now.ms,
+                message: .user(text),
+                photos: names,
+                queuedIds: ids,
+                experienceSource: lead.experienceSource.rawValue
+            )
+            let idSet = Set(ids)
+            append(entry, to: key) { [weak self] ok in
+                guard ok else { return }
+                Task { @MainActor [weak self] in
+                    self?.confirmQueuedRemoved(idSet, for: key)
+                }
+            }
+            touch(key, preview: nil)
+            pausedExperienceSource.removeValue(forKey: key)
+            pausedAway.removeValue(forKey: key)
+            start(key, userInitiated: lead.userInitiated, experienceSource: lead.experienceSource)
             return
         }
-        withAnimation(.smooth) { queued[key] = nil }
-        inFlightQueued[key, default: []].append(contentsOf: waiting)
-        var names: [String] = []
-        if keeping, !allPhotos.isEmpty {
-            do {
-                for photo in allPhotos {
-                    names.append(try Disk.writePhoto(photo))
-                }
-            } catch {
-                for name in names { Disk.remove("media/\(name)") }
-                restoreInFlightQueued(Set(ids), to: key)
-                Diag.note("排队照片没存进手机，原消息已留在排队里：\(error.localizedDescription)")
-                return
-            }
-        }
-        if archived.contains(key) { archive(key, false) }
-        if let plan = plans[key], plan.allSatisfy({ $0.state == "done" }) { clearPlan(key) }
-        let entry = Entry(id: UUID().uuidString, at: Now.ms, message: .user(text), photos: names, queuedIds: ids)
-        let idSet = Set(ids)
-        append(entry, to: key) { [weak self] ok in
-            guard ok else { return }
-            Task { @MainActor [weak self] in
-                self?.confirmQueuedRemoved(idSet, for: key)
-            }
-        }
-        touch(key, preview: nil)
-        let queueSource: ExperienceWriteSource = waiting.contains(where: { $0.userInitiated }) ? .mainChat : (waiting.first?.experienceSource ?? .routine)
-        start(key, userInitiated: waiting.contains(where: \.userInitiated), experienceSource: queueSource)
     }
 
     func stop(_ key: String, keepSendNow: Bool = false) {
@@ -1219,6 +1255,7 @@ final class TeamModel: ObservableObject {
         doing[key] = "正在想"
         toolCount[key] = 0
         LiveTurns.begin(chat: key, name: chatName(key), face: LiveFace.png(for: bots.first { Self.key(bot: $0.id) == key }))
+        activeTurnExperienceSource[key] = experienceSource
         let task = Task { [weak self] in
             await previous?.value
             await self?.run(key, token: token, userInitiated: userInitiated, experienceSource: experienceSource)
@@ -1231,11 +1268,21 @@ final class TeamModel: ObservableObject {
     var graces: [UUID: UIBackgroundTaskIdentifier] = [:]
     /// What each chat's reply has streamed so far and not yet kept as a message, and who is writing it.
     var streamed: [String: (speaker: String?, text: String)] = [:]
-    /// Chats being paused because the background time is running out, with what each was doing then.
+    /// Active turn experience provenance by conversation key so `pause`/`resume` cannot escalate `.routine` or `.subtask`.
+    var activeTurnExperienceSource: [String: ExperienceWriteSource] = [:]
+    /// Chats being paused because the background time is running out, bound to `(token, triggerEntryID)`.
     /// Their cancel adds no 「被你叫停了」, and the partial reply the agent hands back is already kept.
-    var pausing: [String: (doing: String, saved: Bool)] = [:]
-    /// Turns iOS paused while Clio was away: they go on by themselves when Clio is back on screen.
-    var pausedAway: Set<String> = []
+    var pausing: [String: (token: UUID, doing: String, saved: Bool, source: ExperienceWriteSource, triggerEntryID: String?)] = [:]
+    /// Preserved provenance for paused turns awaiting automatic or manual 「接着做」 resume, bound to note & trigger IDs.
+    var pausedExperienceSource: [String: (noteEntryID: String, triggerEntryID: String?, source: ExperienceWriteSource)] = [:]
+    #if DEBUG
+    /// Testing hook injecting a deterministic `ModelProvider` cleanly in unit tests without reading Keychain/Vault.
+    var turnProviderOverrideForTesting: ((_ endpoint: Endpoint, _ model: String, _ experienceSource: ExperienceWriteSource) -> ModelProvider)?
+    /// Testing hook capturing/controlling delayed `pausedAway` resume scheduling without racing real 300ms timers.
+    var pausedAwaySchedulerOverrideForTesting: ((_ key: String, _ token: UUID, _ perform: @escaping @MainActor () -> Void) -> Void)?
+    #endif
+    /// Turns iOS paused while Clio was away: they go on by themselves when Clio is back on screen (bound to token & trigger).
+    var pausedAway: [String: (token: UUID, triggerEntryID: String?)] = [:]
     /// Watches the background time while turns are going and the app is away.
     var watching: Task<Void, Never>?
 
@@ -1298,7 +1345,7 @@ final class TeamModel: ObservableObject {
     /// stop cleanly, and say so; back in Clio, 「接着做」 goes on from there. A turn waiting for 候印 is left
     /// as it is: nothing is in flight, and the card is still there on return.
     func pause(_ key: String) {
-        guard runs[key] != nil, pausing[key] == nil, !approvals.contains(where: { $0.chat == key }) else { return }
+        guard let activeRun = runs[key], pausing[key] == nil, !approvals.contains(where: { $0.chat == key }) else { return }
         // Kept now, before iOS freezes the app; the cancel below would hand the same text back only later.
         flushHelpingPartialStreams()
         let kept = streamed.removeValue(forKey: key)
@@ -1308,8 +1355,16 @@ final class TeamModel: ObservableObject {
             if isTurnMemoryTainted(key) { entry.tainted = true }
             append(entry, to: key, event: .replyCommitted(entry.id))
         }
-        pausing[key] = (doing: doing[key] ?? "干活", saved: !partial.isEmpty)
-        pausedAway.insert(key)
+        let pauseSource = activeTurnExperienceSource[key] ?? .mainChat
+        let triggerEntryID = history(key).last(where: { $0.note != true && $0.message.role == .user })?.id
+        pausing[key] = (
+            token: activeRun.token,
+            doing: doing[key] ?? "干活",
+            saved: !partial.isEmpty,
+            source: pauseSource,
+            triggerEntryID: triggerEntryID
+        )
+        pausedAway[key] = (token: activeRun.token, triggerEntryID: triggerEntryID)
         if Pref.notifyDone {
             Notify.now("\(chatName(key))停在半路", "离开 Clio 太久，iOS 只给了这么些时间。" + (partial.isEmpty ? "" : "写好的部分已存下，") + "回来会自动接着做。", chat: key)
         }
@@ -1319,22 +1374,90 @@ final class TeamModel: ObservableObject {
     }
 
     /// The note under a paused turn, with its 「接着做」 button; written once the turn has wound down, so it is the last line.
-    func notePause(_ key: String) {
-        guard let paused = pausing.removeValue(forKey: key) else { return }
+    func notePause(_ key: String, token: UUID? = nil) {
+        guard let paused = pausing[key] else { return }
+        if let token, paused.token != token { return }
+        pausing.removeValue(forKey: key)
+        let noteID = UUID().uuidString
+        pausedExperienceSource[key] = (
+            noteEntryID: noteID,
+            triggerEntryID: paused.triggerEntryID,
+            source: paused.source
+        )
         let saved = paused.saved ? "写到一半的回复已经存在上面，" : ""
         append(Entry(
-            id: UUID().uuidString, at: Now.ms,
+            id: noteID, at: Now.ms,
             message: .assistant("停在半路\n离开 Clio 太久，iOS 收回了后台时间（当时在：\(paused.doing)）。\(saved)回到 Clio 会自动接着做。" + (KeepAwake.on ? "" : "想让它在后台一直做下去，可以在 设置 › 通知与隐私 › 通知与后台 打开「后台保持运行」。")),
-            note: true, next: Explain.Next.resume.rawValue
+            note: true, next: Explain.Next.resume.rawValue,
+            experienceSource: paused.source.rawValue
         ), to: key)
+    }
+
+    private func resolvedEntryExperienceSource(_ entry: Entry) -> ExperienceWriteSource {
+        if let raw = entry.experienceSource {
+            return ExperienceWriteSource(rawValue: raw) ?? .routine
+        }
+        let text = entry.message.text
+        if text.hasPrefix("【定时 · ") || text.hasPrefix("早。请给我一封今天的晨信：") {
+            return .routine
+        }
+        return .mainChat
+    }
+
+    private func resolvedTriggerUserExperienceSource(in entriesList: [Entry]) -> ExperienceWriteSource {
+        if let lastUser = entriesList.last(where: { $0.note != true && $0.message.role == .user }) {
+            return resolvedEntryExperienceSource(lastUser)
+        }
+        return .mainChat
+    }
+
+    private func resolvedResumedExperienceSource(for key: String) -> ExperienceWriteSource {
+        let bound = pausedExperienceSource.removeValue(forKey: key)
+        let entriesList = history(key)
+        let lastUserIdx = entriesList.lastIndex(where: { $0.note != true && $0.message.role == .user })
+        let lastUser = lastUserIdx.map { entriesList[$0] }
+        if let pauseNote = entriesList.last(where: { $0.note == true && $0.next == Explain.Next.resume.rawValue }),
+           let pauseIdx = entriesList.lastIndex(where: { $0.id == pauseNote.id }),
+           lastUserIdx == nil || pauseIdx > lastUserIdx! {
+            if let bound {
+                guard bound.noteEntryID == pauseNote.id,
+                      bound.triggerEntryID == nil || bound.triggerEntryID == lastUser?.id else {
+                    return resolvedTriggerUserExperienceSource(in: entriesList)
+                }
+                return bound.source
+            }
+            if let raw = pauseNote.experienceSource {
+                return ExperienceWriteSource(rawValue: raw) ?? .routine
+            }
+        }
+        return resolvedTriggerUserExperienceSource(in: entriesList)
+    }
+
+    private func completeDelayedPausedAwayResumeIfMatching(key: String, token: UUID) {
+        guard runs[key] == nil,
+              let currentAway = pausedAway[key],
+              currentAway.token == token else { return }
+        let lastUserID = history(key).last(where: { $0.note != true && $0.message.role == .user })?.id
+        guard currentAway.triggerEntryID == nil || currentAway.triggerEntryID == lastUserID else { return }
+        pausedAway.removeValue(forKey: key)
+        resume(key)
     }
 
     /// 「接着做」: a turn iOS cut short in the background goes on from where it stopped.
     func resume(_ key: String) {
         guard canAcceptInput(for: key), runs[key] == nil else { return }
-        append(Entry(id: UUID().uuidString, at: Now.ms, message: .user("接着做：刚才 app 在后台被系统暂停了，请从停下的地方继续，写过的不用重复。")), to: key)
+        let resumedSource = resolvedResumedExperienceSource(for: key)
+        append(
+            Entry(
+                id: UUID().uuidString,
+                at: Now.ms,
+                message: .user("接着做：刚才 app 在后台被系统暂停了，请从停下的地方继续，写过的不用重复。"),
+                experienceSource: resumedSource.rawValue
+            ),
+            to: key
+        )
         touch(key, preview: nil)
-        start(key, userInitiated: false)
+        start(key, userInitiated: false, experienceSource: resumedSource)
     }
 
     func run(_ key: String, token: UUID, userInitiated: Bool, experienceSource: ExperienceWriteSource = .mainChat) async {
@@ -1378,20 +1501,48 @@ final class TeamModel: ObservableObject {
         }
         let cancelled = Task.isCancelled
         settleUsage(key)
-        if runs[key]?.token == token {
+        let wasActiveToken = (runs[key]?.token == token)
+        if wasActiveToken {
             runs[key] = nil
             doing[key] = nil
+            activeTurnExperienceSource.removeValue(forKey: key)
         }
-        let paused = pausing[key] != nil
-        notePause(key)
-        if runs[key] == nil { streamed[key] = nil }
-        if paused, UIApplication.shared.applicationState == .active, pausedAway.contains(key) {
-            // Clio came back while this turn was still stopping: go on as soon as it has.
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                guard let self, self.runs[key] == nil, self.pausedAway.remove(key) != nil else { return }
-                self.resume(key)
+        let paused = wasActiveToken && (pausing[key]?.token == token)
+        if pausing[key]?.token == token {
+            if paused {
+                notePause(key, token: token)
+            } else {
+                pausing.removeValue(forKey: key)
             }
+        }
+        if runs[key] == nil { streamed[key] = nil }
+        #if DEBUG
+        let shouldScheduleDelayedResume = UIApplication.shared.applicationState == .active || pausedAwaySchedulerOverrideForTesting != nil
+        #else
+        let shouldScheduleDelayedResume = UIApplication.shared.applicationState == .active
+        #endif
+        if paused, shouldScheduleDelayedResume, let away = pausedAway[key], away.token == token {
+            // Clio came back while this turn was still stopping: go on as soon as it has.
+            let performResume: @MainActor () -> Void = { [weak self] in
+                self?.completeDelayedPausedAwayResumeIfMatching(key: key, token: token)
+            }
+            #if DEBUG
+            if let override = pausedAwaySchedulerOverrideForTesting {
+                override(key, token, performResume)
+            } else {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    performResume()
+                }
+            }
+            #else
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                performResume()
+            }
+            #endif
+        } else if pausedAway[key]?.token == token && !paused {
+            pausedAway.removeValue(forKey: key)
         }
         notify(key, .finished)
         WidgetFeed.publish(self)
@@ -1432,11 +1583,22 @@ final class TeamModel: ObservableObject {
         }
         let endpoint = found.endpoint
         let epoch = epochs[key, default: 0]
-        let secret = await readAPIKey(for: endpoint)
-        guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
-        guard let apiKey = secret, !apiKey.isEmpty else {
-            fail(key, "\(endpoint.name) 的密钥找不到了\n到调弦里给它换一次密钥。", next: .tuning)
-            return false
+        #if DEBUG
+        let overrideProvider = turnProviderOverrideForTesting?(endpoint, found.model, experienceSource)
+        #else
+        let overrideProvider: (any ModelProvider)? = nil
+        #endif
+        let apiKey: String
+        if overrideProvider != nil {
+            apiKey = "test-key"
+        } else {
+            let secret = await readAPIKey(for: endpoint)
+            guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
+            guard let resolvedKey = secret, !resolvedKey.isEmpty else {
+                fail(key, "\(endpoint.name) 的密钥找不到了\n到调弦里给它换一次密钥。", next: .tuning)
+                return false
+            }
+            apiKey = resolvedKey
         }
         let traits = endpoint.traits(found.model)
         let context = context(for: key, bot: bot, room: room, vision: traits.sees)
@@ -1526,8 +1688,9 @@ final class TeamModel: ObservableObject {
         )
         defer { unregisterLivePromptRefresher(refresherToken) }
         let assembled = refresher.currentPrompt()
+        let baseProvider = overrideProvider ?? endpoint.provider(key: apiKey, stableSystemPrefix: assembled.prefix)
         var agent = Agent(
-            provider: recordingProvider(endpoint.provider(key: apiKey, stableSystemPrefix: assembled.prefix), chat: key, refresher: refresher),
+            provider: recordingProvider(baseProvider, chat: key, refresher: refresher),
             model: found.model,
             system: assembled.full,
             tools: turnTools,
@@ -1601,7 +1764,7 @@ final class TeamModel: ObservableObject {
                 append(Entry(id: UUID().uuidString, at: Now.ms,
                              message: .assistant("\(found.model) 没答上来（\(advice.displayTitle)），换备用模型 \(other.model) 接着答。"),
                              note: true), to: key)
-                return await turn(bot, in: key, room: room, using: backup)
+                return await turn(bot, in: key, room: room, using: backup, experienceSource: experienceSource)
             }
             let advice = Explain.model(error, service: endpoint.name)
             guard epochs[key, default: 0] == epoch else { return false }
@@ -1783,7 +1946,8 @@ final class TeamModel: ObservableObject {
                 speaker: message.role == .user ? nil : speaker,
                 photos: shots,
                 label: label,
-                queuedIds: matchedInterjectId.map { [$0] }
+                queuedIds: matchedInterjectId.map { [$0] },
+                experienceSource: matchedInterjectId != nil ? (activeTurnExperienceSource[key] ?? .mainChat).rawValue : nil
             )
             entry.pulse = felt
             if message.role == .tool {
@@ -1853,12 +2017,17 @@ final class TeamModel: ObservableObject {
         epochs[key, default: 0] += 1
         let turns = turnsToUndo(key)
         guard let list = Turns.retried(history(key)) else { return }
+        let turnSource = resolvedTriggerUserExperienceSource(in: list)
+        pausedExperienceSource.removeValue(forKey: key)
+        pausedAway.removeValue(forKey: key)
         entries[key] = list
         if keeping { ChatDisk.save(list, chat: key) }
         scheduleIndexSync(key, entries: list)
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
-        guard restoring else { return start(key) }
+        guard restoring else {
+            return start(key, userInitiated: turnSource == .mainChat, experienceSource: turnSource)
+        }
         let restoreEpoch = epochs[key, default: 0]
         doing[key] = "正在还原文件"
         Task { [weak self] in
@@ -1870,7 +2039,9 @@ final class TeamModel: ObservableObject {
             guard self.epochs[key, default: 0] == restoreEpoch, self.canAcceptInput(for: key) else { return }
             self.noteRestore(key, result)
             // Files that did not come back: the user decides whether to go on (the review, #14).
-            if result.failed.isEmpty { self.start(key) }
+            if result.failed.isEmpty {
+                self.start(key, userInitiated: turnSource == .mainChat, experienceSource: turnSource)
+            }
         }
     }
 
@@ -1889,19 +2060,27 @@ final class TeamModel: ObservableObject {
         stop(key)
         epochs[key, default: 0] += 1
         let turns = turnsToUndo(key, from: id)
-        guard let list = Turns.edited(history(key), id: id, change: { entry in
+        let originalHistory = history(key)
+        let preEditSource = originalHistory.first(where: { $0.id == id }).map(resolvedEntryExperienceSource)
+        guard let list = Turns.edited(originalHistory, id: id, change: { entry in
             var edited = entry
+            if edited.experienceSource == nil, let preEditSource, preEditSource != .mainChat {
+                edited.experienceSource = preEditSource.rawValue
+            }
             edited.message.text = text
             edited.at = Now.ms
             return edited
         }) else { return false }
         entries[key] = list
+        let turnSource = preEditSource ?? resolvedTriggerUserExperienceSource(in: list)
+        pausedExperienceSource.removeValue(forKey: key)
+        pausedAway.removeValue(forKey: key)
         if keeping { ChatDisk.save(list, chat: key) }
         scheduleIndexSync(key, entries: list)
         if !allPersistableQueued(key).isEmpty { persistQueued(key) }
         notify(key, .changed)
         guard restoring else {
-            start(key)
+            start(key, userInitiated: turnSource == .mainChat, experienceSource: turnSource)
             return true
         }
         let restoreEpoch = epochs[key, default: 0]
@@ -1915,7 +2094,9 @@ final class TeamModel: ObservableObject {
             guard self.epochs[key, default: 0] == restoreEpoch, self.canAcceptInput(for: key) else { return }
             self.noteRestore(key, result)
             // Files that did not come back: the user decides whether to go on (the review, #14).
-            if result.failed.isEmpty { self.start(key) }
+            if result.failed.isEmpty {
+                self.start(key, userInitiated: turnSource == .mainChat, experienceSource: turnSource)
+            }
         }
         return true
     }

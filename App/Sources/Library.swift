@@ -70,6 +70,8 @@ struct Entry: Codable, Identifiable, Equatable, Sendable {
     var tainted: Bool? = nil
     /// True when this entry is a companion-to-companion delegation prompt rather than user speech.
     var delegated: Bool? = nil
+    /// Provenance of the turn (`ExperienceWriteSource.rawValue`), persisted so paused/restarted turns cannot regain write privileges.
+    var experienceSource: String? = nil
 }
 
 /// A message a Bot set for later; it shows in the chat once its time has come.

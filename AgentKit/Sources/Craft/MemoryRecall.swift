@@ -2265,7 +2265,38 @@ public final class MemoryRecallPromptRefresher: @unchecked Sendable {
         effectiveInput.memories = redactFacts(baseInput.memories, orderedSecrets: orderedSecrets)
         effectiveInput.memoryEnabled = effectiveMemoryEnabled
         effectiveInput.extraTail = combinedTailParts.isEmpty ? nil : combinedTailParts.joined(separator: "\n\n")
-        return MemorySafety.assembleSystemPrompt(effectiveInput, state: state)
+        let assembled = MemorySafety.assembleSystemPrompt(effectiveInput, state: state)
+        var safePrefix = MemorySafety.redactSecrets(assembled.prefix, secrets: orderedSecrets)
+        var safeTail = MemorySafety.redactSecrets(assembled.tail, secrets: orderedSecrets)
+        let safeMemoryBlock = MemorySafety.redactSecrets(assembled.memoryBlock, secrets: orderedSecrets)
+        let safeSkillsBlock = MemorySafety.redactSecrets(assembled.skillsBlock, secrets: orderedSecrets)
+        let joinedFull: String
+        if safeTail.isEmpty {
+            joinedFull = safePrefix
+        } else if safePrefix.isEmpty {
+            joinedFull = safeTail
+        } else {
+            joinedFull = safePrefix + "\n\n" + safeTail
+        }
+        let finalFull = MemorySafety.redactSecrets(joinedFull, secrets: orderedSecrets)
+        if finalFull != joinedFull {
+            var pIdx = safePrefix.startIndex
+            var fIdx = finalFull.startIndex
+            while pIdx < safePrefix.endIndex, fIdx < finalFull.endIndex, safePrefix[pIdx] == finalFull[fIdx] {
+                pIdx = safePrefix.index(after: pIdx)
+                fIdx = finalFull.index(after: fIdx)
+            }
+            safePrefix = String(safePrefix[..<pIdx])
+            safeTail = String(finalFull[fIdx...]).trimmingCharacters(in: .newlines)
+        }
+        return MemorySafety.AssembledSystemPrompt(
+            prefix: safePrefix,
+            tail: safeTail,
+            full: finalFull,
+            memoryBlock: safeMemoryBlock,
+            skillsBlock: safeSkillsBlock,
+            generation: assembled.generation
+        )
     }
 
     private static func orderSecrets(_ secrets: [String]) -> [String] {

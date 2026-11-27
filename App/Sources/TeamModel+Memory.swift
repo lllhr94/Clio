@@ -8,7 +8,7 @@ extension TeamModel {
     // MARK: Memory
 
     /// How many things stay in every conversation; older ones sink into 旧事.
-    static let surfaceLimit = 40
+    nonisolated static let surfaceLimit = 40
 
     var surfaceMemories: [Memory] { memories.filter { $0.deep != true } }
     var deepMemories: [Memory] { memories.filter { $0.deep == true } }
@@ -284,7 +284,7 @@ extension TeamModel {
         settleMemory(&memories, pinnedIDs: MemoryStoreBridge.shared.pinnedIDsSnapshot())
     }
 
-    static func settleMemory(_ memories: inout [Memory], pinnedIDs: Set<String>) {
+    nonisolated static func settleMemory(_ memories: inout [Memory], pinnedIDs: Set<String>) {
         let totalSurface = memories.filter { $0.deep != true }.count
         guard totalSurface > Self.surfaceLimit else { return }
         let candidates = memories

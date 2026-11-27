@@ -39,6 +39,7 @@ public struct MemoryPendingJournal: Codable, Equatable, Sendable {
     public var postCommitSHA256: String
     public var preCommitSnapshotID: String?
     public var preCommitExisted: Bool
+    public var preCommitBookSHA256: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -48,7 +49,8 @@ public struct MemoryPendingJournal: Codable, Equatable, Sendable {
         preCommitSHA256: String,
         postCommitSHA256: String,
         preCommitSnapshotID: String? = nil,
-        preCommitExisted: Bool = true
+        preCommitExisted: Bool = true,
+        preCommitBookSHA256: String? = nil
     ) {
         self.id = id
         self.createdAtMs = createdAtMs
@@ -58,10 +60,11 @@ public struct MemoryPendingJournal: Codable, Equatable, Sendable {
         self.postCommitSHA256 = postCommitSHA256
         self.preCommitSnapshotID = preCommitSnapshotID
         self.preCommitExisted = preCommitExisted
+        self.preCommitBookSHA256 = preCommitBookSHA256
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, createdAtMs, phase, targetCanonicalGeneration, preCommitSHA256, postCommitSHA256, preCommitSnapshotID, preCommitExisted
+        case id, createdAtMs, phase, targetCanonicalGeneration, preCommitSHA256, postCommitSHA256, preCommitSnapshotID, preCommitExisted, preCommitBookSHA256
     }
 
     public init(from decoder: Decoder) throws {
@@ -74,6 +77,7 @@ public struct MemoryPendingJournal: Codable, Equatable, Sendable {
         self.postCommitSHA256 = try c.decode(String.self, forKey: .postCommitSHA256)
         self.preCommitSnapshotID = try c.decodeIfPresent(String.self, forKey: .preCommitSnapshotID)
         self.preCommitExisted = try c.decodeIfPresent(Bool.self, forKey: .preCommitExisted) ?? true
+        self.preCommitBookSHA256 = try c.decodeIfPresent(String.self, forKey: .preCommitBookSHA256)
     }
 }
 
@@ -87,6 +91,7 @@ public struct MemoryRevisionSnapshot: Codable, Equatable, Identifiable, Sendable
     public var pinnedCount: Int
     public var surfaceCount: Int
     public var deepCount: Int
+    public var bookSHA256: String?
     public var book: CanonicalMemoryBook
 
     public init(
@@ -95,7 +100,8 @@ public struct MemoryRevisionSnapshot: Codable, Equatable, Identifiable, Sendable
         reason: String,
         canonicalSHA256: String,
         canonicalGeneration: UInt64,
-        book: CanonicalMemoryBook
+        book: CanonicalMemoryBook,
+        bookSHA256: String? = nil
     ) {
         self.id = id
         self.createdAtMs = createdAtMs
@@ -106,6 +112,7 @@ public struct MemoryRevisionSnapshot: Codable, Equatable, Identifiable, Sendable
         self.pinnedCount = book.memories.filter { $0.resolvedLayer == .pinned }.count
         self.surfaceCount = book.memories.filter { $0.resolvedLayer == .surface }.count
         self.deepCount = book.memories.filter { $0.resolvedLayer == .deep }.count
+        self.bookSHA256 = bookSHA256
         self.book = book
     }
 }
@@ -223,10 +230,16 @@ public final class MemoryRevisionStore: @unchecked Sendable {
             throw MemoryRevisionStoreError.canonicalReadOnly(memoryFileURL.lastPathComponent)
         }
 
-        let currentDiskData = try? Data(contentsOf: memoryFileURL)
+        let currentDiskData: Data?
+        if fm.fileExists(atPath: memoryFileURL.path) {
+            currentDiskData = try Data(contentsOf: memoryFileURL)
+        } else {
+            currentDiskData = nil
+        }
         let preCommitExisted = (currentDiskData != nil)
         let preCommitSHA256 = currentDiskData.map(Self.sha256Hex) ?? ""
-        let diskBook = currentDiskData.flatMap { try? JSONDecoder().decode(CanonicalMemoryBook.self, from: $0) }
+        let diskBook = currentDiskData.flatMap { try? CanonicalMemoryBook.decodeFlexible(from: $0) }
+        let preCommitBookSHA256 = try diskBook.map { Self.sha256Hex(try jsonEncoder.encode($0)) }
         let diskGeneration = diskBook?.generation ?? 0
         let targetGeneration = max(diskGeneration + 1, book.generation + 1)
 
@@ -261,7 +274,8 @@ public final class MemoryRevisionStore: @unchecked Sendable {
             preCommitSHA256: preCommitSHA256,
             postCommitSHA256: postCommitSHA256,
             preCommitSnapshotID: preCommitExisted ? createdSnapshot?.id : nil,
-            preCommitExisted: preCommitExisted
+            preCommitExisted: preCommitExisted,
+            preCommitBookSHA256: preCommitBookSHA256
         )
         try writeJournalLocked(journal)
 
@@ -302,16 +316,27 @@ public final class MemoryRevisionStore: @unchecked Sendable {
             return .none
         }
 
-        let journalData = try Data(contentsOf: journalFileURL)
-        guard let journal = try? JSONDecoder().decode(MemoryPendingJournal.self, from: journalData) else {
-            try? fm.removeItem(at: journalFileURL)
-            try? fm.removeItem(at: rollbackBackupURL)
-            return .none
+        let journalData: Data
+        do {
+            journalData = try Data(contentsOf: journalFileURL)
+        } catch {
+            throw MemoryRevisionStoreError.rollbackUnavailable("无法读取 commit.journal，已保留现场：\(error.localizedDescription)")
+        }
+        let journal: MemoryPendingJournal
+        do {
+            journal = try JSONDecoder().decode(MemoryPendingJournal.self, from: journalData)
+        } catch {
+            throw MemoryRevisionStoreError.rollbackUnavailable("commit.journal 已损坏，已保留现场：\(error.localizedDescription)")
         }
 
-        let diskData = try? Data(contentsOf: memoryFileURL)
+        let diskData: Data?
+        if fm.fileExists(atPath: memoryFileURL.path) {
+            diskData = try Data(contentsOf: memoryFileURL)
+        } else {
+            diskData = nil
+        }
         let diskSHA = diskData.map(Self.sha256Hex) ?? ""
-        let diskBook = diskData.flatMap { try? JSONDecoder().decode(CanonicalMemoryBook.self, from: $0) }
+        let diskBook = diskData.flatMap { try? CanonicalMemoryBook.decodeFlexible(from: $0) }
         let diskGeneration = diskBook?.generation ?? 0
 
         // 1. Stale journal: disk already moved past the journal's target generation — never overwrite newer data.
@@ -345,7 +370,13 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         if !journal.preCommitExisted {
             try markPendingProjectionRebuildLocked()
             if combinedRetracted.isEmpty {
-                try? fm.removeItem(at: memoryFileURL)
+                if fm.fileExists(atPath: memoryFileURL.path) {
+                    do {
+                        try fm.removeItem(at: memoryFileURL)
+                    } catch {
+                        throw MemoryRevisionStoreError.rollbackUnavailable("首次提交回滚删除 memory.json 失败，已保留现场：\(error.localizedDescription)")
+                    }
+                }
             } else {
                 let emptySanitized = Self.applyTombstoneUnion(
                     to: CanonicalMemoryBook(),
@@ -369,16 +400,18 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         if fm.fileExists(atPath: rollbackBackupURL.path),
            let backupData = try? Data(contentsOf: rollbackBackupURL),
            Self.sha256Hex(backupData) == journal.preCommitSHA256,
-           let decoded = try? CanonicalMemoryBook.decodeFlexible(from: backupData) {
+           let decoded = try? CanonicalMemoryBook.decodeFlexible(from: backupData),
+           (try? verifyBookDigestLocked(decoded, expectedBookSHA256: journal.preCommitBookSHA256)) == true {
             restoredBookRaw = decoded
             restoredLabel = Self.rollbackBackupFileName
         } else if let preID = journal.preCommitSnapshotID,
                   let snap = try? loadSnapshotLocked(id: preID),
-                  snap.canonicalSHA256.lowercased() == journal.preCommitSHA256.lowercased() {
+                  snap.canonicalSHA256.lowercased() == journal.preCommitSHA256.lowercased(),
+                  (try? verifySnapshotPayloadLocked(snap, expectedBookSHA256: journal.preCommitBookSHA256)) == true {
             restoredBookRaw = snap.book
             restoredLabel = snap.id
         } else {
-            throw MemoryRevisionStoreError.rollbackUnavailable("缺少匹配的提交前镜像（preCommitSHA256 校验未通过）")
+            throw MemoryRevisionStoreError.rollbackUnavailable("缺少匹配的提交前镜像（preCommitSHA256/载荷摘要校验未通过）")
         }
 
         try markPendingProjectionRebuildLocked()
@@ -434,6 +467,9 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         defer { lock.unlock() }
 
         let target = try loadSnapshotLocked(id: id)
+        guard try verifySnapshotPayloadLocked(target, expectedBookSHA256: nil) else {
+            throw MemoryRevisionStoreError.corruptSnapshot("快照 \(id) 载荷摘要校验未通过")
+        }
         let fm = FileManager.default
         try fm.createDirectory(at: memoryFileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try fm.createDirectory(at: revisionsDirectoryURL, withIntermediateDirectories: true)
@@ -443,8 +479,13 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         }
 
         // Read live canonical first so user can undo this restore and tombstones are preserved.
-        let liveData = try? Data(contentsOf: memoryFileURL)
-        let liveBook = liveData.flatMap { try? JSONDecoder().decode(CanonicalMemoryBook.self, from: $0) }
+        let liveData: Data?
+        if fm.fileExists(atPath: memoryFileURL.path) {
+            liveData = try Data(contentsOf: memoryFileURL)
+        } else {
+            liveData = nil
+        }
+        let liveBook = liveData.flatMap { try? CanonicalMemoryBook.decodeFlexible(from: $0) }
         var preRestore: MemoryRevisionSnapshot?
         if let liveBook, let liveData {
             preRestore = try writeSnapshotLocked(
@@ -483,7 +524,32 @@ public final class MemoryRevisionStore: @unchecked Sendable {
     public func readHealth() -> MemoryRevisionHealth {
         lock.lock()
         defer { lock.unlock() }
-        return readHealthLocked()
+        do {
+            return try readHealthLocked()
+        } catch {
+            return MemoryRevisionHealth(lastRecoveryReason: "health_unreadable")
+        }
+    }
+
+    public func readHealthThrowing() throws -> MemoryRevisionHealth {
+        lock.lock()
+        defer { lock.unlock() }
+        return try readHealthLocked()
+    }
+
+    @discardableResult
+    public func recordReviewFailureThrowing(
+        message: String,
+        atMs: Double = Date().timeIntervalSince1970 * 1000
+    ) throws -> MemoryRevisionHealth {
+        lock.lock()
+        defer { lock.unlock() }
+        var health = try readHealthLocked()
+        health.consecutiveFailures += 1
+        health.lastFailureAtMs = atMs
+        health.lastFailureMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        try writeHealthLocked(health)
+        return health
     }
 
     @discardableResult
@@ -491,13 +557,21 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         message: String,
         atMs: Double = Date().timeIntervalSince1970 * 1000
     ) -> MemoryRevisionHealth {
+        (try? recordReviewFailureThrowing(message: message, atMs: atMs))
+            ?? MemoryRevisionHealth(lastRecoveryReason: "health_unreadable")
+    }
+
+    @discardableResult
+    public func recordReviewSuccessThrowing(
+        atMs: Double = Date().timeIntervalSince1970 * 1000
+    ) throws -> MemoryRevisionHealth {
         lock.lock()
         defer { lock.unlock() }
-        var health = readHealthLocked()
-        health.consecutiveFailures += 1
-        health.lastFailureAtMs = atMs
-        health.lastFailureMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        try? writeHealthLocked(health)
+        var health = try readHealthLocked()
+        health.consecutiveFailures = 0
+        health.lastFailureMessage = nil
+        health.lastSuccessAtMs = atMs
+        try writeHealthLocked(health)
         return health
     }
 
@@ -505,14 +579,8 @@ public final class MemoryRevisionStore: @unchecked Sendable {
     public func recordReviewSuccess(
         atMs: Double = Date().timeIntervalSince1970 * 1000
     ) -> MemoryRevisionHealth {
-        lock.lock()
-        defer { lock.unlock() }
-        var health = readHealthLocked()
-        health.consecutiveFailures = 0
-        health.lastFailureMessage = nil
-        health.lastSuccessAtMs = atMs
-        try? writeHealthLocked(health)
-        return health
+        (try? recordReviewSuccessThrowing(atMs: atMs))
+            ?? MemoryRevisionHealth(lastRecoveryReason: "health_unreadable")
     }
 
     // MARK: - Internal Helpers
@@ -524,13 +592,16 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         nowMs: Double
     ) throws -> MemoryRevisionSnapshot {
         let id = UUID().uuidString.lowercased()
+        let encodedBook = try jsonEncoder.encode(book)
+        let bookSHA256 = Self.sha256Hex(encodedBook)
         let snapshot = MemoryRevisionSnapshot(
             id: id,
             createdAtMs: nowMs,
             reason: reason,
             canonicalSHA256: canonicalSHA256,
             canonicalGeneration: book.generation,
-            book: book
+            book: book,
+            bookSHA256: bookSHA256
         )
         let stamp = String(format: "%015.0f", max(0, nowMs))
         let fileURL = revisionsDirectoryURL.appendingPathComponent("rev-\(stamp)-\(id).json")
@@ -538,6 +609,21 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         try Self.atomicWrite(data: data, to: fileURL)
         pruneExcessSnapshotsLocked()
         return snapshot
+    }
+
+    private func verifyBookDigestLocked(_ book: CanonicalMemoryBook, expectedBookSHA256: String?) throws -> Bool {
+        guard let expectedBookSHA256 else { return true }
+        let trimmed = expectedBookSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return false }
+        let actualBookSHA = Self.sha256Hex(try jsonEncoder.encode(book)).lowercased()
+        return actualBookSHA == trimmed
+    }
+
+    private func verifySnapshotPayloadLocked(_ snapshot: MemoryRevisionSnapshot, expectedBookSHA256: String?) throws -> Bool {
+        guard try verifyBookDigestLocked(snapshot.book, expectedBookSHA256: snapshot.bookSHA256) else {
+            return false
+        }
+        return try verifyBookDigestLocked(snapshot.book, expectedBookSHA256: expectedBookSHA256)
     }
 
     private func listSnapshotFilesLocked() throws -> [URL] {
@@ -607,12 +693,13 @@ public final class MemoryRevisionStore: @unchecked Sendable {
         try Self.atomicWrite(data: data, to: journalFileURL)
     }
 
-    private func readHealthLocked() -> MemoryRevisionHealth {
-        guard let data = try? Data(contentsOf: healthFileURL),
-              let health = try? JSONDecoder().decode(MemoryRevisionHealth.self, from: data) else {
+    private func readHealthLocked() throws -> MemoryRevisionHealth {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: healthFileURL.path) else {
             return MemoryRevisionHealth()
         }
-        return health
+        let data = try Data(contentsOf: healthFileURL)
+        return try JSONDecoder().decode(MemoryRevisionHealth.self, from: data)
     }
 
     private func writeHealthLocked(_ health: MemoryRevisionHealth) throws {
@@ -623,7 +710,7 @@ public final class MemoryRevisionStore: @unchecked Sendable {
     }
 
     private func updateHealthRecoveryReasonLocked(_ reason: String) {
-        var health = readHealthLocked()
+        guard var health = try? readHealthLocked() else { return }
         health.lastRecoveryReason = reason
         try? writeHealthLocked(health)
     }

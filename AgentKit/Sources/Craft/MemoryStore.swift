@@ -14,9 +14,12 @@ public final class MemoryStore: @unchecked Sendable {
     public static let schemaVersion: Int32 = 1
 
     public let databaseURL: URL
-    private let lock = NSLock()
-    private var db: OpaquePointer?
+    private let lock = NSRecursiveLock()
+    private let sqliteHandle = ClioManagedSQLiteHandle()
+    private var db: OpaquePointer? { sqliteHandle.rawPointer }
     private var openedIdentity: FileIdentity?
+    private var openedEpoch: UInt64 = 0
+    private var coordinatorToken: UUID?
     private var _lastRecoveryReason: MemoryStoreRecoveryReason = .none
     private var _needsBootstrapFromCanonical: Bool = false
 
@@ -36,12 +39,22 @@ public final class MemoryStore: @unchecked Sendable {
 
     public init(databaseURL: URL) {
         self.databaseURL = databaseURL
+        self.coordinatorToken = ClioMemoryDatabaseCoordinator.registerHandle(sqliteHandle, for: databaseURL)
     }
 
     deinit {
-        lock.lock()
-        closeLocked()
-        lock.unlock()
+        ClioMemoryDatabaseCoordinator.withDatabaseLock(for: databaseURL) {
+            sqliteHandle.close()
+            ClioMemoryDatabaseCoordinator.unregisterHandle(id: coordinatorToken, for: databaseURL)
+        }
+    }
+
+    private func withStoreLock<T>(_ body: () throws -> T) rethrows -> T {
+        try ClioMemoryDatabaseCoordinator.withDatabaseLock(for: databaseURL) {
+            lock.lock()
+            defer { lock.unlock() }
+            return try body()
+        }
     }
 
     public var lastRecoveryReason: MemoryStoreRecoveryReason {
@@ -60,75 +73,80 @@ public final class MemoryStore: @unchecked Sendable {
 
     @discardableResult
     public func openOrRecover() throws -> MemoryStoreRecoveryReason {
-        lock.lock()
-        defer { lock.unlock() }
-        return try openOrRecoverLocked()
+        try withStoreLock {
+            try openOrRecoverLocked()
+        }
     }
 
     public func meta() throws -> MemoryStoreMeta {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        return try readMetaStructLocked()
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
+            return try readMetaStructLocked()
+        }
     }
 
     func foreignKeysEnabledForTesting() throws -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        return try scalarInt32Locked("PRAGMA foreign_keys;") == 1
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
+            return try scalarInt32Locked("PRAGMA foreign_keys;") == 1
+        }
     }
 
     public func checkpoint() throws {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        guard let db else { return }
-        let rc = sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
-        if rc != SQLITE_OK && rc != SQLITE_BUSY {
-            throw sqliteErrorLocked(code: rc)
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
+            guard let db else { return }
+            let rc = sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
+            if rc != SQLITE_OK && rc != SQLITE_BUSY {
+                throw sqliteErrorLocked(code: rc)
+            }
         }
     }
 
     public func close() {
-        lock.lock()
-        closeLocked()
-        lock.unlock()
+        withStoreLock {
+            closeLocked()
+        }
     }
 
     public func destroyFiles() {
-        lock.lock()
-        closeLocked()
-        unlinkDatabaseFiles()
-        _needsBootstrapFromCanonical = true
-        ClioMemoryDatabaseCoordinator.bump(for: databaseURL)
-        lock.unlock()
+        try? destroyFilesThrowing()
+    }
+
+    public func destroyFilesThrowing() throws {
+        try withStoreLock {
+            closeLocked()
+            ClioMemoryDatabaseCoordinator.closeOtherConnections(for: databaseURL, excluding: coordinatorToken)
+            try unlinkDatabaseFilesThrowing()
+            _needsBootstrapFromCanonical = true
+            ClioMemoryDatabaseCoordinator.bump(for: databaseURL)
+        }
     }
 
     public func resetAll(clearTombstones: Bool = true) throws {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        try execLocked("BEGIN IMMEDIATE;")
-        do {
-            try execLocked("DELETE FROM memories;")
-            if clearTombstones {
-                try execLocked("DELETE FROM memory_tombstones;")
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
+            try execLocked("BEGIN IMMEDIATE;")
+            do {
+                try execLocked("DELETE FROM memories;")
+                if clearTombstones {
+                    try execLocked("DELETE FROM memory_tombstones;")
+                }
+                try execLocked("DELETE FROM memory_reviews;")
+                try execLocked("DELETE FROM memory_processed_entries;")
+                try setMetaLocked("review_from_day", "")
+                try setMetaLocked("budget_day", "")
+                try setMetaLocked("requests", "0")
+                try setMetaLocked("diary_requests", "0")
+                try setMetaLocked("last_synced_json_sha256", "")
+                try bumpRevisionLocked()
+                try execLocked("COMMIT;")
+            } catch {
+                try? execLocked("ROLLBACK;")
+                throw error
             }
-            try execLocked("DELETE FROM memory_reviews;")
-            try execLocked("DELETE FROM memory_processed_entries;")
-            try setMetaLocked("review_from_day", "")
-            try setMetaLocked("budget_day", "")
-            try setMetaLocked("requests", "0")
-            try setMetaLocked("diary_requests", "0")
-            try setMetaLocked("last_synced_json_sha256", "")
-            try bumpRevisionLocked()
-            try execLocked("COMMIT;")
-        } catch {
-            try? execLocked("ROLLBACK;")
-            throw error
+            checkpointQuietlyLocked()
         }
-        checkpointQuietlyLocked()
     }
 
     // MARK: - Read APIs
@@ -139,56 +157,56 @@ public final class MemoryStore: @unchecked Sendable {
         secrets: [String] = []
     ) throws -> [MemoryRecord] {
         let ordered = Self.orderedSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        if !ordered.isEmpty {
-            try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
+            if !ordered.isEmpty {
+                try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+            }
+            return try listLocked(layer: layer, includeDeleted: includeDeleted)
         }
-        return try listLocked(layer: layer, includeDeleted: includeDeleted)
     }
 
     public func record(id: String, includeDeleted: Bool = false) throws -> MemoryRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        return try fetchRecordByIDLocked(id, includeDeleted: includeDeleted)
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
+            return try fetchRecordByIDLocked(id, includeDeleted: includeDeleted)
+        }
     }
 
     public func tombstones() throws -> [MemoryTombstone] {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        return try readTombstonesLocked()
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
+            return try readTombstonesLocked()
+        }
     }
 
     public func suppressedHashes() throws -> Set<String> {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        let list = try readTombstonesLocked()
-        return Set(list.map(\.textSHA256))
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
+            let list = try readTombstonesLocked()
+            return Set(list.map(\.textSHA256))
+        }
     }
 
     public func isSuppressed(text: String) throws -> Bool {
         let hash = MemorySafety.retractionHash(text)
         guard !hash.isEmpty else { return false }
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        return try fetchTombstoneLocked(textSHA256: hash) != nil
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
+            return try fetchTombstoneLocked(textSHA256: hash) != nil
+        }
     }
 
     public func activeFacts(secrets: [String] = []) throws -> [MemorySafety.Fact] {
         let ordered = Self.orderedSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        if !ordered.isEmpty {
-            try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
+            if !ordered.isEmpty {
+                try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+            }
+            let rows = try listLocked(layer: nil, includeDeleted: false)
+            return rows.compactMap(\.safetyFact)
         }
-        let rows = try listLocked(layer: nil, includeDeleted: false)
-        return rows.compactMap(\.safetyFact)
     }
 
     public func search(
@@ -212,27 +230,27 @@ public final class MemoryStore: @unchecked Sendable {
         guard !terms.isEmpty else { return [] }
 
         let ordered = Self.orderedSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        if !ordered.isEmpty {
-            try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
-        }
-        let candidates = try listLocked(layer: nil, includeDeleted: false)
-            .filter { layers.contains($0.layer) }
-
-        let scored = candidates.compactMap { row -> (MemoryRecord, Int)? in
-            let haystack = (row.text + " " + row.topic).lowercased()
-            let score = terms.reduce(0) { partial, term in
-                partial + (haystack.contains(term) ? (term.count > 2 ? 3 : 1) : 0)
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
+            if !ordered.isEmpty {
+                try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
             }
-            return score > 0 ? (row, score) : nil
-        }.sorted { lhs, rhs in
-            if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
-            if lhs.0.pinned != rhs.0.pinned { return lhs.0.pinned && !rhs.0.pinned }
-            return (lhs.0.usedAtMs ?? lhs.0.createdAtMs) > (rhs.0.usedAtMs ?? rhs.0.createdAtMs)
+            let candidates = try listLocked(layer: nil, includeDeleted: false)
+                .filter { layers.contains($0.layer) }
+
+            let scored = candidates.compactMap { row -> (MemoryRecord, Int)? in
+                let haystack = (row.text + " " + row.topic).lowercased()
+                let score = terms.reduce(0) { partial, term in
+                    partial + (haystack.contains(term) ? (term.count > 2 ? 3 : 1) : 0)
+                }
+                return score > 0 ? (row, score) : nil
+            }.sorted { lhs, rhs in
+                if lhs.1 != rhs.1 { return lhs.1 > rhs.1 }
+                if lhs.0.pinned != rhs.0.pinned { return lhs.0.pinned && !rhs.0.pinned }
+                return (lhs.0.usedAtMs ?? lhs.0.createdAtMs) > (rhs.0.usedAtMs ?? rhs.0.createdAtMs)
+            }
+            return Array(scored.prefix(max(1, limit)).map(\.0))
         }
-        return Array(scored.prefix(max(1, limit)).map(\.0))
     }
 
     // MARK: - Write APIs
@@ -256,37 +274,37 @@ public final class MemoryStore: @unchecked Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         candidate.deletedAtMs = nil
 
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            if let tomb = try fetchTombstoneLocked(textSHA256: safeHash) {
-                if explicitUserAction {
-                    try deleteTombstoneLocked(textSHA256: safeHash)
-                    try purgeDeletedRowsLocked(textSHA256: safeHash, excludingID: candidate.id)
-                    candidate.updatedAtMs = max(candidate.updatedAtMs, tomb.deletedAtMs + 1)
-                } else if candidate.automatic && !candidate.editedByUser {
-                    return nil
-                } else if tomb.deletedAtMs >= candidate.updatedAtMs {
-                    return nil
-                } else {
-                    try deleteTombstoneLocked(textSHA256: safeHash)
+            return try performWriteTransactionLocked {
+                if let tomb = try fetchTombstoneLocked(textSHA256: safeHash) {
+                    if explicitUserAction {
+                        try deleteTombstoneLocked(textSHA256: safeHash)
+                        try purgeDeletedRowsLocked(textSHA256: safeHash, excludingID: candidate.id)
+                        candidate.updatedAtMs = max(candidate.updatedAtMs, tomb.deletedAtMs + 1)
+                    } else if candidate.automatic && !candidate.editedByUser {
+                        return nil
+                    } else if tomb.deletedAtMs >= candidate.updatedAtMs {
+                        return nil
+                    } else {
+                        try deleteTombstoneLocked(textSHA256: safeHash)
+                    }
                 }
-            }
 
-            if let existingByID = try fetchRecordByIDLocked(candidate.id, includeDeleted: true) {
-                var updated = candidate
-                if updated.createdAtMs <= 0 { updated.createdAtMs = existingByID.createdAtMs }
-                updated.updatedAtMs = max(candidate.updatedAtMs, existingByID.updatedAtMs)
-                try upsertRecordRowLocked(updated)
+                if let existingByID = try fetchRecordByIDLocked(candidate.id, includeDeleted: true) {
+                    var updated = candidate
+                    if updated.createdAtMs <= 0 { updated.createdAtMs = existingByID.createdAtMs }
+                    updated.updatedAtMs = max(candidate.updatedAtMs, existingByID.updatedAtMs)
+                    try upsertRecordRowLocked(updated)
+                    try bumpRevisionLocked()
+                    return updated
+                }
+
+                try upsertRecordRowLocked(candidate)
                 try bumpRevisionLocked()
-                return updated
+                return candidate
             }
-
-            try upsertRecordRowLocked(candidate)
-            try bumpRevisionLocked()
-            return candidate
         }
     }
 
@@ -296,19 +314,19 @@ public final class MemoryStore: @unchecked Sendable {
         pinned: Bool = true,
         nowMs: Double = Date().timeIntervalSince1970 * 1000
     ) throws -> MemoryRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            guard var row = try fetchRecordByIDLocked(id, includeDeleted: false) else { return nil }
-            row.pinned = pinned
-            row.layer = pinned ? .pinned : .surface
-            row.updatedAtMs = max(row.updatedAtMs, nowMs)
-            row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
-            try upsertRecordRowLocked(row)
-            try bumpRevisionLocked()
-            return row
+            return try performWriteTransactionLocked {
+                guard var row = try fetchRecordByIDLocked(id, includeDeleted: false) else { return nil }
+                row.pinned = pinned
+                row.layer = pinned ? .pinned : .surface
+                row.updatedAtMs = max(row.updatedAtMs, nowMs)
+                row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
+                try upsertRecordRowLocked(row)
+                try bumpRevisionLocked()
+                return row
+            }
         }
     }
 
@@ -325,29 +343,29 @@ public final class MemoryStore: @unchecked Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let newHash = MemorySafety.retractionHash(safeText)
 
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            if safeText.isEmpty || newHash.isEmpty {
-                _ = try softDeleteByIDLocked(id: id, nowMs: nowMs, reason: "empty_edit", orderedSecrets: ordered)
+            return try performWriteTransactionLocked {
+                if safeText.isEmpty || newHash.isEmpty {
+                    _ = try softDeleteByIDLocked(id: id, nowMs: nowMs, reason: "empty_edit", orderedSecrets: ordered)
+                    try bumpRevisionLocked()
+                    return nil
+                }
+                guard var row = try fetchRecordByIDLocked(id, includeDeleted: false) else { return nil }
+                if let tomb = try fetchTombstoneLocked(textSHA256: newHash) {
+                    try deleteTombstoneLocked(textSHA256: newHash)
+                    row.updatedAtMs = max(nowMs, tomb.deletedAtMs + 1)
+                } else {
+                    row.updatedAtMs = max(row.updatedAtMs, nowMs)
+                }
+                row.text = safeText
+                row.textSHA256 = newHash
+                if editedByUser { row.editedByUser = true }
+                try upsertRecordRowLocked(row)
                 try bumpRevisionLocked()
-                return nil
+                return row
             }
-            guard var row = try fetchRecordByIDLocked(id, includeDeleted: false) else { return nil }
-            if let tomb = try fetchTombstoneLocked(textSHA256: newHash) {
-                try deleteTombstoneLocked(textSHA256: newHash)
-                row.updatedAtMs = max(nowMs, tomb.deletedAtMs + 1)
-            } else {
-                row.updatedAtMs = max(row.updatedAtMs, nowMs)
-            }
-            row.text = safeText
-            row.textSHA256 = newHash
-            if editedByUser { row.editedByUser = true }
-            try upsertRecordRowLocked(row)
-            try bumpRevisionLocked()
-            return row
         }
     }
 
@@ -357,21 +375,21 @@ public final class MemoryStore: @unchecked Sendable {
         layer: MemoryLayer,
         nowMs: Double = Date().timeIntervalSince1970 * 1000
     ) throws -> MemoryRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            guard var row = try fetchRecordByIDLocked(id, includeDeleted: false) else { return nil }
-            row.layer = layer
-            row.pinned = (layer == .pinned)
-            row.updatedAtMs = max(row.updatedAtMs, nowMs)
-            if layer == .pinned || layer == .surface {
-                row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
+            return try performWriteTransactionLocked {
+                guard var row = try fetchRecordByIDLocked(id, includeDeleted: false) else { return nil }
+                row.layer = layer
+                row.pinned = (layer == .pinned)
+                row.updatedAtMs = max(row.updatedAtMs, nowMs)
+                if layer == .pinned || layer == .surface {
+                    row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
+                }
+                try upsertRecordRowLocked(row)
+                try bumpRevisionLocked()
+                return row
             }
-            try upsertRecordRowLocked(row)
-            try bumpRevisionLocked()
-            return row
         }
     }
 
@@ -387,28 +405,28 @@ public final class MemoryStore: @unchecked Sendable {
         secrets: [String] = []
     ) throws -> MemoryRecord? {
         let ordered = Self.orderedSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            guard var row = try fetchRecordByIDLocked(id, includeDeleted: false) else { return nil }
-            if let kind {
-                let cleanKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !cleanKind.isEmpty { row.kind = cleanKind }
+            return try performWriteTransactionLocked {
+                guard var row = try fetchRecordByIDLocked(id, includeDeleted: false) else { return nil }
+                if let kind {
+                    let cleanKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !cleanKind.isEmpty { row.kind = cleanKind }
+                }
+                if let topic {
+                    row.topic = Self.redact(topic, orderedSecrets: ordered).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                if let confidence {
+                    row.confidence = min(1.0, max(0.0, confidence))
+                }
+                if let sourceChat { row.sourceChat = sourceChat }
+                if let sourceEntryID { row.sourceEntryID = sourceEntryID }
+                row.updatedAtMs = max(row.updatedAtMs, nowMs)
+                try upsertRecordRowLocked(row)
+                try bumpRevisionLocked()
+                return row
             }
-            if let topic {
-                row.topic = Self.redact(topic, orderedSecrets: ordered).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            if let confidence {
-                row.confidence = min(1.0, max(0.0, confidence))
-            }
-            if let sourceChat { row.sourceChat = sourceChat }
-            if let sourceEntryID { row.sourceEntryID = sourceEntryID }
-            row.updatedAtMs = max(row.updatedAtMs, nowMs)
-            try upsertRecordRowLocked(row)
-            try bumpRevisionLocked()
-            return row
         }
     }
 
@@ -418,37 +436,37 @@ public final class MemoryStore: @unchecked Sendable {
         nowMs: Double = Date().timeIntervalSince1970 * 1000
     ) throws -> [String] {
         let clampedLimit = max(0, limit)
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            let active = try listLocked(layer: nil, includeDeleted: false)
-            let pinnedCount = active.filter { $0.layer == .pinned }.count
-            let surfaceRows = active
-                .filter { $0.layer == .surface }
-                .sorted { lhs, rhs in
-                    let lUsed = lhs.usedAtMs ?? lhs.createdAtMs
-                    let rUsed = rhs.usedAtMs ?? rhs.createdAtMs
-                    if lUsed != rUsed { return lUsed < rUsed }
-                    if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs < rhs.createdAtMs }
-                    return lhs.id < rhs.id
+            return try performWriteTransactionLocked {
+                let active = try listLocked(layer: nil, includeDeleted: false)
+                let pinnedCount = active.filter { $0.layer == .pinned }.count
+                let surfaceRows = active
+                    .filter { $0.layer == .surface }
+                    .sorted { lhs, rhs in
+                        let lUsed = lhs.usedAtMs ?? lhs.createdAtMs
+                        let rUsed = rhs.usedAtMs ?? rhs.createdAtMs
+                        if lUsed != rUsed { return lUsed < rUsed }
+                        if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs < rhs.createdAtMs }
+                        return lhs.id < rhs.id
+                    }
+                let totalVisible = pinnedCount + surfaceRows.count
+                guard totalVisible > clampedLimit else { return [] }
+                let sinkCount = min(totalVisible - clampedLimit, surfaceRows.count)
+                guard sinkCount > 0 else { return [] }
+                var demoted: [String] = []
+                for item in surfaceRows.prefix(sinkCount) {
+                    var row = item
+                    row.layer = .deep
+                    row.pinned = false
+                    row.updatedAtMs = max(row.updatedAtMs, nowMs)
+                    try upsertRecordRowLocked(row)
+                    demoted.append(row.id)
                 }
-            let totalVisible = pinnedCount + surfaceRows.count
-            guard totalVisible > clampedLimit else { return [] }
-            let sinkCount = min(totalVisible - clampedLimit, surfaceRows.count)
-            guard sinkCount > 0 else { return [] }
-            var demoted: [String] = []
-            for item in surfaceRows.prefix(sinkCount) {
-                var row = item
-                row.layer = .deep
-                row.pinned = false
-                row.updatedAtMs = max(row.updatedAtMs, nowMs)
-                try upsertRecordRowLocked(row)
-                demoted.append(row.id)
+                try bumpRevisionLocked()
+                return demoted
             }
-            try bumpRevisionLocked()
-            return demoted
         }
     }
 
@@ -460,14 +478,14 @@ public final class MemoryStore: @unchecked Sendable {
         secrets: [String] = []
     ) throws -> MemoryTombstone? {
         let ordered = Self.orderedSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            let tomb = try softDeleteByIDLocked(id: id, nowMs: nowMs, reason: reason, orderedSecrets: ordered)
-            if tomb != nil { try bumpRevisionLocked() }
-            return tomb
+            return try performWriteTransactionLocked {
+                let tomb = try softDeleteByIDLocked(id: id, nowMs: nowMs, reason: reason, orderedSecrets: ordered)
+                if tomb != nil { try bumpRevisionLocked() }
+                return tomb
+            }
         }
     }
 
@@ -485,19 +503,19 @@ public final class MemoryStore: @unchecked Sendable {
         guard !hash.isEmpty else { return nil }
         let safeReason = Self.redact(reason, orderedSecrets: ordered)
 
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            let tomb = try softDeleteByHashLocked(
-                hash: hash,
-                memoryID: nil,
-                nowMs: nowMs,
-                reason: safeReason
-            )
-            try bumpRevisionLocked()
-            return tomb
+            return try performWriteTransactionLocked {
+                let tomb = try softDeleteByHashLocked(
+                    hash: hash,
+                    memoryID: nil,
+                    nowMs: nowMs,
+                    reason: safeReason
+                )
+                try bumpRevisionLocked()
+                return tomb
+            }
         }
     }
 
@@ -507,30 +525,30 @@ public final class MemoryStore: @unchecked Sendable {
         layer: MemoryLayer? = nil,
         nowMs: Double = Date().timeIntervalSince1970 * 1000
     ) throws -> MemoryRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            guard var row = try fetchRecordByIDLocked(id, includeDeleted: true) else { return nil }
-            let targetLayer: MemoryLayer
-            if let layer {
-                targetLayer = layer
-            } else if row.layer == .archived {
-                targetLayer = .surface
-            } else {
-                targetLayer = row.layer
+            return try performWriteTransactionLocked {
+                guard var row = try fetchRecordByIDLocked(id, includeDeleted: true) else { return nil }
+                let targetLayer: MemoryLayer
+                if let layer {
+                    targetLayer = layer
+                } else if row.layer == .archived {
+                    targetLayer = .surface
+                } else {
+                    targetLayer = row.layer
+                }
+                row.deletedAtMs = nil
+                row.layer = targetLayer
+                row.pinned = (targetLayer == .pinned)
+                row.updatedAtMs = max(row.updatedAtMs, nowMs)
+                row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
+                try upsertRecordRowLocked(row)
+                try deleteTombstoneLocked(textSHA256: row.textSHA256)
+                try purgeDeletedRowsLocked(textSHA256: row.textSHA256, excludingID: row.id)
+                try bumpRevisionLocked()
+                return row
             }
-            row.deletedAtMs = nil
-            row.layer = targetLayer
-            row.pinned = (targetLayer == .pinned)
-            row.updatedAtMs = max(row.updatedAtMs, nowMs)
-            row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
-            try upsertRecordRowLocked(row)
-            try deleteTombstoneLocked(textSHA256: row.textSHA256)
-            try purgeDeletedRowsLocked(textSHA256: row.textSHA256, excludingID: row.id)
-            try bumpRevisionLocked()
-            return row
         }
     }
 
@@ -543,25 +561,25 @@ public final class MemoryStore: @unchecked Sendable {
         let cleanHash = textSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard MemorySafety.isSHA256Hex(cleanHash) else { return nil }
 
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            try deleteTombstoneLocked(textSHA256: cleanHash)
-            guard var row = try fetchAnyRecordByHashLocked(cleanHash) else {
+            return try performWriteTransactionLocked {
+                try deleteTombstoneLocked(textSHA256: cleanHash)
+                guard var row = try fetchAnyRecordByHashLocked(cleanHash) else {
+                    try bumpRevisionLocked()
+                    return nil
+                }
+                let targetLayer: MemoryLayer = layer ?? (row.layer == .archived ? .surface : row.layer)
+                row.deletedAtMs = nil
+                row.layer = targetLayer
+                row.pinned = (targetLayer == .pinned)
+                row.updatedAtMs = max(row.updatedAtMs, nowMs)
+                row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
+                try upsertRecordRowLocked(row)
                 try bumpRevisionLocked()
-                return nil
+                return row
             }
-            let targetLayer: MemoryLayer = layer ?? (row.layer == .archived ? .surface : row.layer)
-            row.deletedAtMs = nil
-            row.layer = targetLayer
-            row.pinned = (targetLayer == .pinned)
-            row.updatedAtMs = max(row.updatedAtMs, nowMs)
-            row.usedAtMs = max(row.usedAtMs ?? 0, nowMs)
-            try upsertRecordRowLocked(row)
-            try bumpRevisionLocked()
-            return row
         }
     }
 
@@ -570,77 +588,77 @@ public final class MemoryStore: @unchecked Sendable {
         let cleanHash = textSHA256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard MemorySafety.isSHA256Hex(cleanHash) else { return false }
 
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            let hadTomb = try fetchTombstoneLocked(textSHA256: cleanHash) != nil
-            try deleteTombstoneLocked(textSHA256: cleanHash)
-            let deletedRows = try runDeleteChangesLocked(
-                "DELETE FROM memories WHERE text_sha256 = ? AND deleted_at_ms IS NOT NULL;",
-                bindings: [.text(cleanHash)]
-            )
-            if hadTomb || deletedRows > 0 {
-                try bumpRevisionLocked()
-                return true
+            return try performWriteTransactionLocked {
+                let hadTomb = try fetchTombstoneLocked(textSHA256: cleanHash) != nil
+                try deleteTombstoneLocked(textSHA256: cleanHash)
+                let deletedRows = try runDeleteChangesLocked(
+                    "DELETE FROM memories WHERE text_sha256 = ? AND deleted_at_ms IS NOT NULL;",
+                    bindings: [.text(cleanHash)]
+                )
+                if hadTomb || deletedRows > 0 {
+                    try bumpRevisionLocked()
+                    return true
+                }
+                return false
             }
-            return false
         }
     }
 
     /// Removes `memoryIDs` from stored `memory_reviews` additions/merges to keep review history aligned after deletion.
     public func pruneReviewDetails(memoryIDs: Set<String>) throws {
         guard !memoryIDs.isEmpty else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        try performWriteTransactionLocked {
-            let existing = try readReviewsLocked()
-            guard !existing.isEmpty else { return }
-            var changed = false
-            let updated: [CanonicalMemoryReviewLog] = existing.map { entry in
-                var copy = entry
-                let beforeAdded = copy.added.count
-                let beforeMerged = copy.merged.count
-                copy.added.removeAll { memoryIDs.contains($0.memoryID) }
-                copy.merged.removeAll { memoryIDs.contains($0.memoryID) }
-                if copy.added.count != beforeAdded || copy.merged.count != beforeMerged {
-                    changed = true
+            try performWriteTransactionLocked {
+                let existing = try readReviewsLocked()
+                guard !existing.isEmpty else { return }
+                var changed = false
+                let updated: [CanonicalMemoryReviewLog] = existing.map { entry in
+                    var copy = entry
+                    let beforeAdded = copy.added.count
+                    let beforeMerged = copy.merged.count
+                    copy.added.removeAll { memoryIDs.contains($0.memoryID) }
+                    copy.merged.removeAll { memoryIDs.contains($0.memoryID) }
+                    if copy.added.count != beforeAdded || copy.merged.count != beforeMerged {
+                        changed = true
+                    }
+                    return copy
                 }
-                return copy
-            }
-            if changed {
-                try replaceReviewsLocked(updated)
-                try bumpRevisionLocked()
+                if changed {
+                    try replaceReviewsLocked(updated)
+                    try bumpRevisionLocked()
+                }
             }
         }
     }
 
     @discardableResult
     public func purgeTombstone(id: String) throws -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            guard let row = try fetchRecordByIDLocked(id, includeDeleted: true), row.deletedAtMs != nil else {
+            return try performWriteTransactionLocked {
+                guard let row = try fetchRecordByIDLocked(id, includeDeleted: true), row.deletedAtMs != nil else {
+                    return false
+                }
+                let removed = try runDeleteChangesLocked(
+                    "DELETE FROM memories WHERE id = ? AND deleted_at_ms IS NOT NULL;",
+                    bindings: [.text(id)]
+                )
+                let remainingWithHash = try countDeletedRowsByHashLocked(row.textSHA256)
+                if remainingWithHash == 0 {
+                    try deleteTombstoneLocked(textSHA256: row.textSHA256)
+                }
+                if removed > 0 {
+                    try bumpRevisionLocked()
+                    return true
+                }
                 return false
             }
-            let removed = try runDeleteChangesLocked(
-                "DELETE FROM memories WHERE id = ? AND deleted_at_ms IS NOT NULL;",
-                bindings: [.text(id)]
-            )
-            let remainingWithHash = try countDeletedRowsByHashLocked(row.textSHA256)
-            if remainingWithHash == 0 {
-                try deleteTombstoneLocked(textSHA256: row.textSHA256)
-            }
-            if removed > 0 {
-                try bumpRevisionLocked()
-                return true
-            }
-            return false
         }
     }
 
@@ -658,25 +676,25 @@ public final class MemoryStore: @unchecked Sendable {
         })
         guard !validHashes.isEmpty else { return 0 }
 
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            var inserted = 0
-            for hash in validHashes.sorted() {
-                if try fetchActiveRecordByHashLocked(hash) != nil { continue }
-                if try fetchTombstoneLocked(textSHA256: hash) != nil { continue }
-                try upsertTombstoneLocked(MemoryTombstone(
-                    textSHA256: hash,
-                    memoryID: nil,
-                    deletedAtMs: defaultDeletedAtMs,
-                    reason: "seeded_retraction"
-                ))
-                inserted += 1
+            return try performWriteTransactionLocked {
+                var inserted = 0
+                for hash in validHashes.sorted() {
+                    if try fetchActiveRecordByHashLocked(hash) != nil { continue }
+                    if try fetchTombstoneLocked(textSHA256: hash) != nil { continue }
+                    try upsertTombstoneLocked(MemoryTombstone(
+                        textSHA256: hash,
+                        memoryID: nil,
+                        deletedAtMs: defaultDeletedAtMs,
+                        reason: "seeded_retraction"
+                    ))
+                    inserted += 1
+                }
+                if inserted > 0 { try bumpRevisionLocked() }
+                return inserted
             }
-            if inserted > 0 { try bumpRevisionLocked() }
-            return inserted
         }
     }
 
@@ -684,13 +702,13 @@ public final class MemoryStore: @unchecked Sendable {
 
     public func snapshotBook(secrets: [String] = []) throws -> CanonicalMemoryBook {
         let ordered = Self.orderedSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
-        if !ordered.isEmpty {
-            try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
+            if !ordered.isEmpty {
+                try scrubStoredSecretsIfNeededLocked(orderedSecrets: ordered, nowMs: Date().timeIntervalSince1970 * 1000)
+            }
+            return try snapshotBookLocked()
         }
-        return try snapshotBookLocked()
     }
 
     @discardableResult
@@ -701,16 +719,16 @@ public final class MemoryStore: @unchecked Sendable {
         jsonDigest: String? = nil
     ) throws -> CanonicalMemoryBook {
         let ordered = Self.orderedSecrets(secrets)
-        lock.lock()
-        defer { lock.unlock() }
-        _ = try openOrRecoverLocked()
+        return try withStoreLock {
+            _ = try openOrRecoverLocked()
 
-        return try performWriteTransactionLocked {
-            try reconcileLocked(book: book, orderedSecrets: ordered, nowMs: nowMs, jsonDigest: jsonDigest)
-            var snapshot = try snapshotBookLocked()
-            snapshot.generation = max(snapshot.generation, book.generation)
-            _needsBootstrapFromCanonical = false
-            return snapshot
+            return try performWriteTransactionLocked {
+                try reconcileLocked(book: book, orderedSecrets: ordered, nowMs: nowMs, jsonDigest: jsonDigest)
+                var snapshot = try snapshotBookLocked()
+                snapshot.generation = max(snapshot.generation, book.generation)
+                _needsBootstrapFromCanonical = false
+                return snapshot
+            }
         }
     }
 
@@ -1186,15 +1204,21 @@ public final class MemoryStore: @unchecked Sendable {
 
     private func openOrRecoverLocked() throws -> MemoryStoreRecoveryReason {
         if db != nil {
-            if let currentIdentity = Self.fileIdentity(databaseURL) {
+            let currentEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
+            if currentEpoch != openedEpoch {
+                closeLocked()
+            } else if let currentIdentity = Self.fileIdentity(databaseURL) {
                 if currentIdentity == openedIdentity {
                     return .none
                 }
                 closeLocked()
             } else {
                 closeLocked()
+                ClioMemoryDatabaseCoordinator.closeOtherConnections(for: databaseURL, excluding: coordinatorToken)
                 unlinkDatabaseFiles()
                 try createFreshDatabaseLocked(reason: .externalDeletion)
+                ClioMemoryDatabaseCoordinator.bump(for: databaseURL)
+                self.openedEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
                 return .externalDeletion
             }
         }
@@ -1204,8 +1228,11 @@ public final class MemoryStore: @unchecked Sendable {
         try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
 
         guard fm.fileExists(atPath: databaseURL.path) else {
+            ClioMemoryDatabaseCoordinator.closeOtherConnections(for: databaseURL, excluding: coordinatorToken)
             unlinkDatabaseFiles()
             try createFreshDatabaseLocked(reason: .missing)
+            ClioMemoryDatabaseCoordinator.bump(for: databaseURL)
+            self.openedEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
             return .missing
         }
 
@@ -1227,13 +1254,14 @@ public final class MemoryStore: @unchecked Sendable {
             throw MemoryStoreError.openFailed(code: openRC, message: errMsg)
         }
 
-        self.db = validCandidate
+        sqliteHandle.install(validCandidate)
 
         switch validateOpenedDatabaseLocked() {
         case .valid:
             do {
                 try configureRuntimePragmasLocked()
                 self.openedIdentity = Self.fileIdentity(databaseURL)
+                self.openedEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
                 _lastRecoveryReason = .none
                 return .none
             } catch {
@@ -1288,6 +1316,7 @@ public final class MemoryStore: @unchecked Sendable {
 
     private func recreateFreshDatabaseLocked(reason: MemoryStoreRecoveryReason) throws {
         closeLocked()
+        ClioMemoryDatabaseCoordinator.closeOtherConnections(for: databaseURL, excluding: coordinatorToken)
         if reason == .corrupt || reason == .schemaMismatch {
             quarantineCorruptDatabaseFilesLocked()
         } else {
@@ -1295,6 +1324,7 @@ public final class MemoryStore: @unchecked Sendable {
         }
         try createFreshDatabaseLocked(reason: reason)
         ClioMemoryDatabaseCoordinator.bump(for: databaseURL)
+        self.openedEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
     }
 
     private func quarantineCorruptDatabaseFilesLocked() {
@@ -1334,11 +1364,12 @@ public final class MemoryStore: @unchecked Sendable {
             throw MemoryStoreError.openFailed(code: rc, message: msg)
         }
 
-        self.db = opened
+        sqliteHandle.install(opened)
         do {
             try configureRuntimePragmasLocked()
             try createSchemaLocked()
             self.openedIdentity = Self.fileIdentity(databaseURL)
+            self.openedEpoch = ClioMemoryDatabaseCoordinator.epoch(for: databaseURL)
             _lastRecoveryReason = reason
             _needsBootstrapFromCanonical = true
         } catch {
@@ -1434,10 +1465,10 @@ public final class MemoryStore: @unchecked Sendable {
     }
 
     private func closeLocked() {
-        guard let db else { return }
-        sqlite3_close_v2(db)
-        self.db = nil
+        guard db != nil else { return }
+        sqliteHandle.close()
         self.openedIdentity = nil
+        self.openedEpoch = 0
     }
 
     private func checkpointQuietlyLocked() {
@@ -1446,6 +1477,10 @@ public final class MemoryStore: @unchecked Sendable {
     }
 
     private func unlinkDatabaseFiles() {
+        try? unlinkDatabaseFilesThrowing()
+    }
+
+    private func unlinkDatabaseFilesThrowing() throws {
         let fm = FileManager.default
         let paths = [
             databaseURL.path,
@@ -1453,8 +1488,8 @@ public final class MemoryStore: @unchecked Sendable {
             databaseURL.path + "-shm",
             databaseURL.path + "-journal",
         ]
-        for path in paths {
-            try? fm.removeItem(atPath: path)
+        for path in paths where fm.fileExists(atPath: path) {
+            try fm.removeItem(atPath: path)
         }
     }
 

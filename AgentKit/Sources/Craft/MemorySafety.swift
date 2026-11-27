@@ -412,15 +412,7 @@ public enum MemorySafety {
         }
 
         private static func normalizedRetractionHashes(_ entries: [String]) -> [String] {
-            entries.compactMap { entry -> String? in
-                let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return nil }
-                if MemorySafety.isSHA256Hex(trimmed) {
-                    return trimmed.lowercased()
-                }
-                let hashed = MemorySafety.retractionHash(trimmed)
-                return hashed.isEmpty ? nil : hashed
-            }
+            MemorySafety.normalizedRetractionHashes(entries)
         }
 
         /// Seeds persisted SHA-256 retraction hashes once per lifecycle (hashing any legacy non-hex values immediately).
@@ -1039,17 +1031,18 @@ public enum MemorySafety {
         return preparedIDs.allSatisfy { currentEntryIDs.contains($0) }
     }
 
-    /// Drops any entry IDs already recorded in `processedByDay` (e.g. by background `reviewMemories` while flush was in flight).
-    /// Returns `[]` if no unprocessed `.user` entry remains.
+    /// Drops any entry IDs already recorded in `processedByDay` (across all retained day buckets so 05:00 -> 04:00
+    /// boundary shifts stay consistent with `processedEntryIDs`). Returns `[]` if no unprocessed `.user` entry remains.
     public static func remainingUnprocessedEntryIDs(
         _ preparedIDs: [String],
         rolesByID: [String: Message.Role],
         dayByID: [String: String],
         processedByDay: [String: Set<String>]
     ) -> [String] {
+        let allProcessedIDs = processedByDay.values.reduce(into: Set<String>()) { $0.formUnion($1) }
         let remaining = preparedIDs.filter { id in
-            guard let day = dayByID[id] else { return false }
-            return !(processedByDay[day]?.contains(id) ?? false)
+            guard dayByID[id] != nil else { return false }
+            return !allProcessedIDs.contains(id)
         }
         guard remaining.contains(where: { rolesByID[$0] == .user }) else { return [] }
         return remaining
@@ -1062,9 +1055,10 @@ public enum MemorySafety {
         processedByDay: [String: Set<String>]
     ) -> Bool {
         guard !preparedIDs.isEmpty else { return false }
+        let allProcessedIDs = processedByDay.values.reduce(into: Set<String>()) { $0.formUnion($1) }
         return preparedIDs.allSatisfy { id in
-            guard let day = dayByID[id] else { return false }
-            return !(processedByDay[day]?.contains(id) ?? false)
+            guard dayByID[id] != nil else { return false }
+            return !allProcessedIDs.contains(id)
         }
     }
 
@@ -1080,6 +1074,18 @@ public enum MemorySafety {
             (scalar.value >= 48 && scalar.value <= 57)
                 || (scalar.value >= 97 && scalar.value <= 102)
                 || (scalar.value >= 65 && scalar.value <= 70)
+        }
+    }
+
+    public static func normalizedRetractionHashes(_ entries: [String]) -> [String] {
+        entries.compactMap { entry -> String? in
+            let trimmed = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            if isSHA256Hex(trimmed) {
+                return trimmed.lowercased()
+            }
+            let hashed = retractionHash(trimmed)
+            return hashed.isEmpty ? nil : hashed
         }
     }
 

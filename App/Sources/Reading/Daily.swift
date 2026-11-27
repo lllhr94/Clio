@@ -203,9 +203,10 @@ struct TideSheet: View {
         .paperCard()
     }
 
-    static func when(_ day: String) -> String {
-        let today = Tide.day(of: Date())
-        let yesterday = LogicalDay.daysBack(1, from: Date(), boundaryHour: 5)
+    static func when(_ day: String, boundaryHour: Int = 5) -> String {
+        let now = Date()
+        let today = LogicalDay.day(of: now, boundaryHour: boundaryHour)
+        let yesterday = LogicalDay.daysBack(1, from: now, boundaryHour: boundaryHour)
         if day == today { return "今天" }
         if day == yesterday { return "昨天" }
         let parts = day.split(separator: "-")
@@ -289,7 +290,7 @@ struct DiarySheet: View {
                     if let note { Text(note).font(Ink.footnote).foregroundStyle(Ink.inkSoft) }
                     ForEach(pages) { page in
                         VStack(alignment: .leading, spacing: Ink.Space.m) {
-                            Text(TideSheet.when(page.day)).font(Ink.serif(Ink.Size.sub, bold: true)).foregroundStyle(Ink.inkSoft)
+                            Text(TideSheet.when(page.day, boundaryHour: 4)).font(Ink.serif(Ink.Size.sub, bold: true)).foregroundStyle(Ink.inkSoft)
                             Text(page.text).font(Ink.reading).foregroundStyle(Ink.ink).lineSpacing(6)
                             if let reply = page.reply {
                                 Text("你回：\(reply)").font(Ink.footnote).foregroundStyle(Ink.inkSoft)
@@ -411,7 +412,7 @@ extension TeamModel {
     /// The last page and its answer, for the companion to remember (not to bring up unasked).
     func diaryLine(_ bot: String) -> String? {
         guard let page = diary(bot).first, page.day >= LogicalDay.daysBack(2, from: Date()) else { return nil }
-        var line = "你最近一篇日记（\(TideSheet.when(page.day))）：\(page.text)"
+        var line = "你最近一篇日记（\(TideSheet.when(page.day, boundaryHour: LogicalDay.defaultBoundaryHour))）：\(page.text)"
         if let reply = page.reply { line += "\n用户在下面回了你：\(reply)" }
         return line + "\n（这是你们之间的小事：聊到相关的再提，不必主动说起。）"
     }
