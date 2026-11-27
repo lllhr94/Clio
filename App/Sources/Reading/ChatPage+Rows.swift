@@ -20,7 +20,7 @@ extension ChatPage {
         else if idleMood.dozing { state = "sleeping" }
         else { state = "idle" }
         return VStack(spacing: Ink.Space.l) {
-            PetStill(size: 96, state: state, bot: isRoom ? nil : bot)
+            CompanionAvatar(size: 96, state: state, bot: isRoom ? nil : bot)
             if isRoom {
                 Text(L.t("empty.groupChat"))
                     .font(Ink.reading)
@@ -404,7 +404,7 @@ extension ChatPage {
             sourcesMemo: sourcesMemo,
             listProxy: listProxy,
             focusBridge: composerFocusBridge,
-            topBarSignature: "\(chat.key)|\(bot.id)|\(bot.name)|\(bot.avatar ?? "")|\(bot.model)|\(Int(chatViewport.width.rounded()))|\(largeText)|\(Int((textScale * 100).rounded()))|\(historyPage != nil)|\(isComposerFocused)|\(Int((UIScale.factor * 100).rounded()))",
+            topBarSignature: "\(chat.key)|\(bot.id)|\(bot.name)|\(bot.avatar ?? "")|\(bot.seal ?? "")|\(bot.model)|\(Int(chatViewport.width.rounded()))|\(largeText)|\(Int((textScale * 100).rounded()))|\(historyPage != nil)|\(isComposerFocused)|\(Int((UIScale.factor * 100).rounded()))",
             bottomDockSignature: "\(chat.key)|\(bot.id)|\(bot.name)|\(finding)|\(historyPage != nil)|\(largeText)|\(confirmStop)|\(calmPetMotion)|\(editing ?? "")|\(quote ?? "")|\(photos.count)|\(files.count)|\(dockOpen)|\(usageOpen)|\(attaching)|\(roaming)|\(approving != nil)|\(petSettingsOpen)|\(side.choosingFresh)|\(tuningOpen)|\(scanning)|\(takingPhoto)|\(abilities)|\(outlining)|\(quoting != nil)|\(savingNote != nil)|\(Int((UIScale.factor * 100).rounded()))",
             onTopBarGeometry: { h, bottomY in
                 if abs(headerHeight - h) > 0.5 { headerHeight = h }
@@ -781,7 +781,7 @@ struct ChatSettledRowView: View, Equatable {
 
     private var speakerHeadView: some View {
         HStack(spacing: Ink.Space.s) {
-            PetStill(size: faces ? ChatPage.face : 22, wash: speakerBot.map { Ink.wash(for: $0) }, avatar: true, bot: speakerBot)
+            CompanionAvatar(size: faces ? ChatPage.face : 22, wash: speakerBot.map { Ink.wash(for: $0) }, bot: speakerBot)
             Text(speakerBot?.name ?? line.speakerName ?? botName)
                 .font(.system(size: Ink.Size.small, weight: .semibold))
                 .foregroundStyle(Ink.inkSoft)

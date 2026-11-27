@@ -118,7 +118,7 @@ struct DeskCompanionsSheet: View {
                 onSelectChat(.companion(bot.id))
             } label: {
                 HStack(spacing: Ink.Space.m) {
-                    PetStill(size: 36 * UIScale.factor, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                    CompanionAvatar(size: 36 * UIScale.factor, wash: Ink.wash(for: bot), bot: bot)
                     VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
                         Text(bot.name)
                             .font(.system(size: Ink.Size.body, weight: .medium))

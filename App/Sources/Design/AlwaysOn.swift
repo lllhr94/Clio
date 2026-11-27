@@ -102,7 +102,7 @@ private struct AlwaysOnStatus: View {
             let index = Int(max(0, context.date.timeIntervalSince(opened)) / 15) % Self.offsets.count
             let offset = Self.offsets[index]
             VStack(spacing: Ink.Space.m) {
-                PetStill(size: Ink.Space.huge, state: waiting ? "notification" : turn.started == nil ? "idle" : "working",
+                CompanionAvatar(size: Ink.Space.huge, state: waiting ? "notification" : turn.started == nil ? "idle" : "working",
                          bot: turn.bot)
                 Text(words)
                     .font(Ink.label)

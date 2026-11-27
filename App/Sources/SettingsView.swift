@@ -119,7 +119,7 @@ struct SettingsView: View {
             } label: {
                 HStack(spacing: Ink.Space.m) {
                     if let bot = primaryBot {
-                        PetStill(size: 36 * UIScale.factor, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                        CompanionAvatar(size: 36 * UIScale.factor, wash: Ink.wash(for: bot), bot: bot)
                     } else {
                         IconBadge(symbol: "person.2", tint: Ink.Tile.yan, size: 36 * UIScale.factor)
                     }
@@ -724,7 +724,7 @@ private struct SettingsCompanionsSection: View {
             editingBot = bot
         } label: {
             RowLabel(title: bot.name, line: L.t("settingsHome.companionsLine")) {
-                PetStill(size: Kit.badge, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                CompanionAvatar(size: Kit.badge, wash: Ink.wash(for: bot), bot: bot)
             }
         }
         .buttonStyle(PressStyle(haptic: false))

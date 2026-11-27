@@ -41,7 +41,7 @@ struct MeAvatar: View {
         if face == "photo", let photo = Avatars.image("me") {
             Image(uiImage: photo).resizable().scaledToFill().frame(width: size, height: size).clipShape(Circle())
         } else if face.hasPrefix("pet:") {
-            PetStill(size: size, avatar: true, face: .some(face))
+            CompanionAvatar(size: size, face: .some(face), name: "我")
         } else {
             Text("我")
                 .font(.system(size: size * 0.45, weight: .semibold))
