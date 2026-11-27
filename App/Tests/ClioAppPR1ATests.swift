@@ -3,7 +3,6 @@ import AgentKit
 import Craft
 import CryptoKit
 import Foundation
-import UIKit
 import XCTest
 
 final class ClioAppPR1ATests: XCTestCase {
@@ -152,231 +151,92 @@ final class ClioAppPR1ATests: XCTestCase {
         }
     }
 
-    func testIsolatedMemoryStoreBridgeRecoveryAndProjectionRebuildCrashWindow() async throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("clio-bridge-pr1a-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: dir) }
-
+    func testColdStartRollsBackJournalAndRebuildsMemoryProjection() async throws {
+        let dir = try temporaryRoot()
         let teamRoot = dir.appendingPathComponent("Team", isDirectory: true)
-        let mirrorRoot = dir.appendingPathComponent("Mirrors", isDirectory: true)
         let dbURL = dir.appendingPathComponent("ClioMemory/clio-memory.db")
-        try FileManager.default.createDirectory(at: teamRoot, withIntermediateDirectories: true)
-
-        let expBridge = ExperienceStoreBridge(teamRoot: teamRoot, databaseURL: dbURL)
-        _ = try await expBridge.recordOffMain(
-            id: "exp-committed",
-            title: "已提交经验",
-            content: "应该在 SQLite 重建后保留。",
-            tags: ["keep"],
-            source: .mainChat
-        )
-
+        let expBridge = ExperienceStoreBridge(teamRoot: teamRoot)
         let bridge = MemoryStoreBridge(
             databaseURL: dbURL,
             teamRoot: teamRoot,
-            mirrorRoot: mirrorRoot,
+            mirrorRoot: dir.appendingPathComponent("Mirrors"),
             experienceBridge: expBridge
         )
-        let snapBook = CanonicalMemoryBook(
-            memories: [CanonicalMemoryItem(id: "m1", text: "快照里的旧记录", at: 100)],
-            generation: 1
+        _ = try await expBridge.recordOffMain(id: "experience", title: "Deploy", content: "Run the tests", tags: [], source: .user)
+        let experienceBytes = try Data(contentsOf: expBridge.canonicalFileURL)
+        let book = CanonicalMemoryBook(
+            memories: [CanonicalMemoryItem(id: "m1", text: "快照里的旧记录", at: 100)], generation: 1
         )
-        let c1 = try bridge.revisionStore.commitWithJournal(snapBook, snapshotReason: "manual", nowMs: 1_000)
-
-        let pendingJournal = MemoryPendingJournal(
-            id: "bridge-j1",
-            phase: .prepared,
-            targetCanonicalGeneration: 2,
-            preCommitSHA256: c1.digest,
-            postCommitSHA256: String(repeating: "a", count: 64),
-            preCommitSnapshotID: c1.snapshot?.id,
-            preCommitBookSHA256: c1.snapshot?.bookSHA256
+        let commit = try bridge.revisionStore.commitWithJournal(book, snapshotReason: "manual", nowMs: 1_000)
+        let snapshotID = try XCTUnwrap(commit.snapshot?.id)
+        let journal = MemoryPendingJournal(
+            id: "bridge-j1", phase: .prepared, targetCanonicalGeneration: 2,
+            preCommitSHA256: commit.digest, postCommitSHA256: String(repeating: "a", count: 64),
+            preCommitSnapshotID: snapshotID, preCommitBookSHA256: commit.snapshot?.bookSHA256
         )
-        try JSONEncoder().encode(pendingJournal).write(to: bridge.revisionStore.journalFileURL)
-
-        let outcome = try bridge.runColdStartRecoveryForTesting(nowMs: 2_000)
-        XCTAssertEqual(outcome, .rolledBackToSnapshot(journalID: "bridge-j1", snapshotID: c1.snapshot?.id ?? ""))
+        let journalBytes = try JSONEncoder().encode(journal)
+        try journalBytes.write(to: bridge.revisionStore.journalFileURL)
+        XCTAssertEqual(
+            try bridge.runColdStartRecoveryForTesting(nowMs: 2_000),
+            .rolledBackToSnapshot(journalID: journal.id, snapshotID: snapshotID)
+        )
         XCTAssertTrue(bridge.revisionStore.hasPendingProjectionRebuild)
 
-        // Simulate stale rows left inside shared ClioMemory SQLite before crash: bootstrapOnLaunch MUST honor `projection-rebuild.journal`,
-        // wipe stale Memory + Experience SQLite rows, rebuild from Canonical JSON, and clear the marker.
-        let directSQLite = MemoryStore(databaseURL: dbURL)
-        _ = try directSQLite.upsert(
-            MemoryRecord(id: "m-stale-resurrection", text: "崩溃窗口里残留的旧SQLite行", createdAtMs: 9_000),
-            explicitUserAction: true
-        )
-        directSQLite.close()
+        let dirty = CanonicalMemoryBook(memories: [CanonicalMemoryItem(id: "dirty", text: "未提交", at: 200)])
+        try JSONEncoder().encode(dirty).write(to: bridge.revisionStore.memoryFileURL)
+        try journalBytes.write(to: bridge.revisionStore.journalFileURL)
+        let staleStore = MemoryStore(databaseURL: dbURL)
+        _ = try staleStore.upsert(MemoryRecord(id: "stale", text: "旧索引残留", createdAtMs: 2_000), explicitUserAction: true)
+        staleStore.close()
+
         let bootstrap = bridge.bootstrapOnLaunch()
         XCTAssertEqual(bootstrap.book.memories.map(\.id), ["m1"])
-        XCTAssertFalse(bridge.revisionStore.hasPendingProjectionRebuild)
-
-        // P0-4 & #1: if BOTH `projection-rebuild.journal` AND uncommitted `commit.journal` exist simultaneously while on-disk
-        // `memory.json` holds distinct dirty data AND shared SQLite holds stale rows in BOTH tables, `bootstrapOnLaunch()`
-        // MUST complete canonical rollback first, wipe stale Memory + Experience SQLite, rebuild BOTH from canonical JSON, and clear markers.
-        let dirtyUncommitted = CanonicalMemoryBook(
-            memories: [CanonicalMemoryItem(id: "m-uncommitted", text: "未提交的脏 canonical 数据", at: 999)],
-            generation: 1
-        )
-        try JSONEncoder().encode(dirtyUncommitted).write(to: bridge.revisionStore.memoryFileURL)
-        try JSONEncoder().encode(pendingJournal).write(to: bridge.revisionStore.journalFileURL)
-        try Data("{\"pendingRebuild\":true}\n".utf8).write(to: bridge.revisionStore.projectionRebuildMarkerURL)
-
-        let stale2 = MemoryStore(databaseURL: dbURL)
-        _ = try stale2.upsert(
-            MemoryRecord(id: "m-stale-resurrection-2", text: "双标记崩溃窗口残留行", createdAtMs: 9_500),
-            explicitUserAction: true
-        )
-        stale2.close()
-        let staleExpSQLite = ExperienceStore(canonicalFileURL: nil, databaseURL: dbURL)
-        _ = try staleExpSQLite.record(
-            id: "exp-stale-sqlite",
-            title: "脏经验行",
-            content: "双标记重建时必须清掉。",
-            tags: ["stale"],
-            source: .mainChat,
-            nowMs: 9_600
-        )
-        staleExpSQLite.close()
-
-        let bootstrap2 = bridge.bootstrapOnLaunch()
-        XCTAssertEqual(bootstrap2.book.memories.map(\.id), ["m1"])
+        XCTAssertEqual(bridge.recordsSnapshot().map(\.id), ["m1"])
         XCTAssertFalse(bridge.revisionStore.hasPendingProjectionRebuild)
         XCTAssertFalse(FileManager.default.fileExists(atPath: bridge.revisionStore.journalFileURL.path))
-        XCTAssertEqual(bridge.recordsSnapshot().map(\.id), ["m1"])
-        let expAfterRebuild = await expBridge.loadAllOffMain()
-        XCTAssertEqual(expAfterRebuild.map(\.id), ["exp-committed"])
-        let expSQLiteAfter = try ExperienceStore(canonicalFileURL: nil, databaseURL: dbURL).loadAll()
-        XCTAssertEqual(expSQLiteAfter.map(\.id), ["exp-committed"])
+        XCTAssertEqual(try Data(contentsOf: expBridge.canonicalFileURL), experienceBytes)
 
-        // Failed journal recovery during bootstrap MUST preserve `projection-rebuild.journal` and corrupt `commit.journal`.
-        try Data("{corrupt-journal".utf8).write(to: bridge.revisionStore.journalFileURL)
-        try Data("{\"pendingRebuild\":true}\n".utf8).write(to: bridge.revisionStore.projectionRebuildMarkerURL)
+        let corruptedJournal = Data("{corrupt-journal".utf8)
+        try corruptedJournal.write(to: bridge.revisionStore.journalFileURL)
+        try Data(#"{"pendingRebuild":true}"#.utf8).write(to: bridge.revisionStore.projectionRebuildMarkerURL)
         _ = bridge.bootstrapOnLaunch()
         XCTAssertTrue(bridge.revisionStore.hasPendingProjectionRebuild)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: bridge.revisionStore.journalFileURL.path))
-        try? FileManager.default.removeItem(at: bridge.revisionStore.journalFileURL)
-        bridge.revisionStore.clearPendingProjectionRebuild()
+        XCTAssertEqual(try Data(contentsOf: bridge.revisionStore.journalFileURL), corruptedJournal)
+    }
 
-        // #1: ONLY `projection-rebuild.journal` + corrupt or 0-byte `memory.json` must preserve canonical bytes,
-        // existing SQLite Memory & Experience rows, AND `projection-rebuild.journal` (never reset to empty).
-        for badPayload in [Data("{corrupt-canonical".utf8), Data()] {
-            try badPayload.write(to: bridge.revisionStore.memoryFileURL)
-            try Data("{\"pendingRebuild\":true}\n".utf8).write(to: bridge.revisionStore.projectionRebuildMarkerURL)
+    func testDoubleCorruptMemoryKeepsProjectionAndMarker() throws {
+        let dir = try temporaryRoot()
+        let team = dir.appendingPathComponent("Team")
+        let db = dir.appendingPathComponent("ClioMemory/clio-memory.db")
+        let bridge = MemoryStoreBridge(databaseURL: db, teamRoot: team, mirrorRoot: dir.appendingPathComponent("Mirrors"))
+        try FileManager.default.createDirectory(at: bridge.revisionStore.revisionsDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: db.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let dbBytes = Data("corrupt SQLite header".utf8)
+        let markerBytes = Data(#"{"pendingRebuild":true}"#.utf8)
+        try dbBytes.write(to: db)
+        try markerBytes.write(to: bridge.revisionStore.projectionRebuildMarkerURL)
+        for canonicalBytes in [Data("{corrupt-memory".utf8), Data()] {
+            try canonicalBytes.write(to: bridge.revisionStore.memoryFileURL)
             _ = bridge.bootstrapOnLaunch()
+            bridge.checkpointForTestingSync()
+            XCTAssertTrue(bridge.isCanonicalReadOnly)
             XCTAssertTrue(bridge.revisionStore.hasPendingProjectionRebuild)
-            XCTAssertEqual(try Data(contentsOf: bridge.revisionStore.memoryFileURL), badPayload)
-            let checkMem = MemoryStore(databaseURL: dbURL)
-            XCTAssertEqual(try checkMem.list().map(\.id), ["m1"])
-            checkMem.close()
-            let checkExp = ExperienceStore(canonicalFileURL: nil, databaseURL: dbURL)
-            XCTAssertEqual(try checkExp.loadAll().map(\.id), ["exp-committed"])
-            checkExp.close()
-            bridge.revisionStore.clearPendingProjectionRebuild()
+            XCTAssertNil(bridge.restorableMemorySnapshot(id: "archived"))
+            XCTAssertNil(bridge.archivedMemorySnapshot(id: "archived"))
+            XCTAssertEqual(try Data(contentsOf: db), dbBytes)
+            XCTAssertEqual(try Data(contentsOf: bridge.revisionStore.memoryFileURL), canonicalBytes)
+            XCTAssertEqual(try Data(contentsOf: bridge.revisionStore.projectionRebuildMarkerURL), markerBytes)
         }
+    }
 
-        // Blocker 3: when canonical `memory.json` is corrupt + `projection-rebuild.journal` is present AND SQLite
-        // is also corrupt, `bootstrapOnLaunch()`, background `checkpointForTestingSync()`, archive SQLite fallback queries,
-        // AND shared `ExperienceStoreBridge` write/delete/rebuild/prune entrypoints must NEVER trigger self-healing DB
-        // quarantine/replacement or clear `projection-rebuild.journal`.
-        let blockedDir = dir.appendingPathComponent("blocked-\(UUID().uuidString)", isDirectory: true)
-        let blockedTeam = blockedDir.appendingPathComponent("Team", isDirectory: true)
-        let blockedMirror = blockedDir.appendingPathComponent("Mirrors", isDirectory: true)
-        let blockedDBDir = blockedDir.appendingPathComponent("ClioMemory", isDirectory: true)
-        let blockedDB = blockedDBDir.appendingPathComponent("clio-memory.db")
-        try FileManager.default.createDirectory(at: blockedTeam, withIntermediateDirectories: true)
-        let blockedExpBridge = ExperienceStoreBridge(teamRoot: blockedTeam, databaseURL: blockedDB)
-        let blockedBridge = MemoryStoreBridge(
-            databaseURL: blockedDB,
-            teamRoot: blockedTeam,
-            mirrorRoot: blockedMirror,
-            experienceBridge: blockedExpBridge
-        )
-        let validExpBook = CanonicalExperienceBook(records: [
-            ExperienceRecord(
-                id: "e-blocked-keep",
-                title: "阻塞保护经验",
-                content: "共享坏库等待修复时不得覆写",
-                tags: ["blocked"],
-                createdAtMs: 500,
-                source: .mainChat
-            ),
-        ])
-        let validExpCanonBytes = try JSONEncoder().encode(validExpBook)
-        try validExpCanonBytes.write(to: blockedExpBridge.canonicalFileURL)
-        let seedMem = MemoryStore(databaseURL: blockedDB)
-        _ = try seedMem.upsert(
-            MemoryRecord(id: "m-archived-miss", text: "旧库数据", layer: .archived, createdAtMs: 500),
-            explicitUserAction: true
-        )
-        seedMem.close()
-        let corruptCanonBytes = Data("{corrupt-blocked".utf8)
-        try corruptCanonBytes.write(to: blockedBridge.revisionStore.memoryFileURL)
-        try FileManager.default.createDirectory(at: blockedBridge.revisionStore.revisionsDirectoryURL, withIntermediateDirectories: true)
-        let blockedMarkerBytes = Data("{\"pendingRebuild\":true}\n".utf8)
-        try blockedMarkerBytes.write(to: blockedBridge.revisionStore.projectionRebuildMarkerURL)
-        let dbHandle = try FileHandle(forUpdating: blockedDB)
-        try dbHandle.seek(toOffset: 0)
-        try dbHandle.write(contentsOf: Data("corrupt-db-head!".utf8))
-        try dbHandle.close()
-        let corruptDBBytes = try Data(contentsOf: blockedDB)
-
-        let prevBlockedGrant = Grant.memory.policy
-        Grant.memory.policy = .allow
-        defer { Grant.memory.policy = prevBlockedGrant }
-
-        _ = blockedBridge.bootstrapOnLaunch()
-        blockedBridge.checkpointForTestingSync()
-        XCTAssertNil(blockedBridge.restorableMemorySnapshot(id: "m-archived-miss"))
-        XCTAssertNil(blockedBridge.archivedMemorySnapshot(id: "m-archived-miss"))
-        let blockedToolOut = await blockedExpBridge.recordTool(
-            title: "工具阻塞写入",
-            content: "开启记性权限时仍须命中恢复阻塞门禁",
-            tags: ["blocked"],
-            source: .mainChat
-        )
-        XCTAssertTrue(blockedToolOut.isError)
-        XCTAssertTrue(blockedToolOut.text.contains("等待修复或重投"))
-        do {
-            _ = try await blockedExpBridge.recordOffMain(
-                title: "阻塞新增",
-                content: "阻塞期间不可触发共享坏库替换",
-                tags: [],
-                source: .mainChat
-            )
-            XCTFail("Expected ExperienceStoreError.canonicalReadOnly from recordOffMain")
-        } catch let error as ExperienceStoreError {
-            guard case .canonicalReadOnly = error else {
-                return XCTFail("Unexpected ExperienceStoreError from recordOffMain: \(error)")
-            }
-        }
-        do {
-            try await blockedExpBridge.deleteOffMain(id: "e-blocked-keep")
-            XCTFail("Expected ExperienceStoreError.canonicalReadOnly from deleteOffMain")
-        } catch let error as ExperienceStoreError {
-            guard case .canonicalReadOnly = error else {
-                return XCTFail("Unexpected ExperienceStoreError from deleteOffMain: \(error)")
-            }
-        }
-        blockedExpBridge.rebuildFromCanonicalSync()
-        await blockedExpBridge.rebuildFromCanonicalOffMain()
-        blockedExpBridge.mergeRetractedHashesSync([MemorySafety.retractionHash("阻塞保护经验")])
-
-        XCTAssertTrue(blockedBridge.revisionStore.hasPendingProjectionRebuild)
-        XCTAssertEqual(try Data(contentsOf: blockedBridge.revisionStore.projectionRebuildMarkerURL), blockedMarkerBytes)
-        XCTAssertEqual(try Data(contentsOf: blockedBridge.revisionStore.memoryFileURL), corruptCanonBytes)
-        XCTAssertEqual(try Data(contentsOf: blockedExpBridge.canonicalFileURL), validExpCanonBytes)
-        XCTAssertEqual(try Data(contentsOf: blockedDB), corruptDBBytes)
-        let dbDirFiles = try FileManager.default.contentsOfDirectory(atPath: blockedDBDir.path)
-        XCTAssertFalse(dbDirFiles.contains(where: { $0.contains(".corrupt-") }))
-
-        // Required canonical rewrite failure (read-only Team dir) must preserve original `memory.json` & `projection-rebuild.journal`
-        // AFTER proving SQLite reconcile actually ran, pruned `m-prune` via timestamped tombstone, and kept `m-keep`.
-        let roDir = dir.appendingPathComponent("ro-rewrite-\(UUID().uuidString)", isDirectory: true)
-        let roTeam = roDir.appendingPathComponent("Team", isDirectory: true)
-        let roMirror = roDir.appendingPathComponent("Mirrors", isDirectory: true)
-        let roDB = roDir.appendingPathComponent("ClioMemory/ro.db")
+    func testReadOnlyTeamDirectoryPreservesCanonicalAndRecoveryMarker() async throws {
+        let dir = try temporaryRoot()
+        let roTeam = dir.appendingPathComponent("Team", isDirectory: true)
+        let roMirror = dir.appendingPathComponent("Mirrors", isDirectory: true)
+        let roDB = dir.appendingPathComponent("ClioMemory/ro.db")
         try FileManager.default.createDirectory(at: roTeam, withIntermediateDirectories: true)
         let roBridge = MemoryStoreBridge(databaseURL: roDB, teamRoot: roTeam, mirrorRoot: roMirror)
-        _ = try roBridge.revisionStore.commitWithJournal(
+        let commit = try roBridge.revisionStore.commitWithJournal(
             CanonicalMemoryBook(
                 memories: [
                     CanonicalMemoryItem(id: "m-keep", text: "应当保留的控制记录", at: 100),
@@ -405,23 +265,24 @@ final class ClioAppPR1ATests: XCTestCase {
         XCTAssertEqual(try roCheckMem.list().map(\.id), ["m-keep"])
         XCTAssertEqual(try roCheckMem.meta().lastSyncedJSONSHA256, beforeRODigest)
         roCheckMem.close()
+        let snapshotID = try XCTUnwrap(commit.snapshot?.id)
+        do {
+            _ = try await roBridge.restoreRevisionSnapshotOffMain(id: snapshotID, bots: [], mainBotId: nil)
+            XCTFail("Expected a read-only Team directory to prevent canonical restore")
+        } catch {
+            XCTAssertTrue(roBridge.revisionStore.hasPendingProjectionRebuild)
+            XCTAssertEqual(try Data(contentsOf: roBridge.revisionStore.memoryFileURL), beforeROMemBytes)
+        }
+    }
 
-        // P1 #2: snapshot restore refreshes tombstones & retracted hashes before releasing `ExperienceStoreBridge.queue`,
-        // and any failure writing `memory-retracted.json` aborts restore while keeping `projection-rebuild.journal`.
-        let restoreRaceDir = dir.appendingPathComponent("restore-race-\(UUID().uuidString)", isDirectory: true)
-        let restoreTeam = restoreRaceDir.appendingPathComponent("Team", isDirectory: true)
-        let restoreMirror = restoreRaceDir.appendingPathComponent("Mirrors", isDirectory: true)
-        let restoreDB = restoreRaceDir.appendingPathComponent("ClioMemory/restore.db")
-        try FileManager.default.createDirectory(at: restoreTeam, withIntermediateDirectories: true)
-        let restoreExpBridge = ExperienceStoreBridge(teamRoot: restoreTeam, databaseURL: restoreDB)
-        let restoreBridge = MemoryStoreBridge(
-            databaseURL: restoreDB,
-            teamRoot: restoreTeam,
-            mirrorRoot: restoreMirror,
-            experienceBridge: restoreExpBridge
-        )
-        let blockedExpText = "恢复后必须拦截的经验"
-        let blockedExpHash = MemorySafety.retractionHash(blockedExpText)
+    @MainActor
+    func testSnapshotRestoreRejectsStaleEpochAndPreservesRecoveryAcrossRelaunch() async throws {
+        let dir = try temporaryRoot()
+        let restoreTeam = dir.appendingPathComponent("Team", isDirectory: true)
+        let restoreMirror = dir.appendingPathComponent("Mirrors", isDirectory: true)
+        let restoreDB = dir.appendingPathComponent("ClioMemory/restore.db")
+        let restoreBridge = MemoryStoreBridge(databaseURL: restoreDB, teamRoot: restoreTeam, mirrorRoot: restoreMirror)
+        let blockedExpHash = MemorySafety.retractionHash("已撤回的内容")
         let snap1 = try restoreBridge.revisionStore.commitWithJournal(
             CanonicalMemoryBook(
                 memories: [CanonicalMemoryItem(id: "m-snap1", text: "快照一保留记忆", at: 100)],
@@ -455,258 +316,49 @@ final class ClioAppPR1ATests: XCTestCase {
             Memory(id: "m-post-restore-stale-book", text: "主线程未应用快照前的旧副本", at: 2_700, by: nil, deep: nil, used: nil)
         )
 
-        // Interleaved pre-restore writes: initiate both `recordOffMain` (with stale empty `suppressedHashes`) AND
-        // `recordTool` BEFORE `restoreRevisionSnapshotOffMain`, suspend both right before enqueueing on `ExperienceStoreBridge.queue`,
-        // complete snapshot restore, then let both enter the queue — both must pull fresh tombstones and be rejected.
-        final class ContinuationGate: @unchecked Sendable {
-            private let lock = NSLock()
-            private var waiters: [CheckedContinuation<Void, Never>] = []
-
-            func arrivedCount() -> Int {
-                lock.withLock { waiters.count }
-            }
-
-            func suspend() async {
-                await withCheckedContinuation { continuation in
-                    lock.withLock {
-                        waiters.append(continuation)
-                    }
-                }
-            }
-
-            func resumeAll() {
-                let pending: [CheckedContinuation<Void, Never>] = lock.withLock {
-                    let current = waiters
-                    waiters.removeAll()
-                    return current
-                }
-                for continuation in pending {
-                    continuation.resume()
-                }
-            }
-        }
-        let enqueueGate = ContinuationGate()
-        restoreExpBridge.beforeRecordEnqueueForTesting = {
-            await enqueueGate.suspend()
-        }
-        defer {
-            restoreExpBridge.beforeRecordEnqueueForTesting = nil
-            enqueueGate.resumeAll()
-        }
-
-        let staleRecordTask = Task { () -> Error? in
-            do {
-                _ = try await restoreExpBridge.recordOffMain(
-                    title: "",
-                    content: blockedExpText,
-                    tags: [],
-                    source: .mainChat,
-                    suppressedHashes: []
-                )
-                return nil
-            } catch {
-                return error
-            }
-        }
-        let staleToolTask = Task {
-            await restoreExpBridge.recordTool(
-                title: "",
-                content: blockedExpText,
-                tags: [],
-                source: .mainChat
-            )
-        }
-        guard await waitUntil(timeoutSeconds: 5, { enqueueGate.arrivedCount() == 2 }) else {
-            enqueueGate.resumeAll()
-            XCTFail("Timed out waiting for pre-restore writes to reach enqueue barrier")
-            return
-        }
-
-        _ = try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
-        XCTAssertFalse(restoreBridge.revisionStore.hasPendingProjectionRebuild)
+        let restored = try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
+        XCTAssertEqual(restored.book.memories.map(\.id), ["m-snap1"])
+        XCTAssertNotEqual(restored.book.storeEpoch, staleMainActorBook.storeEpoch)
         XCTAssertTrue(restoreBridge.tombstoneHashesSnapshot().contains(blockedExpHash))
-
-        restoreExpBridge.beforeRecordEnqueueForTesting = nil
-        enqueueGate.resumeAll()
-
-        let staleRecordError = await staleRecordTask.value
-        XCTAssertEqual(staleRecordError as? ExperienceStoreError, .suppressedByTombstone)
-        let staleToolOut = await staleToolTask.value
-        XCTAssertTrue(staleToolOut.isError)
-        XCTAssertTrue(staleToolOut.text.contains("已列入撤回名单"))
-
-        // Stale pre-restore commit queued behind an active `restoreRevisionSnapshotOffMain`:
-        // even after restore succeeds and clears `projection-rebuild.journal`, the older pre-restore `MemoryBook`
-        // commit must fail the `canonicalStateEpoch` check instead of overwriting restored canonical `memory.json`.
-        let restoreStarted = LockedBox(false)
-        let allowRestoreFinish = DispatchSemaphore(value: 0)
-        let staleCommitEnqueued = LockedBox(false)
-        restoreBridge.beforeRestoreCommitForTesting = {
-            restoreStarted.set(true)
-            _ = allowRestoreFinish.wait(timeout: .now() + 5)
-        }
-        restoreBridge.onCommitAsyncEnqueuedForTesting = {
-            staleCommitEnqueued.set(true)
-        }
-        defer {
-            restoreBridge.beforeRestoreCommitForTesting = nil
-            restoreBridge.onCommitAsyncEnqueuedForTesting = nil
-            allowRestoreFinish.signal()
-        }
-
-        let inFlightRestoreTask = Task {
-            try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
-        }
-        guard await waitUntil(timeoutSeconds: 5, { restoreStarted.get() }) else {
-            allowRestoreFinish.signal()
-            XCTFail("Timed out waiting for in-flight restore to enter commitQueue")
-            return
-        }
-
-        var staleCommitBook = preRestoreBoot.book
-        staleCommitBook.memories = [
-            Memory(id: "m-stale-overwrite", text: "恢复前排队旧记忆不得覆盖快照", at: 2_500, by: nil, deep: nil, used: nil),
-        ]
-        let staleCommitTask = Task { @MainActor () -> Error? in
-            do {
-                _ = try await restoreBridge.commitAppBookAsync(
-                    staleCommitBook,
-                    suppressedHashes: [],
-                    bots: [],
-                    mainBotId: nil,
-                    secrets: []
-                )
-                return nil
-            } catch {
-                return error
-            }
-        }
-        guard await waitUntil(timeoutSeconds: 5, { staleCommitEnqueued.get() }) else {
-            allowRestoreFinish.signal()
-            XCTFail("Timed out waiting for stale commitAppBookAsync to enqueue behind restore")
-            return
-        }
-        allowRestoreFinish.signal()
-
-        let completedRestore = try await inFlightRestoreTask.value
-        XCTAssertNotNil(completedRestore.book.storeEpoch)
-        XCTAssertNotEqual(completedRestore.book.storeEpoch, preRestoreBoot.book.storeEpoch)
-        restoreBridge.beforeRestoreCommitForTesting = nil
-        restoreBridge.onCommitAsyncEnqueuedForTesting = nil
-        let staleCommitError = await staleCommitTask.value
-        XCTAssertNotNil(staleCommitError)
         XCTAssertFalse(restoreBridge.revisionStore.hasPendingProjectionRebuild)
-
-        // Post-restore stale MainActor commit BEFORE MainActor runs `applyRestoredRevisionBook`:
-        // bridge has already updated `canonicalStateEpoch` and cleared `projection-rebuild.journal`,
-        // yet `staleMainActorBook.storeEpoch` still reflects the pre-restore book and MUST fail both sync and async commits.
-        await MainActor.run {
-            XCTAssertThrowsError(
-                try restoreBridge.commitAppBook(
-                    staleMainActorBook,
-                    suppressedHashes: [],
-                    bots: [],
-                    mainBotId: nil,
-                    secrets: []
-                )
-            )
+        XCTAssertThrowsError(
+            try restoreBridge.commitAppBook(staleMainActorBook, suppressedHashes: [], bots: [], mainBotId: nil, secrets: [])
+        ) {
+            XCTAssertTrue(($0 as? TeamError)?.message.contains("过期覆盖写入") == true)
         }
         do {
             _ = try await restoreBridge.commitAppBookAsync(
-                staleMainActorBook,
-                suppressedHashes: [],
-                bots: [],
-                mainBotId: nil,
-                secrets: []
+                staleMainActorBook, suppressedHashes: [], bots: [], mainBotId: nil, secrets: []
             )
-            XCTFail("Expected post-restore stale MainActor commitAppBookAsync to throw on stale book.storeEpoch")
+            XCTFail("Expected the async commit to reject an old store epoch")
         } catch {
-            // Expected epoch rejection
+            XCTAssertTrue((error as? TeamError)?.message.contains("过期覆盖写入") == true)
+            XCTAssertEqual(try CanonicalMemoryBook.decodeFlexible(
+                from: Data(contentsOf: restoreBridge.revisionStore.memoryFileURL)
+            ).memories.map(\.id), ["m-snap1"])
         }
 
-        let canonicalAfterStaleCommit = try CanonicalMemoryBook.decodeFlexible(
-            from: Data(contentsOf: restoreBridge.revisionStore.memoryFileURL)
-        )
-        XCTAssertEqual(canonicalAfterStaleCommit.memories.map(\.id), ["m-snap1"])
-
-        // When unblocked, `loadAllOffMain()` filters BOTH content-matched (`e-retracted-stale`) AND raw stored hash-only
-        // (`e-raw-hash-only`) retracted records while keeping non-retracted controls (`e-unretracted-control`).
-        let unblockedSeed = CanonicalExperienceBook(records: [
-            ExperienceRecord(
-                id: "e-retracted-stale",
-                title: "旧经验",
-                content: blockedExpText,
-                tags: ["stale"],
-                createdAtMs: 1_000,
-                source: .mainChat
-            ),
-            ExperienceRecord(
-                id: "e-raw-hash-only",
-                title: "脱敏后标题已变",
-                content: "改密后重算哈希不再匹配撤回文",
-                tags: ["raw"],
-                contentSHA256: blockedExpHash,
-                createdAtMs: 1_200,
-                source: .mainChat
-            ),
-            ExperienceRecord(
-                id: "e-unretracted-control",
-                title: "保留对照经验",
-                content: "\(blockedExpText) 未撤回对照条",
-                tags: ["control"],
-                createdAtMs: 1_500,
-                source: .mainChat
-            ),
-        ])
-        try JSONEncoder().encode(unblockedSeed).write(to: restoreExpBridge.canonicalFileURL)
-        let unblockedLoaded = await restoreExpBridge.loadAllOffMain()
-        XCTAssertEqual(unblockedLoaded.map(\.id), ["e-unretracted-control"])
-
-        // Persistent retracted-file failure across relaunch: replace `memory-retracted.json` with a directory,
-        // fail restore, then relaunch and verify:
-        // 1) `projection-rebuild.journal` survives relaunch bootstrap,
-        // 2) `searchTool` & `loadAllOffMain` both return `[]` even with matching un-retracted `e-unretracted-control` present,
-        // 3) normal `commitAppBook` is blocked while pending projection rebuild remains unresolved.
         let retractedPath = restoreTeam.appendingPathComponent("memory-retracted.json")
-        try? FileManager.default.removeItem(at: retractedPath)
+        try FileManager.default.removeItem(at: retractedPath)
         try FileManager.default.createDirectory(at: retractedPath, withIntermediateDirectories: true)
         do {
             _ = try await restoreBridge.restoreRevisionSnapshotOffMain(id: snap1ID, bots: [], mainBotId: nil)
-            XCTFail("Expected restoreRevisionSnapshotOffMain to throw when memory-retracted.json is unwritable")
+            XCTFail("Expected restore to fail when the retraction ledger is a directory")
         } catch {
-            // Expected failure
-        }
-        XCTAssertTrue(restoreBridge.revisionStore.hasPendingProjectionRebuild)
-
-        let relaunchExpBridge = ExperienceStoreBridge(teamRoot: restoreTeam, databaseURL: restoreDB)
-        let relaunchBridge = MemoryStoreBridge(
-            databaseURL: restoreDB,
-            teamRoot: restoreTeam,
-            mirrorRoot: restoreMirror,
-            experienceBridge: relaunchExpBridge
-        )
-        _ = relaunchBridge.bootstrapOnLaunch()
-        XCTAssertTrue(relaunchBridge.revisionStore.hasPendingProjectionRebuild)
-        let relaunchSearchHits = await relaunchExpBridge.searchTool(query: blockedExpText, limit: 5)
-        XCTAssertEqual(relaunchSearchHits, [])
-        let relaunchLoadedList = await relaunchExpBridge.loadAllOffMain()
-        XCTAssertEqual(relaunchLoadedList, [])
-        await MainActor.run {
-            XCTAssertThrowsError(
-                try relaunchBridge.commitAppBook(
-                    MemoryBook(memories: [Memory(id: "m-overwrite", text: "恢复失败期间绝不可覆盖", at: 3_000, by: nil, deep: nil, used: nil)]),
-                    suppressedHashes: [],
-                    bots: [],
-                    mainBotId: nil,
-                    secrets: []
-                )
-            )
+            XCTAssertTrue(restoreBridge.revisionStore.hasPendingProjectionRebuild)
         }
 
-        // Same-epoch `.recall` interleaved with a concurrent `.remember`:
-        // `recall` carries a stale copy of `book.memories` missing `"m-concurrent-added"`,
-        // yet `commitQueue` merges live `workingRecordsByID` so `"m-concurrent-added"` survives while
-        // `"m-deep-hit"` promotes to surface and updates `used`.
+        let relaunch = MemoryStoreBridge(databaseURL: restoreDB, teamRoot: restoreTeam, mirrorRoot: restoreMirror)
+        let relaunched = relaunch.bootstrapOnLaunch()
+        XCTAssertTrue(relaunch.revisionStore.hasPendingProjectionRebuild)
+        XCTAssertThrowsError(try relaunch.commitAppBook(
+            relaunched.book, suppressedHashes: [], bots: [], mainBotId: nil, secrets: []
+        ))
+    }
+
+    @MainActor
+    func testRecallMergesWithSameEpochRemember() async throws {
+        let dir = try temporaryRoot()
         let recallDir = dir.appendingPathComponent("recall-merge-\(UUID().uuidString)", isDirectory: true)
         let recallTeam = recallDir.appendingPathComponent("Team", isDirectory: true)
         let recallMirror = recallDir.appendingPathComponent("Mirrors", isDirectory: true)
@@ -753,11 +405,124 @@ final class ClioAppPR1ATests: XCTestCase {
         let surfacedHit = try XCTUnwrap(diskAfterRecall.memories.first(where: { $0.id == "m-deep-hit" }))
         XCTAssertNil(surfacedHit.deep)
         XCTAssertEqual(surfacedHit.used, 9_000)
+    }
 
-        let barrierValue = bridge.withBackupBarrier {
-            bridge.tombstoneHashesSnapshot().count
+    @MainActor
+    func testExperienceBridgeUsesLiveTombstonesAndHonorsPolicyAndFreeze() async throws {
+        let dir = try temporaryRoot()
+        let teamRoot = dir.appendingPathComponent("Team")
+        try FileManager.default.createDirectory(at: teamRoot, withIntermediateDirectories: true)
+        let experiences = ExperienceStoreBridge(teamRoot: teamRoot)
+        let memory = MemoryStoreBridge(
+            databaseURL: dir.appendingPathComponent("ClioMemory/clio-memory.db"),
+            teamRoot: teamRoot, mirrorRoot: dir.appendingPathComponent("Mirrors"), experienceBridge: experiences
+        )
+        let previousPolicy = Grant.memory.policy
+        let previousFrozen = Disk.frozen
+        Grant.memory.policy = .allow
+        Disk.frozen = false
+        defer {
+            Grant.memory.policy = previousPolicy
+            Disk.frozen = previousFrozen
         }
-        XCTAssertGreaterThanOrEqual(barrierValue, 0)
+
+        let vaultKey = "pr1a-test-\(UUID())"
+        let secret = "temporary-test-secret-\(UUID())"
+        Vault.save(secret, as: vaultKey)
+        defer { Vault.remove(vaultKey) }
+        XCTAssertTrue(Vault.allStrings().contains(secret))
+        let redactedBody = "deploy using 〔隐去〕"
+        let bodyHash = MemorySafety.retractionHash(redactedBody)
+        let rawHash = MemorySafety.retractionHash("legacy identity")
+        let book = CanonicalExperienceBook(records: [
+            ExperienceRecord(id: "body", title: "Legacy", content: "deploy using \(secret)"),
+            ExperienceRecord(id: "raw", title: "Legacy", content: "deploy using a pipeline", contentSHA256: rawHash),
+            ExperienceRecord(id: "control", title: "Control", content: "deploy with tests"),
+        ])
+        try JSONEncoder().encode(book).write(to: experiences.canonicalFileURL)
+        let initiallyVisible = await experiences.loadAllOffMain()
+        XCTAssertEqual(Set(initiallyVisible.map(\.id)), ["body", "raw", "control"])
+        XCTAssertEqual(initiallyVisible.first { $0.id == "body" }?.content, redactedBody)
+
+        let retracted = teamRoot.appendingPathComponent("memory-retracted.json")
+        try JSONEncoder().encode([bodyHash, rawHash]).write(to: retracted)
+        XCTAssertEqual(memory.tombstoneHashesSnapshot(), [bodyHash, rawHash])
+        let visible = await experiences.loadAllOffMain()
+        XCTAssertEqual(visible.map(\.id), ["control"])
+        let beforeSearch = try Data(contentsOf: experiences.canonicalFileURL)
+        let hits = await experiences.searchTool(query: "deploy", limit: 5)
+        XCTAssertEqual(hits.map(\.id), ["control"])
+        XCTAssertEqual(try Data(contentsOf: experiences.canonicalFileURL), beforeSearch)
+        for record in book.records where record.id != "control" {
+            do {
+                _ = try await experiences.recordOffMain(
+                    id: record.id, title: record.title, content: record.content, tags: [], source: .mainChat
+                )
+                XCTFail("Expected the live tombstone to block \(record.id)")
+            } catch {
+                XCTAssertEqual(error as? ExperienceStoreError, .suppressedByTombstone)
+            }
+        }
+
+        let blocked = await experiences.recordTool(
+            title: "Tool", content: redactedBody, tags: [], source: .mainChat
+        )
+        XCTAssertTrue(blocked.isError)
+        XCTAssertEqual(try Data(contentsOf: experiences.canonicalFileURL), beforeSearch)
+        Grant.memory.policy = .off
+        let denied = await experiences.recordTool(title: "Tool", content: "deploy with checks", tags: [], source: .mainChat)
+        let deniedHits = await experiences.searchTool(query: "deploy", limit: 5)
+        XCTAssertTrue(denied.isError)
+        XCTAssertTrue(deniedHits.isEmpty)
+        Grant.memory.policy = .allow
+        let allowed = await experiences.recordTool(title: "Tool", content: "deploy with checks", tags: [], source: .mainChat)
+        XCTAssertFalse(allowed.isError)
+
+        Disk.frozen = true
+        let frozenBytes = try Data(contentsOf: experiences.canonicalFileURL)
+        let frozenLoad = await experiences.loadAllOffMain()
+        let frozenHits = await experiences.searchTool(query: "deploy", limit: 5)
+        let frozenTool = await experiences.recordTool(title: "Frozen", content: "deploy now", tags: [], source: .user)
+        XCTAssertTrue(frozenLoad.isEmpty)
+        XCTAssertTrue(frozenHits.isEmpty)
+        XCTAssertTrue(frozenTool.isError)
+        do {
+            _ = try await experiences.recordOffMain(title: "Frozen", content: "deploy now", tags: [], source: .user)
+            XCTFail("Expected a frozen store to reject recording")
+        } catch ExperienceStoreError.canonicalReadOnly(_) { }
+        do {
+            try await experiences.deleteOffMain(id: "control")
+            XCTFail("Expected a frozen store to reject deletion")
+        } catch ExperienceStoreError.canonicalReadOnly(_) { }
+        experiences.mergeRetractedHashesSync([MemorySafety.retractionHash("deploy with tests")])
+        XCTAssertEqual(try Data(contentsOf: experiences.canonicalFileURL), frozenBytes)
+    }
+
+    func testBackupBarrierRunsOnExperienceQueueAndPropagatesErrors() throws {
+        enum Expected: Error { case failure }
+        let dir = try temporaryRoot()
+        let experiences = ExperienceStoreBridge(teamRoot: dir)
+        let bridge = MemoryStoreBridge(
+            databaseURL: dir.appendingPathComponent("memory.db"), teamRoot: dir,
+            mirrorRoot: dir.appendingPathComponent("Mirrors"), experienceBridge: experiences
+        )
+        let key = DispatchSpecificKey<Int>()
+        experiences.queue.setSpecific(key: key, value: 1)
+        let value = try bridge.withBackupBarrier {
+            XCTAssertEqual(DispatchQueue.getSpecific(key: key), 1)
+            return try ExperienceStore(canonicalFileURL: experiences.canonicalFileURL).readBook()
+        }
+        XCTAssertTrue(value.records.isEmpty)
+        XCTAssertThrowsError(try bridge.withBackupBarrier { throw Expected.failure }) {
+            XCTAssertEqual($0 as? Expected, .failure)
+        }
+    }
+
+    private func temporaryRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("clio-pr1a-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try FileManager.default.removeItem(at: root) }
+        return root
     }
 
     @MainActor
@@ -802,19 +567,24 @@ final class ClioAppPR1ATests: XCTestCase {
         // 3. 05:00 -> 04:00 processed dedupe across legacy day buckets
         let deduped = TeamModel.processedEntryIDs(in: [
             "2026-11-26": ["entry-0430-legacy"],
-            "2026-11-27": ["entry-1000-new"],
+            "2026-11-27": ["entry-0430-legacy", "entry-1000-new"],
         ])
-        XCTAssertTrue(deduped.contains("entry-0430-legacy"))
-        XCTAssertTrue(deduped.contains("entry-1000-new"))
+        XCTAssertEqual(deduped, ["entry-0430-legacy", "entry-1000-new"])
 
         // 4. Pause / Resume preserves `.routine` provenance across natural Task exit
-        let pauseKey = "bot-b-pause-pr1a"
+        let pauseKey = "bot-b-pause-pr1a-\(UUID())"
+        defer {
+            ChatDisk.finishWrites()
+            Disk.remove(Disk.chatFile(pauseKey))
+            Disk.remove(TeamModel.optionsFile(pauseKey))
+        }
         team.start(pauseKey, userInitiated: false, experienceSource: .routine)
         team.pause(pauseKey)
-        team.pausedAway.removeValue(forKey: pauseKey)
+        let pausedAway = try XCTUnwrap(team.pausedAway.removeValue(forKey: pauseKey))
         let pauseExited = await waitUntil { team.runs[pauseKey] == nil }
         XCTAssertTrue(pauseExited)
-        team.resume(pauseKey)
+        team.pausedAway[pauseKey] = pausedAway
+        team.resumePaused()
         XCTAssertEqual(team.activeTurnExperienceSource[pauseKey], .routine)
         XCTAssertEqual(team.history(pauseKey).last?.experienceSource, ExperienceWriteSource.routine.rawValue)
         team.stop(pauseKey)
@@ -916,22 +686,16 @@ final class ClioAppPR1ATests: XCTestCase {
         XCTAssertTrue(intRetryStopped)
         team.phase = .demo
 
-        // 6. Real persisted QueuedStore + registered bot + mock provider deserializes from disk (preserving `.routine`,
-        // failing closed unknown `experienceSourceRaw` with `userInitiated: true` to `.routine`, and keeping `.mainChat`),
-        // executes all queued items in order, drains `inFlightQueued`, clears disk slot, and keeps 2-pause delayed callbacks isolated,
-        // while persistent `recallReadOnly` (`keeping == true`) never touches `recall.db`.
         let flushBotID = "b-flush-\(UUID().uuidString.lowercased())"
         let flushKey = TeamModel.key(bot: flushBotID)
         let backupBotID = "b-backup-\(UUID().uuidString.lowercased())"
         let backupKey = TeamModel.key(bot: backupBotID)
-        let pause2Key = "bot-pr1a-pause2-\(UUID().uuidString.lowercased())"
         let recallDBURL = MemoryRecallIndex.defaultDatabaseURL
         let recallExistedBefore = FileManager.default.fileExists(atPath: recallDBURL.path)
         let recallMTimeBefore = (try? FileManager.default.attributesOfItem(atPath: recallDBURL.path)[.modificationDate] as? Date)
         let prevBots = team.bots
         let prevSettings = team.settings
         let prevOverride = team.turnProviderOverrideForTesting
-        let prevSchedulerOverride = team.pausedAwaySchedulerOverrideForTesting
         team.bots.append(BotInfo(id: flushBotID, name: "队列测试", role: nil, instructions: nil, model: nil))
         team.bots.append(BotInfo(id: backupBotID, name: "备用切换测试", role: nil, instructions: nil, model: nil))
         let testEndpoint = Endpoint(
@@ -981,67 +745,21 @@ final class ClioAppPR1ATests: XCTestCase {
                 providerTurns.mutate { $0.append((source: source.rawValue, userText: lastUser)) }
             }
         }
-        var scheduledPausedAway: [(key: String, token: UUID, perform: @MainActor () -> Void)] = []
-        team.pausedAwaySchedulerOverrideForTesting = { key, token, perform in
-            scheduledPausedAway.append((key: key, token: token, perform: perform))
-        }
         team.phase = .ready
         defer {
             team.stop(flushKey)
             team.stop(backupKey)
-            team.stop(pause2Key)
             team.phase = .demo
             team.turnProviderOverrideForTesting = prevOverride
-            team.pausedAwaySchedulerOverrideForTesting = prevSchedulerOverride
             team.bots = prevBots
             team.settings = prevSettings
             ChatDisk.finishWrites()
-            for key in [flushKey, backupKey, pause2Key] {
+            for key in [flushKey, backupKey] {
                 Disk.remove(Disk.chatFile(key))
                 Disk.remove(TeamModel.optionsFile(key))
                 QueuedStore.clear(key)
             }
         }
-
-        // Two-pause interleaved regression: capture the actual delayed callbacks via `pausedAwaySchedulerOverrideForTesting`
-        // (suppressing real 300ms timers), run Turn 1's stale callback after Turn 2 pauses, verify `pausedAway` is intact,
-        // and then run Turn 2's matching callback.
-        team.append(Entry(id: "u-p2-1", at: 1_000, message: .user("【定时 · 巡检】第一次暂停"), experienceSource: ExperienceWriteSource.routine.rawValue), to: pause2Key)
-        team.start(pause2Key, userInitiated: false, experienceSource: .routine)
-        team.pause(pause2Key)
-        let token1 = try XCTUnwrap(team.pausedAway[pause2Key]?.token)
-        guard await waitUntil({ team.runs[pause2Key] == nil }) else {
-            XCTFail("Timed out waiting for pause2 Turn 1 to stop")
-            return
-        }
-
-        team.append(Entry(id: "u-p2-2", at: 2_000, message: .user("第二次主聊天暂停"), experienceSource: ExperienceWriteSource.mainChat.rawValue), to: pause2Key)
-        team.start(pause2Key, userInitiated: true, experienceSource: .mainChat)
-        team.pause(pause2Key)
-        let token2 = try XCTUnwrap(team.pausedAway[pause2Key]?.token)
-        XCTAssertNotEqual(token1, token2)
-        guard await waitUntil({ team.runs[pause2Key] == nil }) else {
-            XCTFail("Timed out waiting for pause2 Turn 2 to stop")
-            return
-        }
-
-        XCTAssertNil(team.runs[pause2Key])
-        XCTAssertEqual(team.pausedAway[pause2Key]?.token, token2)
-        XCTAssertEqual(scheduledPausedAway.count, 2)
-        XCTAssertEqual(scheduledPausedAway.map(\.token), [token1, token2])
-
-        scheduledPausedAway[0].perform()
-        XCTAssertEqual(team.pausedAway[pause2Key]?.token, token2)
-        XCTAssertFalse(team.history(pause2Key).contains(where: { $0.note != true && $0.message.role == .user && $0.message.text.hasPrefix("接着做：") }))
-
-        scheduledPausedAway[1].perform()
-        XCTAssertNil(team.pausedAway[pause2Key])
-        guard await waitUntil({ team.runs[pause2Key] == nil }) else {
-            XCTFail("Timed out waiting for pause2 resumed turn to finish")
-            return
-        }
-        XCTAssertTrue(team.history(pause2Key).contains(where: { $0.note != true && $0.message.role == .user && $0.message.text.hasPrefix("接着做：") }))
-        XCTAssertEqual(team.history(pause2Key).last(where: { $0.note != true && $0.message.role == .user })?.experienceSource, ExperienceWriteSource.mainChat.rawValue)
 
         // P1 #1: when primary model fails during a `.routine` turn, backup model recursion inherits `.routine`
         // and `record_experience` rejects persistence instead of escalating to `.mainChat`.

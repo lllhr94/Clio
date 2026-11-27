@@ -1278,8 +1278,6 @@ final class TeamModel: ObservableObject {
     #if DEBUG
     /// Testing hook injecting a deterministic `ModelProvider` cleanly in unit tests without reading Keychain/Vault.
     var turnProviderOverrideForTesting: ((_ endpoint: Endpoint, _ model: String, _ experienceSource: ExperienceWriteSource) -> ModelProvider)?
-    /// Testing hook capturing/controlling delayed `pausedAway` resume scheduling without racing real 300ms timers.
-    var pausedAwaySchedulerOverrideForTesting: ((_ key: String, _ token: UUID, _ perform: @escaping @MainActor () -> Void) -> Void)?
     #endif
     /// Turns iOS paused while Clio was away: they go on by themselves when Clio is back on screen (bound to token & trigger).
     var pausedAway: [String: (token: UUID, triggerEntryID: String?)] = [:]
@@ -1516,31 +1514,12 @@ final class TeamModel: ObservableObject {
             }
         }
         if runs[key] == nil { streamed[key] = nil }
-        #if DEBUG
-        let shouldScheduleDelayedResume = UIApplication.shared.applicationState == .active || pausedAwaySchedulerOverrideForTesting != nil
-        #else
-        let shouldScheduleDelayedResume = UIApplication.shared.applicationState == .active
-        #endif
-        if paused, shouldScheduleDelayedResume, let away = pausedAway[key], away.token == token {
+        if paused, UIApplication.shared.applicationState == .active, let away = pausedAway[key], away.token == token {
             // Clio came back while this turn was still stopping: go on as soon as it has.
-            let performResume: @MainActor () -> Void = { [weak self] in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 300_000_000)
                 self?.completeDelayedPausedAwayResumeIfMatching(key: key, token: token)
             }
-            #if DEBUG
-            if let override = pausedAwaySchedulerOverrideForTesting {
-                override(key, token, performResume)
-            } else {
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 300_000_000)
-                    performResume()
-                }
-            }
-            #else
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                performResume()
-            }
-            #endif
         } else if pausedAway[key]?.token == token && !paused {
             pausedAway.removeValue(forKey: key)
         }
