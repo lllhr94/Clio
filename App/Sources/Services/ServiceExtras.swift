@@ -106,6 +106,14 @@ enum RecentModelsStore {
         guard let data = defaults.data(forKey: key),
               let refs = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         var seen = Set<String>()
-        return Array(refs.lazy.filter { seen.insert($0).inserted }.prefix(3))
+        var result: [String] = []
+        result.reserveCapacity(3)
+        for ref in refs {
+            if seen.insert(ref).inserted {
+                result.append(ref)
+                if result.count == 3 { break }
+            }
+        }
+        return result
     }
 }
