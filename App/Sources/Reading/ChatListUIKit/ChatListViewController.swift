@@ -2063,14 +2063,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private func currentUserAvatarSignature() -> String {
         let face = UserDefaults.standard.string(forKey: "me.avatar") ?? ""
-        let petChoice = PetLibrary.shared.choice
+        let legacyPet = CompanionAvatar.legacyPack(for: face)?.dir.path ?? ""
         let photoID: Int
         if face == "photo", let img = Avatars.image("me") {
             photoID = ObjectIdentifier(img).hashValue
         } else {
             photoID = 0
         }
-        return "\(face)|\(petChoice)|\(photoID)"
+        return "\(face)|\(legacyPet)|\(photoID)"
     }
 
     private func handleUserDefaultsChanged() {

@@ -1149,7 +1149,6 @@ struct ChatPage: View {
             dockTopY: dockTopY,
             nonKeyboardSafeMaxY: nonKeyboardSafeMaxY,
             petPerch: petPerch,
-            face: isRoom ? nil : bot.avatar,
             viewport: chatViewport
         )
     }
@@ -1924,7 +1923,7 @@ private struct ChatEmptyPetFace: View {
                 cheering: cheering,
                 dozing: dozing
             )
-            PetStill(size: 96, state: state, bot: isRoom ? nil : bot)
+            CompanionAvatar(size: 96, state: state, bot: isRoom ? nil : bot)
         }
     }
 }
@@ -1952,7 +1951,7 @@ private struct ChatActiveEmptyPetFace: View {
             cheering: cheering,
             dozing: dozing
         )
-        PetStill(size: 96, state: state, bot: isRoom ? nil : bot)
+        CompanionAvatar(size: 96, state: state, bot: isRoom ? nil : bot)
     }
 }
 
@@ -2179,7 +2178,6 @@ private struct ChatToastClearanceObserver: View {
     let dockTopY: CGFloat?
     let nonKeyboardSafeMaxY: CGFloat?
     let petPerch: PetPerch
-    let face: String?
     let viewport: CGSize
     @Environment(\.displayScale) private var displayScale
 
@@ -2187,7 +2185,7 @@ private struct ChatToastClearanceObserver: View {
         let library = PetLibrary.shared
         guard library.shown, !petPerch.suppressed else { return 0 }
         if petPerch.replyStand > 0 { return petPerch.replyStand }
-        guard let pack = library.pack(for: face), viewport.width > 0, viewport.height > 0 else { return 0 }
+        guard let pack = library.pack, viewport.width > 0, viewport.height > 0 else { return 0 }
         let unit = PetSize.unit(
             for: pack,
             factor: library.factor,

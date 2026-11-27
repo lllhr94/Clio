@@ -22,13 +22,13 @@ private enum ChatAvatarTapBounce {
     }
 }
 
-/// Pure UIKit pet/companion avatar view matching `PetStill`.
+/// Pure UIKit rendering of a companion portrait.
 @MainActor
 final class ChatPetAvatarView: UIView {
     private let bounceView = UIView()
     private let bgLayer = CALayer()
     private let imageView = UIImageView()
-    private let fallbackView = UIImageView()
+    private let fallbackView = UILabel()
     private lazy var tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleAvatarTap))
 
     var isTapBounceEnabled = false {
@@ -62,8 +62,8 @@ final class ChatPetAvatarView: UIView {
         imageView.clipsToBounds = true
         bounceView.addSubview(imageView)
 
-        fallbackView.image = UIImage(systemName: "person.crop.circle")
-        fallbackView.contentMode = .scaleAspectFit
+        fallbackView.textAlignment = .center
+        fallbackView.adjustsFontSizeToFitWidth = true
         fallbackView.isHidden = true
         bounceView.addSubview(fallbackView)
 
@@ -86,7 +86,7 @@ final class ChatPetAvatarView: UIView {
     }
 
     func configure(bot: BotInfo?, state: String = "idle", wash: Color? = nil, avatar: Bool = true) {
-        let resolvedWash = UIColor(wash ?? Ink.accentWash).resolvedColor(with: traitCollection)
+        let resolvedWash = UIColor(wash ?? bot.map { Ink.wash(for: $0) } ?? Ink.accentWash).resolvedColor(with: traitCollection)
         let washSig = wash != nil ? washColorSignature(resolvedWash) : ""
         let photoPicture: UIImage?
         let photoToken: Int
@@ -97,15 +97,16 @@ final class ChatPetAvatarView: UIView {
             photoPicture = nil
             photoToken = 0
         }
-        let pack = photoPicture == nil ? resolvedPack(for: bot) : nil
+        let pack = photoPicture == nil ? CompanionAvatar.legacyPack(for: bot?.avatar) : nil
+        let seal = CompanionAvatar.character(name: bot?.name, seal: bot?.seal)
         let theme = Theme.shared
-        let signature = "\(bot?.id ?? "")|\(bot?.avatar ?? "")|\(state)|\(avatar ? 1 : 0)|\(PetLibrary.shared.choice)|\(PetLibrary.shared.packs.count)|\(pack?.dir.path ?? "")|\(washSig)|\(theme.key)|\(theme.white)|\(theme.oled)|\(traitCollection.userInterfaceStyle.rawValue)|\(photoToken)"
-        if signature == lastConfiguredSignature && imageView.image != nil {
+        let signature = "\(bot?.id ?? "")|\(bot?.avatar ?? "")|\(state)|\(avatar ? 1 : 0)|\(seal)|\(pack?.dir.path ?? "")|\(washSig)|\(theme.key)|\(theme.white)|\(theme.oled)|\(traitCollection.userInterfaceStyle.rawValue)|\(photoToken)"
+        if signature == lastConfiguredSignature {
             return
         }
 
         isAvatarCircle = avatar
-        currentWash = wash
+        currentWash = wash ?? bot.map { Ink.wash(for: $0) }
 
         if let picture = photoPicture {
             lastConfiguredSignature = signature
@@ -138,13 +139,14 @@ final class ChatPetAvatarView: UIView {
             imageView.image = UIImage(cgImage: cell)
             imageView.layer.magnificationFilter = pack.pixelArt ? .nearest : .linear
         } else {
-            lastConfiguredSignature = ""
+            lastConfiguredSignature = pack == nil ? signature : ""
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             bgLayer.isHidden = !avatar
             CATransaction.commit()
             imageView.image = nil
             imageView.isHidden = true
+            fallbackView.text = seal
             fallbackView.isHidden = false
         }
         refreshColors(resolvedWash: resolvedWash)
@@ -162,21 +164,13 @@ final class ChatPetAvatarView: UIView {
         return "\(color.cgColor.hashValue)"
     }
 
-    private func resolvedPack(for bot: BotInfo?) -> PetPack? {
-        if let chosen = bot?.avatar, chosen.hasPrefix("pet:") {
-            let id = String(chosen.dropFirst(4))
-            if let own = PetLibrary.shared.packs.first(where: { $0.id == id }) { return own }
-        }
-        return PetLibrary.shared.pack
-    }
-
     private func refreshColors(resolvedWash: UIColor? = nil) {
         let color = (resolvedWash ?? UIColor(currentWash ?? Ink.accentWash).resolvedColor(with: traitCollection)).cgColor
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         bgLayer.backgroundColor = color
         CATransaction.commit()
-        fallbackView.tintColor = UIColor(Ink.inkFaint)
+        fallbackView.textColor = UIColor(Ink.ink)
     }
 
     override func layoutSubviews() {
@@ -199,13 +193,13 @@ final class ChatPetAvatarView: UIView {
             let inset = (side - inner) * 0.5
             imageView.frame = CGRect(x: inset, y: inset, width: inner, height: inner)
             imageView.layer.cornerRadius = 0
-            let fallbackInset = inset + inner * 0.12
-            fallbackView.frame = CGRect(x: fallbackInset, y: fallbackInset, width: inner * 0.76, height: inner * 0.76)
+            fallbackView.font = Ink.uiFace(side * 0.52, bold: true, face: Pref.mark)
+            fallbackView.frame = bounds
         }
     }
 }
 
-/// Pure UIKit user avatar: renders ONLY user's photo or crisp "我" circular badge, with spring micro-bounce on tap.
+/// Pure UIKit user avatar: renders a photo, legacy pet, or crisp "我" circular badge, with spring micro-bounce on tap.
 @MainActor
 final class ChatMeAvatarView: UIView {
     private let bounceView = UIView()
@@ -277,18 +271,22 @@ final class ChatMeAvatarView: UIView {
             photoPicture = nil
             photoID = 0
         }
+        let pet = CompanionAvatar.legacyFrame(for: face)
+        let petPath = CompanionAvatar.legacyPack(for: face)?.dir.path ?? ""
         let theme = Theme.shared
-        let signature = "\(photoID > 0 ? "photo" : "char")|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
+        let signature = "\(face)|\(petPath)|\(photoID)|\(traitCollection.userInterfaceStyle.rawValue)|\(theme.key)|\(theme.white)|\(theme.oled)"
         guard signature != lastRenderedSignature else { return }
         lastRenderedSignature = signature
 
-        if let photo = photoPicture {
+        if let photo = photoPicture ?? pet?.image {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             circleLayer.isHidden = true
             CATransaction.commit()
             charLabel.isHidden = true
             photoView.isHidden = false
+            photoView.contentMode = pet == nil ? .scaleAspectFill : .scaleAspectFit
+            photoView.layer.magnificationFilter = pet?.pixelArt == true ? .nearest : .linear
             photoView.image = photo
         } else {
             charLabel.isHidden = false

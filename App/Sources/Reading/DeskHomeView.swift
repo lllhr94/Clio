@@ -247,7 +247,7 @@ struct DeskHomeView: View {
                         opened = .companion(bot.id)
                     } label: {
                         HStack(spacing: Ink.Space.s) {
-                            PetStill(size: 28, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                            CompanionAvatar(size: 28, wash: Ink.wash(for: bot), bot: bot)
                             Text(bot.name).font(Ink.label).foregroundStyle(Ink.ink)
                             if team.isWorking(TeamModel.key(bot: bot.id)) {
                                 Circle().fill(Ink.accent).frame(width: 6, height: 6)
@@ -381,7 +381,7 @@ struct DeskHomeView: View {
                 HStack(alignment: .top, spacing: Ink.Space.m) {
                     Group {
                         if let bot = item.bot {
-                            PetStill(size: 28, wash: Ink.wash(for: bot), avatar: true, bot: bot)
+                            CompanionAvatar(size: 28, wash: Ink.wash(for: bot), bot: bot)
                         } else {
                             Image(systemName: "person.3")
                                 .font(.system(size: Ink.Size.micro, weight: .semibold))

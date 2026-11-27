@@ -473,7 +473,7 @@ struct ChatBottomStackView<FindBar: View>: View {
         let budget = sharedCardBudget
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
-                PetPerchSpace(face: isRoom ? nil : bot.avatar, viewport: viewportMetrics.size)
+                PetPerchSpace(face: nil, viewport: viewportMetrics.size)
                 VStack(spacing: 0) {
                     ChatDockedFormSlot(
                         chatKey: chat.key,
@@ -555,7 +555,7 @@ struct ChatBottomStackView<FindBar: View>: View {
                         asker: asker,
                         dictationSlot: dictationSlot,
                         petPerch: petPerch,
-                        face: isRoom ? nil : bot.avatar,
+                        face: nil,
                         baseSheetOpen: baseSheetOpen,
                         coveredByPage: coveredByPage,
                         quiet: p > 0.15,

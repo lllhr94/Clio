@@ -1467,7 +1467,7 @@ private struct ChatTopBarPetFace: View {
                 cheering: cheering,
                 dozing: dozing
             )
-            PetStill(size: size, state: state, avatar: true, bot: isRoom ? nil : bot)
+            CompanionAvatar(size: size, state: state, bot: isRoom ? nil : bot)
                 .breathing(working, tint: Ink.accent)
         }
     }
@@ -1497,7 +1497,7 @@ private struct ChatActiveTopBarPetFace: View {
             cheering: cheering,
             dozing: dozing
         )
-        PetStill(size: size, state: state, avatar: true, bot: isRoom ? nil : bot)
+        CompanionAvatar(size: size, state: state, bot: isRoom ? nil : bot)
             .breathing(working, tint: Ink.accent)
     }
 }
