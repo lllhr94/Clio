@@ -298,7 +298,11 @@ extension TeamModel {
 
     /// Looks through all active memories (`.pinned`, `.surface`, `.deep`) via hybrid search.
     /// Matching `.deep` entries surface and refresh `used` when allowed.
-    func recall(_ words: String) async -> [String] {
+    /// Re-verifies live Plan mode after search and before persisting so mid-flight toggles never mutate memory.
+    func recall(_ words: String, chat key: String? = nil) async -> [String] {
+        if let key, isPlanModeActive(for: key) {
+            return await recallReadOnly(words)
+        }
         guard canMutateMemoryState else { return [] }
         let query = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
@@ -320,6 +324,9 @@ extension TeamModel {
 
         let hitIDs = Set(hits.map(\.id))
         guard !hitIDs.isEmpty else { return [] }
+        if let key, isPlanModeActive(for: key) {
+            return hits.map(\.text)
+        }
 
         let now = Now.ms
         let orderedSecrets = Vault.allStrings().filter { !$0.isEmpty }.sorted { $0.count > $1.count }
@@ -331,6 +338,10 @@ extension TeamModel {
             touchedIDs.insert(nextMemories[index].id)
         }
         guard !touchedIDs.isEmpty else {
+            return hits.map(\.text)
+        }
+
+        if let key, isPlanModeActive(for: key) {
             return hits.map(\.text)
         }
 
@@ -352,6 +363,9 @@ extension TeamModel {
             orderedSecrets: orderedSecrets
         )) != nil else {
             return []
+        }
+        if let key, isPlanModeActive(for: key) {
+            return hits.map(\.text)
         }
         MemoryRecallBridge.shared.recordUsageAsync(ids: hits.map(\.id), nowMs: now)
         return hits.map(\.text)

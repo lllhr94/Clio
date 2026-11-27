@@ -1479,6 +1479,16 @@
     "goKeyRejected": "请确认密钥属于已订阅 OpenCode Go 的账户，再试一次。",
     "oauthInvalidCallback": "登录回调无效。请返回 Clio 重试。"
   },
+  "plan": {
+    "executeAction": "按此方案执行",
+    "executePrompt": "按上面的方案开始执行。",
+    "statusCapsule": "规划模式 · 只看不动",
+    "exitAction": "退出规划",
+    "modeTitle": "规划模式",
+    "modeSubtitle": "只读调研并先列方案，确认后再动手",
+    "enterMenu": "进入规划模式（只看不动）",
+    "exitMenu": "退出规划模式"
+  },
   "persona": {
     "wizard": "聊几句生成",
     "relationship": "身份与相处方式",
