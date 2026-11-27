@@ -357,6 +357,7 @@ final class ClioAppPR1ATests: XCTestCase {
         XCTAssertThrowsError(try relaunch.commitAppBook(
             relaunched.book, suppressedHashes: [], bots: [], mainBotId: nil, secrets: []
         ))
+        relaunch.flushSync()
     }
 
     @MainActor
@@ -368,6 +369,7 @@ final class ClioAppPR1ATests: XCTestCase {
         let recallDB = recallDir.appendingPathComponent("ClioMemory/recall.db")
         try FileManager.default.createDirectory(at: recallTeam, withIntermediateDirectories: true)
         let recallBridge = MemoryStoreBridge(databaseURL: recallDB, teamRoot: recallTeam, mirrorRoot: recallMirror)
+        defer { recallBridge.flushSync() }
         _ = try recallBridge.revisionStore.commitWithJournal(
             CanonicalMemoryBook(memories: [
                 CanonicalMemoryItem(id: "m-deep-hit", text: "北海道冬天滑雪攻略", at: 1_000, deep: true),
@@ -524,7 +526,7 @@ final class ClioAppPR1ATests: XCTestCase {
     private func temporaryRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("clio-pr1a-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        addTeardownBlock { try FileManager.default.removeItem(at: root) }
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         return root
     }
 
