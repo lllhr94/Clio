@@ -253,16 +253,29 @@ enum ChatDockCardBudget {
         )
         var remaining = totalBudget
 
+        let gap: CGFloat = 8
+        let askReserve: CGFloat = input.hasInlineAsk ? (minInlineAskHeight + gap) : 0
+        let planReserve: CGFloat = input.hasPlanCard ? (minExpandedPlanHeight + gap) : 0
+
         // Priority 1: Forced / pending approval card (NEVER downgraded; falls back only to full approval sheet).
         let approvalLayout: ApprovalLayout
         if input.hasPendingApproval {
             if input.canInlineApproval && remaining >= minInlineApprovalHeight {
-                let cap = min(remaining, maxInlineApprovalHeight)
+                let lowerReserve: CGFloat
+                if remaining >= minInlineApprovalHeight + askReserve + planReserve {
+                    lowerReserve = askReserve + planReserve
+                } else if remaining >= minInlineApprovalHeight + askReserve {
+                    lowerReserve = askReserve
+                } else {
+                    lowerReserve = 0
+                }
+                let generousCap = max(minInlineApprovalHeight, remaining - lowerReserve)
+                let cap = min(remaining, min(maxInlineApprovalHeight, generousCap))
                 approvalLayout = .inline(maxHeight: cap)
-                remaining = max(0, remaining - cap - 8)
+                remaining = max(0, remaining - cap - gap)
             } else {
                 approvalLayout = .sheetFallbackOnly
-                remaining = max(0, remaining - compactApprovalBannerHeight - 8)
+                remaining = max(0, remaining - compactApprovalBannerHeight - gap)
             }
         } else {
             approvalLayout = .none
@@ -273,12 +286,14 @@ enum ChatDockCardBudget {
         if input.hasInlineAsk {
             if remaining >= minInlineAskHeight {
                 let shareCap = max(minInlineAskHeight, aboveKeyboard * 0.34)
-                let cap = min(remaining, shareCap)
+                let reserveForPlan = (input.hasPlanCard && remaining >= minInlineAskHeight + planReserve) ? planReserve : 0
+                let generousCap = max(minInlineAskHeight, remaining - reserveForPlan)
+                let cap = min(remaining, min(shareCap, generousCap))
                 askLayout = .inline(maxHeight: cap)
-                remaining = max(0, remaining - cap - 8)
+                remaining = max(0, remaining - cap - gap)
             } else {
                 askLayout = .compactSummaryWithSheetFallback
-                remaining = max(0, remaining - compactAskSummaryHeight - 8)
+                remaining = max(0, remaining - compactAskSummaryHeight - gap)
             }
         } else {
             askLayout = .none
