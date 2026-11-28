@@ -390,7 +390,20 @@
     "quickStorage": "空间",
     "quickBackupReady": "网盘就绪",
     "quickBackupUnset": "未设网盘",
-    "aboutFooter": "关于与版本"
+    "aboutFooter": "关于与版本",
+    "companionsExperienceGroup": "助手与体验",
+    "securityAndDataGroup": "安全与数据",
+    "capabilities": "权限与工具",
+    "capabilitiesLine": "权限批准、联网搜索、连接器、技能与主机",
+    "memoryAndRoutine": "记忆与日程",
+    "memoryAndRoutineLine": "记忆管理、定时任务、早报与晚间日记",
+    "appearance": "外观与排版",
+    "appearanceLine": "主题颜色、字体字号、称谓与桌宠",
+    "chatAndVoice": "对话与语音",
+    "chatAndVoiceLine": "显示与触感、上下文压缩与语音转写",
+    "privacy": "隐私与密码匣",
+    "privacyLine": "面容锁与账号密码管理",
+    "careHubLine": "备份、用量、存储清理与运行诊断"
   },
   "alwaysOn": {
     "open": "常亮黑屏",

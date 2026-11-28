@@ -390,7 +390,20 @@
     "quickStorage": "空间",
     "quickBackupReady": "网盘就绪",
     "quickBackupUnset": "未设网盘",
-    "aboutFooter": "关于与版本"
+    "aboutFooter": "关于与版本",
+    "companionsExperienceGroup": "旅伴与体验",
+    "securityAndDataGroup": "安全与养护",
+    "capabilities": "应许与诸艺",
+    "capabilitiesLine": "应许、寻访、港湾、良方与远山",
+    "memoryAndRoutine": "拾遗与日课",
+    "memoryAndRoutineLine": "拾遗整理、更漏定时、晨信与手札",
+    "appearance": "纸墨与排版",
+    "appearanceLine": "设色、字体疏密、称谓与伴读小宠",
+    "chatAndVoice": "絮语与语音",
+    "chatAndVoiceLine": "絮语显示、文脉收卷与语音转写",
+    "privacy": "隐私与密匣",
+    "privacyLine": "面容锁与密匣管理",
+    "careHubLine": "备份、墨量、存储清理与运行诊断"
   },
   "alwaysOn": {
     "open": "常亮黑屏",
