@@ -503,6 +503,9 @@ static NSString *den_configure_unix_socket_prefix(void) {
         return err;
     }
     struct task *task = current;
+    // Isolate each command in its own process group (pgid == task->pid, never init's pgid 1)
+    // so cancelling or timing out terminates spawned children too.
+    sys_setpgid(0, 0);
     struct fd *inFd = den_null_fd(O_RDONLY);
     struct fd *outFd = den_host_fd(outPipe[1]);
     struct fd *errFd = den_host_fd(errPipe[1]);
@@ -570,6 +573,9 @@ static NSString *den_configure_unix_socket_prefix(void) {
             if (got > 0) {
                 [pending appendBytes:buffer length:got];
                 [self flush:pending run:run error:isError final:NO];
+                // Cap an unbounded non-newline stream at 256 KB to prevent OOM.
+                if (pending.length >= 262144)
+                    [self flush:pending run:run error:isError final:YES];
             } else if (got == 0) {
                 break;
             } else if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
@@ -676,13 +682,28 @@ static NSString *den_configure_unix_socket_prefix(void) {
 }
 
 + (BOOL)kill:(int)pid {
+    if (pid <= 1)
+        return NO;
     struct siginfo_ info = SIGINFO_NIL;
+    pid_t_ pgid = 0;
     lock(&pids_lock);
     struct task *task = pid_get_task((dword_t) pid);
-    if (task)
+    if (task) {
+        if (task->group != NULL && task->group->pgid > 1 && task->group->pgid == task->pid)
+            pgid = task->group->pgid;
         send_signal(task, SIGKILL_, info);
+    }
     unlock(&pids_lock);
-    return task != NULL;
+    // Kill the isolated command's entire process group (children spawned by /bin/sh -c),
+    // never init's pgid 1.
+    if (pgid > 1) {
+        send_group_signal(pgid, SIGKILL_, info);
+    } else if (task == NULL) {
+        // Parent shell may already have exited while children remain in pgid == pid.
+        if (send_group_signal((dword_t) pid, SIGKILL_, info) == 0)
+            return YES;
+    }
+    return task != NULL || pgid > 1;
 }
 
 @end

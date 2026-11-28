@@ -7,8 +7,7 @@ import WebKit
 
 /// Single source of truth for Clio's per-device network routing, local proxy hub,
 /// per-scope `URLSession` pooling, `WKWebView` proxy wiring, and Den shell proxy sync.
-@MainActor
-final class NetworkRuntime: ObservableObject {
+final class NetworkRuntime: ObservableObject, @unchecked Sendable {
     static let shared = NetworkRuntime()
 
     /// Device-local key (intentionally NOT prefixed with `chat.` so local proxies never leak into cross-device backups).
@@ -26,6 +25,7 @@ final class NetworkRuntime: ObservableObject {
     private var generation: UInt64 = 0
     private var started = false
     private weak var registeredBrowserStore: WKWebsiteDataStore?
+    private var applyTask: Task<Void, Never>?
 
     private final class SessionCacheBox: @unchecked Sendable {
         private let lock = NSLock()
@@ -123,6 +123,7 @@ final class NetworkRuntime: ObservableObject {
     }
 
     /// Installs `AgentNetworkRouter` hooks once at app launch and starts the local proxy entry if configured.
+    @MainActor
     func start() {
         guard !started else { return }
         started = true
@@ -138,9 +139,7 @@ final class NetworkRuntime: ObservableObject {
             }
         )
 
-        Task {
-            await applyCurrentSettings()
-        }
+        scheduleApply()
     }
 
     // MARK: Persistence & Mutations
@@ -172,17 +171,17 @@ final class NetworkRuntime: ObservableObject {
         }
     }
 
+    @MainActor
     func update(_ transform: (inout NetworkRoutingSettings) -> Void) {
         var copy = settings
         transform(&copy)
         settings = copy
         persist(copy)
         refreshPasswordSnapshot(for: copy)
-        Task {
-            await applyCurrentSettings()
-        }
+        scheduleApply()
     }
 
+    @MainActor
     func saveProxy(_ profile: ProxyProfile, password: String?) {
         var copy = settings
         if let idx = copy.proxies.firstIndex(where: { $0.id.uppercased() == profile.id.uppercased() }) {
@@ -200,11 +199,10 @@ final class NetworkRuntime: ObservableObject {
         settings = copy
         persist(copy)
         refreshPasswordSnapshot(for: copy)
-        Task {
-            await applyCurrentSettings()
-        }
+        scheduleApply()
     }
 
+    @MainActor
     func deleteProxy(id: String) {
         if let existing = settings.proxy(id: id) {
             Vault.remove(existing.vaultKey)
@@ -213,9 +211,21 @@ final class NetworkRuntime: ObservableObject {
         settings = updated
         persist(updated)
         refreshPasswordSnapshot(for: updated)
-        Task {
+        scheduleApply()
+    }
+
+    @MainActor
+    private func scheduleApply() {
+        let previous = applyTask
+        applyTask = Task { @MainActor in
+            await previous?.value
             await applyCurrentSettings()
         }
+    }
+
+    @MainActor
+    func waitUntilApplied() async {
+        await applyTask?.value
     }
 
     func hasStoredPassword(for proxyID: String) -> Bool {
@@ -223,6 +233,7 @@ final class NetworkRuntime: ObservableObject {
         return !(Vault.load(String.self, key: key) ?? "").isEmpty
     }
 
+    @MainActor
     func applyCurrentSettings() async {
         isApplying = true
         defer { isApplying = false }
@@ -260,7 +271,7 @@ final class NetworkRuntime: ObservableObject {
               let httpPort = NWEndpoint.Port(rawValue: endpoints.httpPort) else {
             return []
         }
-        var proxy = ProxyConfiguration(httpCONNECTProxy: .hostPort(host: .ipv4(.loopback), port: httpPort))
+        let proxy = ProxyConfiguration(httpCONNECTProxy: .hostPort(host: .ipv4(.loopback), port: httpPort))
         proxy.applyCredential(username: scope.tag, password: endpoints.password)
         return [proxy]
     }
@@ -295,23 +306,25 @@ final class NetworkRuntime: ObservableObject {
 
     // MARK: Browser Integration
 
+    @MainActor
     func registerBrowserStore(_ store: WKWebsiteDataStore) {
         registeredBrowserStore = store
         applyToBrowser(store)
     }
 
+    @MainActor
     func applyToBrowser(_ store: WKWebsiteDataStore) {
         store.proxyConfigurations = proxyConfigurations(for: .browser)
     }
 
     // MARK: Den Shell & OpenSSH Integration
 
-    nonisolated static var denNetDirectory: URL {
+    static var denNetDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Den/net", isDirectory: true)
     }
 
-    nonisolated func shellEnvironment() -> [String: String] {
+    func shellEnvironment() -> [String: String] {
         let st = snapshot.read()
         return NetworkShellConfig.environment(
             settings: st.settings,
@@ -321,7 +334,7 @@ final class NetworkRuntime: ObservableObject {
         )
     }
 
-    nonisolated func redactSecrets(in text: String) -> String {
+    func redactSecrets(in text: String) -> String {
         let st = snapshot.read()
         var secrets: [String] = []
         if let pw = st.endpoints?.password, !pw.isEmpty {
@@ -331,7 +344,7 @@ final class NetworkRuntime: ObservableObject {
         return NetworkRedaction.redact(text, secrets: secrets)
     }
 
-    nonisolated func syncDenNetworkFiles(settings: NetworkRoutingSettings, endpoints: ClioNetHub.EntryEndpoints?) {
+    func syncDenNetworkFiles(settings: NetworkRoutingSettings, endpoints: ClioNetHub.EntryEndpoints?) {
         let dir = Self.denNetDirectory
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -354,6 +367,7 @@ final class NetworkRuntime: ObservableObject {
 
     // MARK: Diagnostics & Logging
 
+    @MainActor
     private func appendLog(_ line: String) {
         let stamp = Self.timeFormatter.string(from: Date())
         recentLogs.append("[\(stamp)] \(line)")
@@ -368,7 +382,7 @@ final class NetworkRuntime: ObservableObject {
         return f
     }()
 
-    nonisolated static func systemProxySummary() -> String {
+    static func systemProxySummary() -> String {
         guard let cf = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
             return "无系统代理"
         }
@@ -391,7 +405,9 @@ final class NetworkRuntime: ObservableObject {
         return parts.isEmpty ? "直连（无系统代理配置）" : parts.joined(separator: " · ")
     }
 
+    @MainActor
     func runDiagnostics() async -> [ClioNetHub.DiagnosticItem] {
+        await applyTask?.value
         let current = settings
         let sysProxy = Self.systemProxySummary()
         let dnsServers = Den.shared.appliedDNSServers
@@ -404,6 +420,7 @@ final class NetworkRuntime: ObservableObject {
         )
     }
 
+    @MainActor
     func formattedDiagnosticReport(items: [ClioNetHub.DiagnosticItem]) -> String {
         var lines: [String] = ["# Clio 网络诊断报告", ""]
         for item in items {

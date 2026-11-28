@@ -98,12 +98,16 @@ final class FontShelf {
 struct FontPage: View {
     @State private var shelf = FontShelf.shared
 
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.37"
+    }
+
     var body: some View {
         Form {
             PaperRows {
                 Section {
                     ForEach(Pref.Face.allCases) { face in
-                        row(face, picked: Pref.face == face, sample: "纸墨之间，自有清欢。Clio 0.36") {
+                        row(face, picked: Pref.face == face, sample: "纸墨之间，自有清欢。Clio \(appVersion)") {
                             Theme.shared.setFace(face)
                         }
                     }

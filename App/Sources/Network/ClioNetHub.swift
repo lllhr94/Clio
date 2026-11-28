@@ -424,22 +424,39 @@ final class ClioNetHub: @unchecked Sendable {
     private func dial(
         decision: NetworkRouteDecision,
         targetHost: String,
-        targetPort: UInt16
+        targetPort: UInt16,
+        timeoutSeconds: Double = 20
     ) async throws -> (NWConnection, Data) {
         switch decision.kind {
         case .direct:
-            let conn = try await connectTCP(host: targetHost, port: targetPort, useTLS: false, timeoutSeconds: 20)
+            let conn = try await connectTCP(host: targetHost, port: targetPort, useTLS: false, timeoutSeconds: timeoutSeconds)
             return (conn, Data())
         case .proxy(let profile):
             let password = passwordProvider(profile.id) ?? ""
             switch profile.kind {
             case .socks5:
-                return try await dialUpstreamSocks5(profile: profile, password: password, targetHost: targetHost, targetPort: targetPort)
+                return try await dialUpstreamSocks5(profile: profile, password: password, targetHost: targetHost, targetPort: targetPort, timeoutSeconds: timeoutSeconds)
             case .http:
-                return try await dialUpstreamHTTPConnect(profile: profile, password: password, useTLS: false, targetHost: targetHost, targetPort: targetPort)
+                return try await dialUpstreamHTTPConnect(profile: profile, password: password, useTLS: false, targetHost: targetHost, targetPort: targetPort, timeoutSeconds: timeoutSeconds)
             case .https:
-                return try await dialUpstreamHTTPConnect(profile: profile, password: password, useTLS: true, targetHost: targetHost, targetPort: targetPort)
+                return try await dialUpstreamHTTPConnect(profile: profile, password: password, useTLS: true, targetHost: targetHost, targetPort: targetPort, timeoutSeconds: timeoutSeconds)
             }
+        }
+    }
+
+    private static func isTerminalWaitingError(_ err: NWError) -> Bool {
+        switch err {
+        case .posix(let code):
+            switch code {
+            case .ECONNREFUSED, .EHOSTUNREACH, .ENETUNREACH, .ECONNRESET, .EADDRNOTAVAIL, .EINVAL, .EPIPE:
+                return true
+            default:
+                return false
+            }
+        case .dns, .tls:
+            return true
+        @unknown default:
+            return false
         }
     }
 
@@ -473,8 +490,15 @@ final class ClioNetHub: @unchecked Sendable {
                         continuation.resume(throwing: err)
                     }
                 case .waiting(let err):
-                    // Keep waiting until timeout or ready, unless clearly unrecoverable.
-                    _ = err
+                    // Fail fast on deterministic errors (e.g. closed/refused proxy port, DNS failure, TLS error)
+                    // instead of stalling until the full connect timeout.
+                    if Self.isTerminalWaitingError(err) {
+                        timer.cancel()
+                        if done.claim() {
+                            conn.cancel()
+                            continuation.resume(throwing: err)
+                        }
+                    }
                 case .cancelled:
                     timer.cancel()
                     if done.claim() { continuation.resume(throwing: NetHubError.cancelled) }
@@ -492,9 +516,10 @@ final class ClioNetHub: @unchecked Sendable {
         profile: ProxyProfile,
         password: String,
         targetHost: String,
-        targetPort: UInt16
+        targetPort: UInt16,
+        timeoutSeconds: Double = 20
     ) async throws -> (NWConnection, Data) {
-        let conn = try await connectTCP(host: profile.host, port: UInt16(profile.port), useTLS: false, timeoutSeconds: 20)
+        let conn = try await connectTCP(host: profile.host, port: UInt16(profile.port), useTLS: false, timeoutSeconds: timeoutSeconds)
         let io = BufferedConnection(connection: conn)
         do {
             let hasAuth = !profile.username.isEmpty || !password.isEmpty
@@ -568,9 +593,10 @@ final class ClioNetHub: @unchecked Sendable {
         password: String,
         useTLS: Bool,
         targetHost: String,
-        targetPort: UInt16
+        targetPort: UInt16,
+        timeoutSeconds: Double = 20
     ) async throws -> (NWConnection, Data) {
-        let conn = try await connectTCP(host: profile.host, port: UInt16(profile.port), useTLS: useTLS, timeoutSeconds: 20)
+        let conn = try await connectTCP(host: profile.host, port: UInt16(profile.port), useTLS: useTLS, timeoutSeconds: timeoutSeconds)
         let io = BufferedConnection(connection: conn)
         do {
             let formattedTarget = targetHost.contains(":") ? "[\(targetHost)]:\(targetPort)" : "\(targetHost):\(targetPort)"
@@ -750,7 +776,7 @@ final class ClioNetHub: @unchecked Sendable {
         // 5. Direct probe
         let tDirect = ContinuousClock.now
         do {
-            let conn = try await connectTCP(host: "1.1.1.1", port: 443, useTLS: false, timeoutSeconds: 8)
+            let conn = try await connectTCP(host: "1.1.1.1", port: 443, useTLS: false, timeoutSeconds: 4)
             conn.cancel()
             items.append(DiagnosticItem(name: "直连探测 (1.1.1.1:443)", status: .ok, detail: "TCP 握手成功", elapsedMs: Self.elapsedMs(since: tDirect)))
         } catch {
@@ -762,7 +788,7 @@ final class ClioNetHub: @unchecked Sendable {
             let tProxy = ContinuousClock.now
             do {
                 let decision = NetworkRouteDecision(kind: .proxy(proxy), rule: .route, scopeTag: "default")
-                let (conn, _) = try await dial(decision: decision, targetHost: "1.1.1.1", targetPort: 443)
+                let (conn, _) = try await dial(decision: decision, targetHost: "1.1.1.1", targetPort: 443, timeoutSeconds: 5)
                 conn.cancel()
                 items.append(DiagnosticItem(
                     name: "代理「\(proxy.displayName)」",

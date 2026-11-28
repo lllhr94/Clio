@@ -2833,6 +2833,18 @@ final class TeamModel: ObservableObject {
         }
     }
 
+    /// Wraps auxiliary chat surfaces (casual track, quote sub-conversations) with unified `ModelInputLog` recording.
+    func loggedAuxiliaryProvider(_ provider: any ModelProvider, chat: String, system: String) -> ModelInputProvider {
+        let session = modelInputLog.session
+        let sections = ModelInputSections(base: system, extra: "", memory: "", skills: "")
+        return ModelInputProvider(upstream: provider, sections: sections) { [weak self] input in
+            Task { @MainActor in
+                guard let self, self.modelInputLog.session == session else { return }
+                self.modelInputLog.add(input, in: chat)
+            }
+        }
+    }
+
     func system(for bot: BotInfo, room: RoomInfo?, memory: Bool = true) -> String {
         assembledSystemPrompt(for: bot, room: room, memory: memory,
                               extraTail: companionPromptTail(for: bot, room: room)).full

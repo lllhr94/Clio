@@ -225,7 +225,11 @@ final class SubtaskManager: ObservableObject {
         let executionKey = attempt.attemptID
         let parentChat = thread.stableParentChatID
         let bgToken = UUID()
-        BackgroundTurn.begin(chat: executionKey, name: "\(helper.name) · 后台子任务", token: bgToken)
+        BackgroundTurn.begin(chat: executionKey, name: "\(helper.name) · 后台子任务", token: bgToken) { [weak self, weak team] in
+            guard let self, let team else { return }
+            guard self.runningTasks[threadID]?.attemptID == executionKey else { return }
+            self.cancelThread(threadID, includeRemoteHills: false, team: team)
+        }
 
         team.taint.clear(executionKey)
         team.resetTurnMemoryTaint(executionKey)

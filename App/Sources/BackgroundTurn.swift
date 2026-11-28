@@ -11,6 +11,7 @@ enum BackgroundTurn {
         let identifier: String
         var steps: Int64 = 0
         var task: BGContinuedProcessingTask?
+        var onExpire: (() -> Void)?
     }
     private static var turns: [String: Turn] = [:]
     static var stop: ((String, UUID) -> Void)?
@@ -18,7 +19,7 @@ enum BackgroundTurn {
     /// Off unless asked for: the system shows its own progress card.
     static var on: Bool { UserDefaults.standard.bool(forKey: "bg.continue") }
 
-    static func begin(chat: String, name: String, token: UUID) {
+    static func begin(chat: String, name: String, token: UUID, onExpire: (() -> Void)? = nil) {
         guard on, UIApplication.shared.applicationState == .active, turns[chat] == nil else { return }
         let id = prefix + token.uuidString.lowercased()
         let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: id, using: .main) { task in
@@ -31,7 +32,7 @@ enum BackgroundTurn {
         }
         let request = BGContinuedProcessingTaskRequest(identifier: id, title: "\(name)在做事", subtitle: "回到 Clio 看进度")
         request.strategy = .fail
-        turns[chat] = Turn(token: token, identifier: id)
+        turns[chat] = Turn(token: token, identifier: id, onExpire: onExpire)
         do {
             try BGTaskScheduler.shared.submit(request)
         } catch {
@@ -42,16 +43,19 @@ enum BackgroundTurn {
 
     private static func adopt(_ task: BGContinuedProcessingTask, chat: String, token: UUID) {
         guard let turn = turns[chat], turn.token == token else {
-            task.setTaskCompleted(success: false)
-            return
+            task.setTaskCompleted(success: false); return
         }
         turns[chat]?.task = task
         task.progress.totalUnitCount = 100
         task.progress.completedUnitCount = min(90, turn.steps * 8)
         task.expirationHandler = {
             Task { @MainActor in
-                guard turns[chat]?.token == token else { return }
-                stop?(chat, token)
+                guard let active = turns[chat], active.token == token else { return }
+                if let onExpire = active.onExpire {
+                    onExpire()
+                } else {
+                    stop?(chat, token)
+                }
                 end(chat: chat, token: token, ok: false)
             }
         }

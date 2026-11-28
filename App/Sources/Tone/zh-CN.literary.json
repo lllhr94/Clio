@@ -15,6 +15,7 @@
   },
   "artifacts": {
     "tab": {
+      "directory": "目录",
       "library": "资料库"
     },
     "kind": {
@@ -248,13 +249,13 @@
     "display": "絮语显示与反馈",
     "displayLine": "思考过程、淡入、震动、耗时与用量",
     "context": "压缩前文与上下文",
-    "contextLine": "设压缩阈值、上下文长度和温度",
+    "contextLine": "收卷阈值、文脉与温度",
     "grants": "应许与落款",
     "grantsLine": "决定能做哪些事、哪些要先问",
     "searchEngine": "寻访来源",
-    "searchEngineLine": "默认内置网页，也可换用 AnySearch、Tavily 等",
+    "searchEngineLine": "内置网页或 AnySearch / Tavily",
     "network": "网络与代理",
-    "networkLine": "配置代理节点、分流规则、斗室 DNS 与网络诊断",
+    "networkLine": "代理节点、分流与斗室 DNS",
     "connectorsLine": "连接谷歌、高德、Notion 等服务",
     "skillsLine": "启停、编辑或添加技能",
     "timingLine": "新建任务、设置执行时间",
@@ -337,7 +338,7 @@
     "dataGroup": "数据与养护",
     "aboutGroup": "关于",
     "careBackup": "备份与云同步",
-    "careBackupLine": "本地加密备份、WebDAV 同步与恢复",
+    "careBackupLine": "本地备份与 WebDAV 同步",
     "careUsage": "全量墨量与余额",
     "careUsageLine": "查看各段絮语墨量消耗与笔庄余额",
     "careStorage": "存储清理与已归档",
@@ -376,7 +377,7 @@
     "scheduleAndMorning": "更漏与晨信",
     "scheduleAndMorningLine": "设更漏定时、晨信时间与晚间手札",
     "typography": "字体与排版",
-    "typographyLine": "正文字号、行距、字体与疏密",
+    "typographyLine": "字号、行距、字体与疏密",
     "displayAndHaptics": "显示与触感",
     "displayAndHapticsLine": "思绪展开、淡入、触感反馈与统计",
     "identityAlbum": "从相册选一张",
@@ -390,13 +391,13 @@
     "companionsExperienceGroup": "旅伴与体验",
     "securityAndDataGroup": "安全与养护",
     "capabilities": "应许与诸艺",
-    "capabilitiesLine": "应许、寻访、港湾、良方与远山",
+    "capabilitiesLine": "应许、寻访、代理、港湾与良方",
     "memoryAndRoutine": "拾遗与日课",
     "memoryAndRoutineLine": "拾遗整理、更漏定时、晨信与手札",
     "appearance": "纸墨与排版",
-    "appearanceLine": "设色、字体疏密、称谓与伴读小宠",
+    "appearanceLine": "设色、字体、称谓与伴读",
     "chatAndVoice": "絮语与语音",
-    "chatAndVoiceLine": "絮语显示、文脉收卷与语音转写",
+    "chatAndVoiceLine": "显示、收卷与语音转写",
     "privacy": "隐私与密匣",
     "privacyLine": "面容锁与密匣管理",
     "careHubLine": "备份、墨量、存储清理与运行诊断"
@@ -788,7 +789,9 @@
     "page3": {
       "title": "择一称心称谓",
       "subtitle": "日后随时可在调弦里切换，不损分毫旧录。",
+      "dailyOptionTitle": "日常",
       "dailyOptionDesc": "直白明快，所见即所得",
+      "literaryOptionTitle": "书卷",
       "literaryOptionDesc": "纸墨尺牍，一室清雅相伴",
       "cta": "就这样"
     },
@@ -1053,7 +1056,7 @@
   },
   "voiceSettings": {
     "title": "语音输入与转写",
-    "rowFooter": "默认用苹果系统听写；也可以单独填写 Whisper / SenseVoice 等转写接口，提升中英混说准确度。",
+    "rowFooter": "系统听写或云端模型转写",
     "cloudShort": "云端转写",
     "modeSection": "识别方式",
     "modeSystemTitle": "系统自带听写",
