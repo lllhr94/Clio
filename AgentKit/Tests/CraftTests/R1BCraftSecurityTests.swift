@@ -115,4 +115,106 @@ final class R1BCraftSecurityTests: XCTestCase {
         XCTAssertFalse(MemorySafety.hasFlushableConversation(entries, eligibleIDs: ["u2", "a3"]))
         XCTAssertNil(MemorySafety.buildFlushTranscript(entries, eligibleIDs: ["u2", "a3"]))
     }
+
+    // MARK: - PR 2B: Tool-own forced approval vs taint-only escalation & CasualTrack outbox traversal
+
+    private struct OwnForcedTool: AgentTool {
+        let spec: ToolSpec
+        func label(for arguments: JSONValue) -> String { spec.name }
+        func approval(for arguments: JSONValue) -> ApprovalAsk? {
+            ApprovalAsk(title: "高危操作", reason: "工具自带强确认", forced: true)
+        }
+        func run(_ arguments: JSONValue) async throws -> ToolOutput { ToolOutput("ok") }
+    }
+
+    func testTaintGuardDistinguishesOwnForcedApprovalFromTaintOnlyEscalation() {
+        let book = TaintBook()
+        book.mark("chat-tainted")
+
+        // A tool's own `forced: true` approval must keep `forcedByTaintOnly == false` even when tainted.
+        let ownForcedGuarded = TaintGuard(
+            OwnForcedTool(spec: ToolSpec(name: "custom_destructive", description: "", parameters: .object([:]))),
+            key: "chat-tainted",
+            book: book,
+            isInside: { _ in true }
+        )
+        let ownAsk = ownForcedGuarded.approval(for: .object([:]))
+        XCTAssertEqual(ownAsk?.forced, true)
+        XCTAssertEqual(ownAsk?.forcedByTaintOnly, false)
+
+        // A regular tool escalated solely by taint must set `forcedByTaintOnly == true`.
+        let taintOnlyGuarded = TaintGuard(
+            StubTool(spec: ToolSpec(name: "run_js", description: "", parameters: .object([:]))),
+            key: "chat-tainted",
+            book: book,
+            isInside: { _ in true }
+        )
+        let taintAsk = taintOnlyGuarded.approval(for: .object(["code": .string("1+1")]))
+        XCTAssertEqual(taintAsk?.forced, true)
+        XCTAssertEqual(taintAsk?.forcedByTaintOnly, true)
+    }
+
+    func testCasualTrackStoreRejectsPathTraversalBatchIDs() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clio-r1b2-casual-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = CasualTrackStore(canonicalTeamDirectory: dir)
+        for badBatchID in ["", "../escape", "../../settings", "a/b", "a\\b", ".hidden", "bad id", "bad\nid"] {
+            let batch = CasualOutboxBatch(
+                batchID: badBatchID,
+                botID: "chief",
+                casualSessionID: "cs-1",
+                segments: ["hello"],
+                state: .queuedBeforeSend,
+                trackEpoch: 1
+            )
+            XCTAssertThrowsError(try store.saveOutboxBatch(batch)) { err in
+                if case .invalidBatchID(let rejected) = err as? CasualTrackError {
+                    XCTAssertEqual(rejected, badBatchID)
+                } else {
+                    XCTFail("Expected CasualTrackError.invalidBatchID, got: \(err)")
+                }
+            }
+            XCTAssertNil(store.loadOutboxBatch(batchID: badBatchID))
+        }
+
+        // Valid batchID still persists cleanly inside `casual/outbox/`.
+        let goodBatch = CasualOutboxBatch(
+            batchID: "batch-safe_01",
+            botID: "chief",
+            casualSessionID: "cs-1",
+            segments: ["hi"],
+            state: .queuedBeforeSend,
+            trackEpoch: 1
+        )
+        try store.saveOutboxBatch(goodBatch)
+        XCTAssertEqual(store.loadOutboxBatch(batchID: "batch-safe_01")?.batchID, "batch-safe_01")
+
+        // Outbox directory enumeration must ignore unsafe filenames and filename/batchID mismatches.
+        let outboxDir = dir.appendingPathComponent("casual/outbox", isDirectory: true)
+        let encoder = JSONEncoder()
+        let badNameBatch = CasualOutboxBatch(
+            batchID: "bad id",
+            botID: "chief",
+            casualSessionID: "cs-1",
+            segments: ["legacy"],
+            state: .queuedBeforeSend,
+            trackEpoch: 1
+        )
+        try encoder.encode(badNameBatch).write(to: outboxDir.appendingPathComponent("bad id.json"))
+        let mismatchBatch = CasualOutboxBatch(
+            batchID: "actual-other-id",
+            botID: "chief",
+            casualSessionID: "cs-1",
+            segments: ["spoof"],
+            state: .queuedBeforeSend,
+            trackEpoch: 1
+        )
+        try encoder.encode(mismatchBatch).write(to: outboxDir.appendingPathComponent("safe-filename.json"))
+
+        let recovery = store.reconcileOnColdStart()
+        XCTAssertEqual(recovery.batchesReadyForInitialSend.map(\.batchID), ["batch-safe_01"])
+    }
 }

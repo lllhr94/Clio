@@ -200,6 +200,7 @@ public struct CasualColdStartRecovery: Equatable, Sendable {
 
 public enum CasualTrackError: Error, LocalizedError, Equatable, Sendable {
     case invalidBotID(String)
+    case invalidBatchID(String)
     case staleTrackEpoch(expected: UInt64, actual: UInt64)
     case emptyDraft
     case batchNotFound(String)
@@ -209,6 +210,7 @@ public enum CasualTrackError: Error, LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidBotID(let id): return "无效的闲谈标识：\(id)"
+        case .invalidBatchID(let id): return "无效的闲谈批次标识：\(id)"
         case .staleTrackEpoch: return "已切换到其他轨道，本次合并发送已自动取消并保留为草稿。"
         case .emptyDraft: return "没有待发送的闲谈内容。"
         case .batchNotFound(let id): return "找不到闲谈批次：\(id)"
@@ -630,8 +632,9 @@ public final class CasualTrackStore: @unchecked Sendable {
             } catch {
                 // Attempt rollback removal of replacement; if deletion also fails, `supersedesBatchID` stays persisted
                 // so cold start and subsequent `replaceReconciledBatch` calls guarantee at most one replacement exists.
-                let replacementURL = outboxURL(batchID: replacement.batchID)
-                try? FileManager.default.removeItem(at: replacementURL)
+                if let replacementURL = try? validatedOutboxURL(batchID: replacement.batchID) {
+                    try? FileManager.default.removeItem(at: replacementURL)
+                }
                 throw error
             }
             return replacement
@@ -730,9 +733,33 @@ public final class CasualTrackStore: @unchecked Sendable {
 
     // MARK: - Private File & SQLite Helpers
 
+    private static func isSafePathToken(_ raw: String) -> Bool {
+        guard !raw.isEmpty,
+              !raw.hasPrefix("."),
+              !raw.contains(".."),
+              !raw.contains("/"),
+              !raw.contains("\\"),
+              !raw.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F || CharacterSet.whitespacesAndNewlines.contains($0) }) else {
+            return false
+        }
+        return true
+    }
+
     private func validateBotID(_ botID: String) throws {
-        guard !botID.isEmpty, !botID.contains("/"), !botID.contains("\\"), !botID.contains(".."), !botID.hasPrefix(".") else {
+        guard Self.isSafePathToken(botID) else {
             throw CasualTrackError.invalidBotID(botID)
+        }
+    }
+
+    private func validateBatchID(_ batchID: String) throws {
+        guard Self.isSafePathToken(batchID),
+              batchID.utf8.allSatisfy({ b in
+                  (b >= 0x30 && b <= 0x39)
+                      || (b >= 0x41 && b <= 0x5A)
+                      || (b >= 0x61 && b <= 0x7A)
+                      || b == 0x2D || b == 0x5F || b == 0x2E
+              }) else {
+            throw CasualTrackError.invalidBatchID(batchID)
         }
     }
 
@@ -745,7 +772,15 @@ public final class CasualTrackStore: @unchecked Sendable {
     private func entriesURL(botID: String) -> URL { casualDir.appendingPathComponent("\(botID).jsonl") }
     private func tombstonesURL(botID: String) -> URL { casualDir.appendingPathComponent("\(botID).tombstones.json") }
     private func draftURL(botID: String) -> URL { casualDir.appendingPathComponent("\(botID).draft.json") }
-    private func outboxURL(batchID: String) -> URL { outboxDir.appendingPathComponent("\(batchID).json") }
+
+    private func validatedOutboxURL(batchID: String) throws -> URL {
+        try validateBatchID(batchID)
+        let candidate = outboxDir.appendingPathComponent("\(batchID).json").standardizedFileURL
+        guard candidate.deletingLastPathComponent().path == outboxDir.standardizedFileURL.path else {
+            throw CasualTrackError.invalidBatchID(batchID)
+        }
+        return candidate
+    }
 
     private func loadRawEntriesLocked(botID: String) -> [CasualEntry] {
         guard let data = try? Data(contentsOf: entriesURL(botID: botID)) else { return [] }
@@ -792,23 +827,29 @@ public final class CasualTrackStore: @unchecked Sendable {
 
     private func persistOutboxBatchLocked(_ batch: CasualOutboxBatch) throws {
         guard !(isWriteFrozen?() ?? false) else { throw CasualTrackError.writesFrozen }
+        let targetURL = try validatedOutboxURL(batchID: batch.batchID)
         if let err = simulateOutboxWriteFailure?(batch) { throw err }
         ensureDirectoriesLocked()
         let data = try encoder.encode(batch)
-        try data.write(to: outboxURL(batchID: batch.batchID), options: .atomic)
+        try data.write(to: targetURL, options: .atomic)
     }
 
     private func loadOutboxBatchLocked(batchID: String) -> CasualOutboxBatch? {
-        guard let data = try? Data(contentsOf: outboxURL(batchID: batchID)) else { return nil }
+        guard let targetURL = try? validatedOutboxURL(batchID: batchID),
+              let data = try? Data(contentsOf: targetURL) else { return nil }
         return try? decoder.decode(CasualOutboxBatch.self, from: data)
     }
 
     private func loadAllOutboxBatchesLocked() -> [CasualOutboxBatch] {
         guard let files = try? FileManager.default.contentsOfDirectory(at: outboxDir, includingPropertiesForKeys: nil) else { return [] }
         return files.compactMap { url in
-            guard url.pathExtension == "json",
-                  let data = try? Data(contentsOf: url) else { return nil }
-            return try? decoder.decode(CasualOutboxBatch.self, from: data)
+            guard url.pathExtension == "json" else { return nil }
+            let stem = url.deletingPathExtension().lastPathComponent
+            guard Self.isSafePathToken(stem),
+                  let data = try? Data(contentsOf: url),
+                  let batch = try? decoder.decode(CasualOutboxBatch.self, from: data),
+                  batch.batchID == stem else { return nil }
+            return batch
         }
     }
 

@@ -405,6 +405,7 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
         receipts: ApprovalReceiptBook? = nil,
         policyRevision: (@Sendable () -> UInt64)? = nil,
         planModeActive: (@Sendable () -> Bool)? = nil,
+        isGrantDisabledForChat: (@Sendable (Grant) -> Bool)? = nil,
         reconfirm: (@Sendable (ApprovalAsk, String) async -> Bool)? = nil
     ) -> [AgentTool] {
         func wrapPlan(_ tool: AgentTool) -> AgentTool {
@@ -452,7 +453,12 @@ enum Grant: String, CaseIterable, Identifiable, Sendable {
                 policyRevision: policyRevision,
                 isContextStillValid: contextValid,
                 planRefusal: planRefusal,
-                access: { grant.liveAccess(for: name) },
+                access: {
+                    if isGrantDisabledForChat?(grant) == true {
+                        return .off("当前对话已关闭「\(grant.title)」权限，这次操作已中止。")
+                    }
+                    return grant.liveAccess(for: name)
+                },
                 reconfirm: reconfirm
             )
             return wrapPlan(gated)

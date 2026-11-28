@@ -12,6 +12,8 @@ public struct ApprovalAsk: Equatable, Sendable {
     /// Must be asked even where the person said 「以后都允许」 or 「这段絮语都放行」: the turn read text from the web,
     /// which may carry instructions aimed at the model.
     public var forced: Bool
+    /// True ONLY when `forced` was added solely by `TaintGuard` for a non-hard-exit tool (never true for a tool's own `forced: true`).
+    public var forcedByTaintOnly: Bool
     /// Verified read-only safe under `PlanModeReadOnlyPolicy` at the time the approval ask was constructed.
     public var planReadOnlySafe: Bool
 
@@ -21,6 +23,7 @@ public struct ApprovalAsk: Equatable, Sendable {
         detail: String? = nil,
         code: String? = nil,
         forced: Bool = false,
+        forcedByTaintOnly: Bool = false,
         planReadOnlySafe: Bool = false
     ) {
         self.title = title
@@ -28,6 +31,7 @@ public struct ApprovalAsk: Equatable, Sendable {
         self.detail = detail
         self.code = code
         self.forced = forced
+        self.forcedByTaintOnly = forcedByTaintOnly
         self.planReadOnlySafe = planReadOnlySafe
     }
 }
