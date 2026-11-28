@@ -22,7 +22,7 @@ final class ChatScroller {
         self.listProxy = listProxy
     }
 
-    func scrollTo(_ id: String, anchor: UnitPoint) {
+    func scrollTo(_ id: String, anchor: UnitPoint, animated: Bool? = nil) {
         if let swiftUIProxy {
             swiftUIProxy.scrollTo(id, anchor: anchor)
         } else if let listProxy {
@@ -32,7 +32,7 @@ final class ChatScroller {
             } else {
                 shouldAnimate = anchor == .center
             }
-            listProxy.scrollTo(id: id, anchor: anchor, animated: shouldAnimate)
+            listProxy.scrollTo(id: id, anchor: anchor, animated: animated ?? shouldAnimate)
         }
     }
 

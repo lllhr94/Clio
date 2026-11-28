@@ -522,7 +522,7 @@ struct ChatPage: View {
             .environment(\.chatSelectionChanged, selectionChanged)
             .environment(\.chatQuoteSelection) { picked in
                 Haptics.tick(0.5)
-                withAnimation(Ink.Motion.settle) { quote = picked }
+                quote = picked
                 setComposerFocused(true)
             }
             .environment(\.chatSpeakSelection) { picked in
@@ -1245,7 +1245,7 @@ struct ChatPage: View {
                 QuoteSheet(text: item.text) { picked in
                     quoting = nil
                     guard let picked else { return }
-                    withAnimation(Ink.Motion.settle) { quote = picked }
+                    quote = picked
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { setComposerFocused(true) }
                 }
                 .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])

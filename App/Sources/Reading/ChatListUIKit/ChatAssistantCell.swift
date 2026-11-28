@@ -232,6 +232,26 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         CATransaction.commit()
     }
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            ChatRevealDisplayDriver.shared.unregister(self)
+        } else {
+            syncMessageRevealDriver()
+        }
+    }
+
+    override var isHidden: Bool {
+        didSet {
+            guard isHidden != oldValue else { return }
+            if isHidden {
+                ChatRevealDisplayDriver.shared.unregister(self)
+            } else if window != nil {
+                syncMessageRevealDriver()
+            }
+        }
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
         teardownMessageReveal()

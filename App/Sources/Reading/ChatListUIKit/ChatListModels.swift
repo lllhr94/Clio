@@ -957,6 +957,8 @@ final class ChatListControllerProxy {
         controller?.currentInteractionEpoch ?? 0
     }
 
+    var isSmoothJumpActive: Bool { controller?.isSmoothJumpActive == true }
+
     func scrollTo(id: String, anchor: UnitPoint, animated: Bool) {
         if id == ChatPage.end {
             controller?.scrollToBottomFromHost(animated: animated)

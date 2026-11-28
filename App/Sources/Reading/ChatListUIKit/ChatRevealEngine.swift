@@ -42,12 +42,7 @@ enum ChatRevealPolicy {
     }
 
     static func currentAllowsMotionEffects(reduceMotion: Bool) -> Bool {
-        let info = ProcessInfo.processInfo
-        return allowsMotionEffects(
-            reduceMotion: reduceMotion,
-            isLowPowerMode: info.isLowPowerModeEnabled,
-            thermalState: info.thermalState
-        )
+        !reduceMotion && RuntimeBudgetGovernor.shared.snapshot.allowsRevealSnippets
     }
 
     static func allowsSnippets(
@@ -1160,100 +1155,29 @@ protocol ChatRevealDisplayClient: AnyObject {
     func revealDisplayTick(now: CFTimeInterval)
 }
 
-/// Idle-zero shared `CADisplayLink` supporting ProMotion 120Hz and background pause/resume.
+/// Associates active reveal clients with the application's shared frame clock.
 @MainActor
-final class ChatRevealDisplayDriver: NSObject {
+final class ChatRevealDisplayDriver {
     static let shared = ChatRevealDisplayDriver()
 
-    private final class WeakBox {
-        weak var client: ChatRevealDisplayClient?
-        init(_ client: ChatRevealDisplayClient) { self.client = client }
-    }
+    private var links: [ObjectIdentifier: SharedFrameLink] = [:]
 
-    private var clients: [ObjectIdentifier: WeakBox] = [:]
-    private var displayLink: CADisplayLink?
-    private var isBackgrounded = false
-    private var lastDispatchedNow: CFTimeInterval = 0
-
-    private override init() {
-        super.init()
-        let center = NotificationCenter.default
-        center.addObserver(
-            self,
-            selector: #selector(appDidEnterBackground),
-            name: UIApplication.didEnterBackgroundNotification,
-            object: nil
-        )
-        center.addObserver(
-            self,
-            selector: #selector(appWillEnterForeground),
-            name: UIApplication.willEnterForegroundNotification,
-            object: nil
-        )
-    }
-
-    func register(_ client: ChatRevealDisplayClient) {
+    func register<T: UIView & ChatRevealDisplayClient>(_ client: T) {
         let key = ObjectIdentifier(client)
-        clients[key] = WeakBox(client)
-        pruneDeadClients()
-        syncDisplayLinkState()
+        guard client.window != nil, !client.isHidden, links[key] == nil else { return }
+        links[key] = SharedFrameDriver.shared.add(rate: .max, isActive: { [weak self, weak client] in
+            guard let client else {
+                self?.links.removeValue(forKey: key)
+                return false
+            }
+            return client.window != nil && !client.isHidden
+        }) { [weak client] _ in
+            client?.revealDisplayTick(now: CACurrentMediaTime())
+        }
     }
 
     func unregister(_ client: ChatRevealDisplayClient) {
-        clients.removeValue(forKey: ObjectIdentifier(client))
-        pruneDeadClients()
-        syncDisplayLinkState()
-    }
-
-    @objc private func appDidEnterBackground() {
-        isBackgrounded = true
-        stopDisplayLink()
-    }
-
-    @objc private func appWillEnterForeground() {
-        isBackgrounded = false
-        pruneDeadClients()
-        syncDisplayLinkState()
-    }
-
-    private func pruneDeadClients() {
-        clients = clients.filter { $0.value.client != nil }
-    }
-
-    private func syncDisplayLinkState() {
-        if clients.isEmpty || isBackgrounded {
-            stopDisplayLink()
-            return
-        }
-        guard displayLink == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(handleDisplayLink(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
-        link.add(to: .main, forMode: .common)
-        displayLink = link
-    }
-
-    private func stopDisplayLink() {
-        displayLink?.invalidate()
-        displayLink = nil
-    }
-
-    @objc private func handleDisplayLink(_ link: CADisplayLink) {
-        pruneDeadClients()
-        guard !clients.isEmpty, !isBackgrounded else {
-            stopDisplayLink()
-            return
-        }
-        let mediaNow = CACurrentMediaTime()
-        let tickNow = max(lastDispatchedNow, mediaNow)
-        lastDispatchedNow = tickNow
-        let snapshot = clients.values.compactMap(\.client)
-        for client in snapshot {
-            client.revealDisplayTick(now: tickNow)
-        }
-        pruneDeadClients()
-        if clients.isEmpty {
-            stopDisplayLink()
-        }
+        links.removeValue(forKey: ObjectIdentifier(client))?.invalidate()
     }
 }
 

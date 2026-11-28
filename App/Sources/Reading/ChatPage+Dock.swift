@@ -152,9 +152,9 @@ extension ChatPage {
             guard !Task.isCancelled,
                   generation == viewport.navigationGeneration,
                   !touchScrolling, !viewport.isTouching, !following, historyPage == nil,
-                  selecting.isEmpty, !viewport.ids.contains(id) else { return }
+                  selecting.isEmpty, !listProxy.isSmoothJumpActive, !viewport.ids.contains(id) else { return }
             viewport.recordJump("\(source)落位")
-            scroller?.scrollTo(id, anchor: .top)
+            scroller?.scrollTo(id, anchor: .top, animated: false)
         }
     }
 
@@ -165,13 +165,12 @@ extension ChatPage {
         jumpedTo = id
         lingerJumpButtons()
         viewport.recordJump(source)
-        // From the 小地图 the page goes straight there: a long animated scroll through a lazy list lags behind.
         if animated {
-            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
+            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top, animated: true) }
         } else {
-            scroller?.scrollTo(id, anchor: .top)
+            scroller?.scrollTo(id, anchor: .top, animated: false)
         }
-        scheduleJumpSettle(to: id, source: source, delayMs: animated ? 380 : 120)
+        scheduleJumpSettle(to: id, source: source, delayMs: animated ? animatedRowSettleDelay : 120)
     }
 
     func lingerJumpButtons() {
@@ -194,8 +193,8 @@ extension ChatPage {
         jumpedTo = target
         lingerJumpButtons()
         viewport.recordJump(label)
-        withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top) }
-        scheduleJumpSettle(to: target, source: label, delayMs: 380)
+        withAnimation(Ink.Motion.settle) { scroller?.scrollTo(target, anchor: .top, animated: true) }
+        scheduleJumpSettle(to: target, source: label, delayMs: animatedRowSettleDelay)
     }
 
     func question(earlier: Bool) -> String? {
@@ -306,13 +305,20 @@ extension ChatPage {
     }
 
 
+    private var animatedRowSettleDelay: Int { useUIKitChatList ? nativeJumpSettleDelay : 380 }
+
+    private var nativeJumpSettleDelay: Int {
+        Int((ClioSmoothScrollSpring.defaultDuration * 1_000).rounded(.up)) + 50
+    }
+
     func toEnd(animated: Bool = false) {
-        guard historyPage == nil, selecting.isEmpty, let scroller else { return }
+        guard historyPage == nil, selecting.isEmpty, let scroller,
+              animated || !listProxy.isSmoothJumpActive else { return }
         chromeCoordinator.markProgrammaticScroll(duration: animated ? 0.45 : 0.16)
         settleJump?.cancel()
         viewport.advanceNavigation()
         if animated {
-            withAnimation(Ink.Motion.settle) { scroller.scrollTo(Self.end, anchor: .bottom) }
+            withAnimation(Ink.Motion.settle) { scroller.scrollTo(Self.end, anchor: .bottom, animated: true) }
         } else {
             scroller.scrollTo(Self.end, anchor: .bottom)
         }
@@ -320,10 +326,12 @@ extension ChatPage {
         // Correct once if the real foot still differs after those rows have been drawn.
         settleEnd?.cancel()
         settleEnd = Task { @MainActor in
-            do { try await Task.sleep(for: .milliseconds(animated ? 420 : 120)) } catch { return }
+            let delay = animated ? (useUIKitChatList ? nativeJumpSettleDelay : 420) : 120
+            do { try await Task.sleep(for: .milliseconds(delay)) } catch { return }
             guard following, !touchScrolling, historyPage == nil, selecting.isEmpty,
-                  approving == nil, approvalInsetTask == nil, viewport.needsEndCorrection else { return }
-            scroller.scrollTo(Self.end, anchor: .bottom)
+                  approving == nil, approvalInsetTask == nil, viewport.needsEndCorrection,
+                   !listProxy.isSmoothJumpActive else { return }
+            scroller.scrollTo(Self.end, anchor: .bottom, animated: false)
         }
     }
 
@@ -1302,7 +1310,8 @@ private struct ChatComposerMainCard: View {
         .padding(.vertical, 7 * ChatBarMetrics.scale)
         .frostedChatChrome(in: RoundedRectangle(cornerRadius: max(26 * ChatBarMetrics.scale, Ink.Radius.card), style: .continuous))
         .padding(.horizontal, sidePadding)
-        .animation(UIAccessibility.isReduceMotionEnabled ? .easeOut(duration: 0.16) : Ink.Motion.quick, value: composing)
+        .animation(ClioTransition.layoutAnimation, value: composing)
+        .animation(ClioTransition.layoutAnimation, value: quote)
     }
 }
 
@@ -1326,7 +1335,7 @@ private struct ChatComposerQuoteBanner: View {
                 Text(quote).font(Ink.footnote).foregroundStyle(Ink.inkSoft).lineLimit(3)
                 Spacer(minLength: 0)
                 Button {
-                    withAnimation(Ink.Motion.settle) { self.quote = nil }
+                    self.quote = nil
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: Ink.Size.sub))
@@ -1792,7 +1801,7 @@ private struct ChatComposerAccessoryCore: View {
                 onRedoFrom: onRedoFrom
             )
         }
-        .animation(Ink.Motion.settle, value: composing)
+        .animation(ClioTransition.shouldSimplifyMotion ? nil : Ink.Motion.settle, value: composing)
     }
 }
 
@@ -2129,7 +2138,7 @@ private struct ChatActionButtonCore: View {
         }
         .disabled(mode == 2 && sendingBlocked)
         .buttonStyle(PressStyle(haptic: false, grow: max(0, (44 - ChatBarMetrics.controlHeight) / 2)))
-        .animation(Ink.Motion.press, value: mode)
+        .animation(ClioTransition.shouldSimplifyMotion ? nil : Ink.Motion.press, value: mode)
         .accessibilityLabel(label)
         .contextMenu {
             if working && canSend && !sendingBlocked && editing == nil && quote == nil {

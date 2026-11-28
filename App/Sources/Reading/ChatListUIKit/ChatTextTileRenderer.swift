@@ -91,10 +91,11 @@ final class ChatTextTileRenderer: @unchecked Sendable {
 
     private static let maxTileHeight: CGFloat = 512.0
     private static let maxTexturePixelWidth = 8192
+    private static let fullCacheBytes = 40 * 1024 * 1024
 
     private let cache: NSCache<NSString, ChatRenderedTiles> = {
         let cache = NSCache<NSString, ChatRenderedTiles>()
-        cache.totalCostLimit = 40 * 1024 * 1024
+        cache.totalCostLimit = ChatTextTileRenderer.fullCacheBytes
         cache.countLimit = 250
         return cache
     }()
@@ -110,26 +111,37 @@ final class ChatTextTileRenderer: @unchecked Sendable {
     private let lock = NSLock()
     private var inFlight: [String: (op: Operation, includesReveal: Bool, completions: [@MainActor (String, ChatTileRenderResult) -> Void])] = [:]
     private var generation: UInt64 = 0
-    private var memoryWarningObserver: NSObjectProtocol?
+    private var cacheGeneration: UInt64 = 0
 
     private init() {
-        memoryWarningObserver = NotificationCenter.default.addObserver(
-            forName: UIApplication.didReceiveMemoryWarningNotification,
-            object: nil,
-            queue: nil
-        ) { [weak self] _ in
-            self?.purgeMemoryCache()
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { observeBudget() }
+        } else {
+            Task { @MainActor in self.observeBudget() }
         }
     }
 
-    deinit {
-        if let observer = memoryWarningObserver {
-            NotificationCenter.default.removeObserver(observer)
+    @MainActor
+    private func observeBudget() {
+        let governor = RuntimeBudgetGovernor.shared
+        governor.observeMemoryWarning { [weak self] in self?.purgeMemoryCache() }
+        governor.observeBudget { [weak self] snapshot in self?.applyBudget(snapshot) }
+    }
+
+    private func applyBudget(_ snapshot: RuntimeBudgetSnapshot) {
+        let byteLimit = Int(Double(Self.fullCacheBytes) * snapshot.prefetchWindowScale)
+        lock.lock()
+        if byteLimit < cache.totalCostLimit {
+            cacheGeneration &+= 1
+            cache.removeAllObjects()
         }
+        cache.totalCostLimit = byteLimit
+        lock.unlock()
     }
 
     func purgeMemoryCache() {
         lock.lock()
+        cacheGeneration &+= 1
         cache.removeAllObjects()
         lock.unlock()
     }
@@ -147,12 +159,20 @@ final class ChatTextTileRenderer: @unchecked Sendable {
     }
 
     func renderSync(_ request: ChatTextRenderRequest) -> ChatRenderedTiles? {
-        if let hit = cache.object(forKey: request.cacheKey as NSString),
-           (!request.includeRevealSnapshot || hit.revealSnapshot != nil) {
+        let key = request.cacheKey as NSString
+        lock.lock()
+        if let hit = cache.object(forKey: key), !request.includeRevealSnapshot || hit.revealSnapshot != nil {
+            lock.unlock()
             return hit
         }
+        let renderGeneration = cacheGeneration
+        lock.unlock()
         guard let rendered = Self.render(request) else { return nil }
-        cache.setObject(rendered, forKey: request.cacheKey as NSString, cost: rendered.totalBytes)
+        lock.lock()
+        if renderGeneration == cacheGeneration {
+            cache.setObject(rendered, forKey: key, cost: rendered.totalBytes)
+        }
+        lock.unlock()
         return rendered
     }
 
@@ -284,6 +304,7 @@ final class ChatTextTileRenderer: @unchecked Sendable {
     func invalidateAll() {
         lock.lock()
         generation &+= 1
+        cacheGeneration &+= 1
         var cancelledKeys: [String] = []
         for (key, entry) in inFlight where entry.completions.isEmpty {
             entry.op.cancel()
@@ -298,16 +319,17 @@ final class ChatTextTileRenderer: @unchecked Sendable {
 
     private func makeOperation(for request: ChatTextRenderRequest, generation opGen: UInt64) -> BlockOperation {
         let key = request.cacheKey
+        let cacheGen = cacheGeneration
         let op = BlockOperation()
         op.addExecutionBlock { [weak self, weak op] in
             guard let self else { return }
             if op?.isCancelled == true {
-                self.finishOperation(key: key, op: op, opGen: opGen, rendered: nil, cancelled: true)
+                self.finishOperation(key: key, op: op, opGen: opGen, cacheGen: cacheGen, rendered: nil, cancelled: true)
                 return
             }
             let rendered = Self.render(request)
             let cancelled = op?.isCancelled ?? true
-            self.finishOperation(key: key, op: op, opGen: opGen, rendered: rendered, cancelled: cancelled)
+            self.finishOperation(key: key, op: op, opGen: opGen, cacheGen: cacheGen, rendered: rendered, cancelled: cancelled)
         }
         return op
     }
@@ -316,6 +338,7 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         key: String,
         op: Operation?,
         opGen: UInt64,
+        cacheGen: UInt64,
         rendered: ChatRenderedTiles?,
         cancelled: Bool
     ) {
@@ -323,7 +346,7 @@ final class ChatTextTileRenderer: @unchecked Sendable {
         let isCurrent = inFlight[key]?.op === op
         let completions = isCurrent ? (inFlight.removeValue(forKey: key)?.completions ?? []) : []
         let validGen = (generation == opGen) && !cancelled
-        if validGen, let rendered {
+        if validGen, cacheGen == cacheGeneration, let rendered {
             cache.setObject(rendered, forKey: key as NSString, cost: rendered.totalBytes)
         }
         lock.unlock()

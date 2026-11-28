@@ -188,6 +188,43 @@ public enum ClioMotionPreset: Sendable {
     }
 }
 
+/// Animation metadata shared by UIKit's manual dock layout and the SwiftUI toast overlay.
+struct ClioKeyboardMotion {
+    let duration: TimeInterval
+    let curve: UIView.AnimationCurve?
+    let spring: ClioMotionPreset
+
+    init(_ notification: Notification) {
+        let info = notification.userInfo
+        let reportedDuration = info?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
+        let standardDuration = MotionPolicyCore.keyboardSpring.duration
+        let requested = reportedDuration.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } ?? standardDuration
+
+        if abs(requested - standardDuration) < 0.02 {
+            duration = standardDuration
+            curve = nil
+            spring = .keyboardSync
+        } else {
+            duration = requested
+            let curveValue = info?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int
+            curve = curveValue.flatMap(UIView.AnimationCurve.init(rawValue:))
+            spring = .custom(duration: requested, bounce: 0)
+        }
+    }
+
+    var swiftUIAnimation: Animation? {
+        guard duration > 0.001 else { return nil }
+        switch curve {
+        case .easeInOut: return .easeInOut(duration: duration)
+        case .easeIn: return .easeIn(duration: duration)
+        case .easeOut: return .easeOut(duration: duration)
+        case .linear: return .linear(duration: duration)
+        case nil: return spring.swiftUIAnimation
+        @unknown default: return spring.swiftUIAnimation
+        }
+    }
+}
+
 // MARK: - 3. Interruptible Core Animation Executor
 
 @MainActor
@@ -264,37 +301,53 @@ public enum ClioTransition {
         layer.add(anim, forKey: keyPath)
     }
 
-    /// Synchronizes layout animations with iOS 26 keyboard notifications (auto-matching `0.3832s` spring).
+    /// SwiftUI owns both the layout and the presentation values in a hosted view. Its spring
+    /// retargets the existing presentation without applying a second animation to the host layer.
+    public static var layoutAnimation: Animation? {
+        shouldSimplifyMotion ? nil : ClioMotionPreset.snappyLayout.swiftUIAnimation
+    }
+
+    /// Matches the iOS 26 keyboard spring while respecting explicit zero-duration updates.
     public static func syncWithKeyboardNotification(
         _ notification: Notification,
         animations: @escaping () -> Void,
         completion: (() -> Void)? = nil
     ) {
-        let duration = (notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double)
-            ?? MotionPolicyCore.keyboardSpring.duration
-        if duration <= 0.001 || shouldSimplifyMotion {
-            animations()
+        let motion = ClioKeyboardMotion(notification)
+        if motion.duration <= 0.001 || shouldSimplifyMotion {
+            UIView.performWithoutAnimation(animations)
             completion?()
             return
         }
 
-        let p: ClioSpringParameters = abs(duration - MotionPolicyCore.keyboardSpring.duration) < 0.02
-            ? ClioMotionPreset.keyboardSync.parameters
-            : ClioMotionPreset.custom(duration: duration, bounce: 0.0).parameters
-
-        let timing = UISpringTimingParameters(
-            mass: p.mass,
-            stiffness: p.stiffness,
-            damping: p.damping,
-            initialVelocity: .zero
-        )
-        let animator = UIViewPropertyAnimator(duration: p.settlingDuration, timingParameters: timing)
+        let animator: UIViewPropertyAnimator
+        if let curve = motion.curve {
+            animator = UIViewPropertyAnimator(duration: motion.duration, curve: curve)
+        } else {
+            let p = motion.spring.parameters
+            let timing = UISpringTimingParameters(
+                mass: p.mass,
+                stiffness: p.stiffness,
+                damping: p.damping,
+                initialVelocity: .zero
+            )
+            animator = UIViewPropertyAnimator(duration: motion.duration, timingParameters: timing)
+        }
         animator.isInterruptible = true
         animator.addAnimations(animations)
         if let completion {
             animator.addCompletion { _ in completion() }
         }
         animator.startAnimation()
+    }
+
+    public static func syncWithKeyboardNotification(
+        _ notification: Notification,
+        swiftUIUpdates: () -> Void
+    ) {
+        let motion = ClioKeyboardMotion(notification)
+        let animation = shouldSimplifyMotion ? nil : motion.swiftUIAnimation
+        withAnimation(animation, swiftUIUpdates)
     }
 
     /// Projects resting offset from gesture release velocity using UIScrollView exponential decay.

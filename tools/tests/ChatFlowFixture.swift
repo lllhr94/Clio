@@ -52,7 +52,7 @@ private struct ScrollRequest: Equatable {
 
 private final class Scroller {
     var requests: [ScrollRequest] = []
-    func scrollTo(_ id: String, anchor: UnitPoint) {
+    func scrollTo(_ id: String, anchor: UnitPoint, animated: Bool? = nil) {
         requests.append(ScrollRequest(id: id, anchor: anchor))
     }
 }
@@ -211,6 +211,7 @@ private final class FlowFixture {
     let viewport = Viewport()
 
     final class ListProxyStub {
+        var isSmoothJumpActive = false
         var currentInteractionEpoch: UInt64 = 1
         func requestApprovalCardSettle(capturedEpoch: UInt64) {}
     }
@@ -510,7 +511,17 @@ private enum ChatFlowTests {
         await touched?.value
         try check(flow.scroller?.requests, [], "A settle cancelled by .tracking never steals scroll")
 
-        // 6. Intentional jump classification includes outline and settle sources, not load-earlier.
+        // 6. Even a delayed fallback must not take over an active native scroll.
+        flow.listProxy.isSmoothJumpActive = true
+        flow.viewport.recordJump("小地图")
+        flow.scheduleJumpSettle(to: "still-animating", source: "小地图", delayMs: 120)
+        let inFlight = flow.settleJump
+        await flow.clock.waitForSleepers(1)
+        try flow.clock.advance(120_000_000)
+        await inFlight?.value
+        try check(flow.scroller?.requests, [], "Settle leaves the in-flight scroll in control")
+
+        // 7. Intentional jump classification includes outline and settle sources, not load-earlier.
         try check(FlowFixture.isIntentionalJump("点了提纲"), true, "Outline jump is intentional")
         try check(FlowFixture.isIntentionalJump("小地图落位"), true, "Minimap settle is intentional")
         try check(FlowFixture.isIntentionalJump("载入更早的消息"), false, "Load-earlier anchor stays observable")

@@ -97,7 +97,7 @@ struct PetPerchAnchor: UIViewRepresentable {
         private let perch: PetPerch
         private weak var marker: Marker?
         private var window: Surface?
-        private var link: CADisplayLink?
+        private var link: SharedFrameLink?
         private lazy var sheetPan: UIPanGestureRecognizer = {
             let pan = UIPanGestureRecognizer(target: self, action: #selector(sheetMoved(_:)))
             pan.delegate = self
@@ -169,10 +169,11 @@ struct PetPerchAnchor: UIViewRepresentable {
                 window = surface
             }
             if link == nil {
-                let clock = CADisplayLink(target: Clock(self), selector: #selector(Clock.beat(_:)))
-                clock.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-                clock.add(to: .main, forMode: .common)
-                link = clock
+                link = SharedFrameDriver.shared.add(rate: .max, isActive: { [weak self] in
+                    self?.marker?.window != nil && self?.window != nil
+                }) { [weak self] tick in
+                    self?.tick(tick)
+                }
                 wake()
             } else if layoutChanged {
                 wake()
@@ -204,18 +205,6 @@ struct PetPerchAnchor: UIViewRepresentable {
             keyboardDuration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.24)
             keyboardUntil = CACurrentMediaTime() + keyboardDuration + 0.15
             wake()
-        }
-
-        @MainActor
-        private final class Clock: NSObject {
-            weak var tracker: Tracker?
-
-            init(_ tracker: Tracker) { self.tracker = tracker }
-
-            @objc func beat(_ link: CADisplayLink) {
-                guard let tracker else { link.invalidate(); return }
-                tracker.tick(link)
-            }
         }
 
         @objc private func windowChanged() { wake() }
@@ -270,12 +259,12 @@ struct PetPerchAnchor: UIViewRepresentable {
             if sheetPan.view !== source { source.addGestureRecognizer(sheetPan) }
         }
 
-        private func tick(_ clock: CADisplayLink) {
+        private func tick(_ tick: SharedFrameTick) {
             guard let marker, let source = marker.window, let window else {
                 detach()
                 return
             }
-            let now = clock.timestamp
+            let now = tick.timestamp
             if window.frame != source.frame { window.frame = source.frame }
             if perch.mood != pending.0 { perch.mood = pending.0 }
             if perch.face != pending.1 { perch.face = pending.1 }
@@ -316,7 +305,7 @@ struct PetPerchAnchor: UIViewRepresentable {
                 if perch.rising { perch.rising = false }
                 if perch.travelling { perch.travelling = false }
                 awakeUntil = 0
-                clock.isPaused = true
+                link?.isPaused = true
                 return
             }
 
@@ -351,13 +340,13 @@ struct PetPerchAnchor: UIViewRepresentable {
                 if perch.travelling { perch.travelling = false }
                 if alertCovering || (!sourceActive && presented != nil) {
                     awakeUntil = 0
-                    clock.isPaused = true
+                    link?.isPaused = true
                     return
                 }
             }
             // A new drag, keyboard notification or layout change wakes the sampler from rest.
             if now > awakeUntil, catchUp == nil, travelStart == nil, !menuOpen {
-                clock.isPaused = true
+                link?.isPaused = true
             }
         }
 

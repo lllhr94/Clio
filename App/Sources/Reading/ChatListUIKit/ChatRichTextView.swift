@@ -687,6 +687,26 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         }
     }
 
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            ChatRevealDisplayDriver.shared.unregister(self)
+        } else {
+            syncRevealDisplayDriver()
+        }
+    }
+
+    override var isHidden: Bool {
+        didSet {
+            guard isHidden != oldValue else { return }
+            if isHidden {
+                ChatRevealDisplayDriver.shared.unregister(self)
+            } else if window != nil {
+                syncRevealDisplayDriver()
+            }
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         if let tv = selectionTextView {
