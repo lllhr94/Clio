@@ -32,8 +32,18 @@ final class ChatCodeBlockView: UIView {
     private let foldButton = UIButton(type: .system)
     private let foldHairline = UIView()
 
+    private struct LiveCodeHighlight: @unchecked Sendable {
+        let tokenizer: IncrementalCodeTokenizer
+        let attributed: NSAttributedString
+    }
+
+    private var ownerID: String?
     private var currentSlice: ChatCodeSlice?
     private var currentStyle: ChatListStyle?
+    private var highlightTask: Task<Void, Never>?
+    private var liveTokenizer: IncrementalCodeTokenizer?
+    private var lastHighlightedCode: NSAttributedString?
+    private var hasHighlightedLiveCode = false
     private var isUnfolded = false
     private var copiedWork: DispatchWorkItem?
     private var isCopied = false
@@ -102,12 +112,27 @@ final class ChatCodeBlockView: UIView {
         refreshThemeColors()
     }
 
-    func configure(slice: ChatCodeSlice, unfolded: Bool, style: ChatListStyle) {
-        let sameCode = currentSlice?.rawText == slice.rawText
+    func configure(ownerID: String, slice: ChatCodeSlice, unfolded: Bool, style: ChatListStyle) {
+        let sameBlock = self.ownerID == ownerID
             && currentSlice?.isLive == slice.isLive
             && currentSlice?.language == slice.language
+            && currentSlice?.isOutput == slice.isOutput
+            && currentStyle?.styleKey == style.styleKey
+        let sameCode = sameBlock
+            && currentSlice?.rawText.utf16.elementsEqual(slice.rawText.utf16) == true
             && isUnfolded == unfolded
             && currentStyle == style
+        if self.ownerID != ownerID {
+            copiedWork?.cancel()
+            copiedWork = nil
+            isCopied = false
+        }
+        if !sameBlock {
+            resetLiveHighlight()
+        } else if style.reduceMotion || UIAccessibility.isReduceMotionEnabled {
+            codeTextView.cancelLiveCodeColorTransition()
+        }
+        self.ownerID = ownerID
         currentSlice = slice
         currentStyle = style
         isUnfolded = unfolded
@@ -139,7 +164,7 @@ final class ChatCodeBlockView: UIView {
 
             let resolved = slice.resolved(unfolded: unfolded)
             let rendered = ChatRenderedProse(
-                attributed: resolved.attributed,
+                attributed: preservingLiveColors(in: resolved.attributed),
                 decorations: .empty,
                 topInset: 0,
                 bottomInset: 0,
@@ -147,7 +172,7 @@ final class ChatCodeBlockView: UIView {
                 hasLinks: false
             )
             codeTextView.apply(
-                ownerID: selectionOwnerID.uuidString,
+                ownerID: ownerID,
                 rendered: rendered,
                 style: style,
                 isLive: slice.isLive
@@ -158,10 +183,68 @@ final class ChatCodeBlockView: UIView {
                 updateFoldButtonTitle(lineCount: slice.lineCount, unfolded: unfolded)
             }
             updateCopyButtonAppearance()
+            scheduleLiveHighlight()
         }
 
         refreshThemeColors()
         setNeedsLayout()
+    }
+
+    private func scheduleLiveHighlight() {
+        guard highlightTask == nil, let slice = currentSlice, slice.isLive, !slice.isOutput,
+              let style = currentStyle,
+              lastHighlightedCode?.string.utf16.elementsEqual(slice.trimmedText.utf16) != true else { return }
+        let initial = liveTokenizer ?? IncrementalCodeTokenizer(language: slice.language)
+        highlightTask = Task { [weak self] in
+            let work = Task.detached(priority: .userInitiated) { () -> LiveCodeHighlight? in
+                guard !Task.isCancelled else { return nil }
+                var tokenizer = initial
+                let segments = tokenizer.update(source: slice.trimmedText)
+                guard !Task.isCancelled else { return nil }
+                let attributed = ChatCodeHighlighter.liveColors(slice.foldedAttributed, segments: segments, style: style)
+                return LiveCodeHighlight(tokenizer: tokenizer, attributed: attributed)
+            }
+            let result = await withTaskCancellationHandler {
+                await work.value
+            } onCancel: {
+                work.cancel()
+            }
+            guard !Task.isCancelled, let self, let result else { return }
+            self.highlightTask = nil
+            self.liveTokenizer = result.tokenizer
+            guard self.currentSlice?.trimmedText.utf16.elementsEqual(slice.trimmedText.utf16) == true else {
+                // Work on the latest source, skipping any intervening stream snapshots.
+                self.scheduleLiveHighlight()
+                return
+            }
+            self.lastHighlightedCode = result.attributed
+            let hasColors = result.attributed != slice.foldedAttributed
+            let reduced = self.currentStyle?.reduceMotion == true || UIAccessibility.isReduceMotionEnabled
+            self.codeTextView.updateLiveCodeColors(result.attributed, animated: hasColors && !self.hasHighlightedLiveCode && !reduced)
+            self.hasHighlightedLiveCode = self.hasHighlightedLiveCode || hasColors
+        }
+    }
+
+    private func preservingLiveColors(in plain: NSAttributedString) -> NSAttributedString {
+        guard let last = lastHighlightedCode,
+              plain.string.utf16.prefix(last.length).elementsEqual(last.string.utf16) else { return plain }
+        if plain.length == last.length { return last }
+        let attributed = NSMutableAttributedString(attributedString: plain)
+        attributed.beginEditing()
+        last.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: last.length)) { color, range, _ in
+            if let color { attributed.addAttribute(.foregroundColor, value: color, range: range) }
+        }
+        attributed.endEditing()
+        return attributed
+    }
+
+    private func resetLiveHighlight() {
+        highlightTask?.cancel()
+        highlightTask = nil
+        liveTokenizer = nil
+        lastHighlightedCode = nil
+        hasHighlightedLiveCode = false
+        codeTextView.cancelLiveCodeColorTransition()
     }
 
     var hasSelectableText: Bool { codeTextView.hasSelectableText }
@@ -179,6 +262,8 @@ final class ChatCodeBlockView: UIView {
         copiedWork?.cancel()
         copiedWork = nil
         isCopied = false
+        resetLiveHighlight()
+        ownerID = nil
         currentSlice = nil
         lastCopySignature = ""
         lastFoldSignature = ""
@@ -447,30 +532,56 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         refreshThemeColors()
     }
 
-    nonisolated static func spreadWidths(_ natural: [CGFloat], availableRoom: CGFloat, padH: CGFloat) -> [CGFloat] {
+    nonisolated static func spreadWidths(
+        _ natural: [CGFloat],
+        minTokenWidths: [CGFloat] = [],
+        availableRoom: CGFloat,
+        padH: CGFloat
+    ) -> [CGFloat] {
         guard !natural.isEmpty, availableRoom > 0 else { return natural }
         let count = CGFloat(natural.count)
         let available = availableRoom - colGap * (count - 1) - padH * 2
         guard available > 0 else { return natural }
-        let floor = min(80, available / count)
-        let total = natural.reduce(0, +)
-        if total <= available {
-            let extra = available - total
-            return natural.map { $0 + extra * $0 / max(1, total) }
+        let minFloor = Double(min(60, available / count))
+        let metrics: [ColumnWidthMetric] = natural.enumerated().map { idx, nat in
+            let tokenW = idx < minTokenWidths.count ? minTokenWidths[idx] : min(nat, 60)
+            return ColumnWidthMetric(minTokenWidth: Double(min(nat, tokenW)), naturalWidth: Double(nat))
         }
-        let comfortable = natural.map { max(floor, min($0, available * 0.35)) }
-        let snug = comfortable.reduce(0, +)
-        if snug <= available {
-            let wants = zip(natural, comfortable).map { max(0, $0 - $1) }
-            let wanted = wants.reduce(0, +)
-            let extra = available - snug
-            return zip(comfortable, wants).map { $0 + (wanted > 0 ? extra * $1 / wanted : extra / count) }
+        let solved = TableWaterfillSolver.allocate(
+            availableWidth: Double(available),
+            minFloor: minFloor,
+            maxShare: 0.55,
+            columns: metrics
+        )
+        guard solved.count == natural.count else { return natural }
+        let solvedSum = solved.reduce(0, +)
+        if solvedSum > Double(available) + 0.5 {
+            // Floors exceed viewport: lock at integer ceiling floors for crisp horizontal scrolling.
+            return solved.map { ceil(CGFloat($0)) }
         }
-        return natural.map { max(floor, min($0, available * 0.7)) }
+        // Fits within viewport: floor per-column widths and distribute residual sub-pixel slack so sum never exceeds `available`.
+        var widths = solved.map { floor(CGFloat($0)) }
+        let total = widths.reduce(0, +)
+        let slack = floor(available - total)
+        if slack > 0 {
+            let extraPerCol = slack / max(1, total)
+            var distributed = widths.map { floor($0 + $0 * extraPerCol) }
+            let rem = floor(available - distributed.reduce(0, +))
+            if rem > 0, let widestIdx = distributed.indices.max(by: { distributed[$0] < distributed[$1] }) {
+                distributed[widestIdx] += rem
+            }
+            widths = distributed
+        }
+        return widths
     }
 
     nonisolated static func measureHeight(slice: ChatTableSlice, maxWidth: CGFloat, style: ChatListStyle) -> CGFloat {
-        let widths = spreadWidths(slice.naturalWidths, availableRoom: maxWidth, padH: style.metrics.spaceL)
+        let widths = spreadWidths(
+            slice.naturalWidths,
+            minTokenWidths: slice.minTokenWidths,
+            availableRoom: maxWidth,
+            padH: style.metrics.spaceL
+        )
         let cellSize = style.tableCellSize
         let padV = cellSize * 0.62
         let minRowTextH = ceil(cellSize * 1.2)
@@ -621,7 +732,12 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         scrollView.frame = bounds
 
         let padH = style.metrics.spaceL
-        let widths = Self.spreadWidths(slice.naturalWidths, availableRoom: width, padH: padH)
+        let widths = Self.spreadWidths(
+            slice.naturalWidths,
+            minTokenWidths: slice.minTokenWidths,
+            availableRoom: width,
+            padH: padH
+        )
         let cellSize = style.tableCellSize
         let padV = cellSize * 0.62
         let totalContentW = widths.reduce(0, +) + Self.colGap * CGFloat(max(0, widths.count - 1)) + padH * 2
@@ -2210,6 +2326,25 @@ final class ChatProsePictureView: UIView {
     }
 
     @objc private func handleImageTap() {
+        guard canOpen else { return }
+        guard !ClioTransition.shouldSimplifyMotion, let clock = window?.windowScene,
+              clock.activationState == .foregroundActive else {
+            openCurrentImage()
+            return
+        }
+        let expectedGeneration = generation
+        let expectedSource = currentSource
+        let driver = SharedFrameDriver.shared
+        let now = CACurrentMediaTime()
+        let delay = min(1.0 / 30, max(0, driver.predictedNextPresentationTime(now: now) - now))
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.generation == expectedGeneration, self.currentSource == expectedSource,
+                  self.imageView.window != nil else { return }
+            self.openCurrentImage()
+        }
+    }
+
+    private func openCurrentImage() {
         if let ref = workspaceRef, !ref.isMountCurrent {
             let decodedPath = currentSource.removingPercentEncoding ?? currentSource
             LocalPictureCache.set(nil, for: decodedPath)
@@ -2229,7 +2364,7 @@ final class ChatProsePictureView: UIView {
                 let vc = UIHostingController(rootView: NavigationStack {
                     StudyFile(url: ref.url, mount: ref.mount, showsDone: true)
                 })
-                if !UIAccessibility.isReduceMotionEnabled {
+                if !ClioTransition.shouldSimplifyMotion {
                     let expectedSource = currentSource
                     let expectedGeneration = generation
                     vc.preferredTransition = .zoom { [weak self] _ in
@@ -2252,7 +2387,7 @@ final class ChatProsePictureView: UIView {
             }
         } else if let remoteFile, let host = hostViewController, host.presentedViewController == nil {
             let vc = QuickPreviewHostingController(tempFile: remoteFile)
-            if !UIAccessibility.isReduceMotionEnabled {
+            if !ClioTransition.shouldSimplifyMotion {
                 let expectedSource = currentSource
                 let expectedGeneration = generation
                 vc.preferredTransition = .zoom { [weak self] _ in

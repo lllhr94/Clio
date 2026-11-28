@@ -263,6 +263,19 @@ struct ChatScrollArbiterCore: Equatable, Sendable {
                     let smoothed = metrics.currentOffsetY + min(distance, max(0.5, distance * 0.24))
                     return SynthesisDecision(targetOffsetY: min(maxY, max(minY, smoothed)), wroteOffset: true, reason: "tier3-pinned-reveal")
                 }
+                if case .streamingResize = source, metrics.revealedBottomOffsetY != nil {
+                    // During active 120Hz reveal, keep follow strictly monotonic (zero downward bounce)
+                    // and reuse the smooth 0.24 damping so newly appended blocks glide instead of hard-snapping.
+                    if metrics.currentOffsetY > maxY + 0.5 {
+                        return SynthesisDecision(targetOffsetY: maxY, wroteOffset: true, reason: "tier3-streaming-clamp-max")
+                    }
+                    let distance = target - metrics.currentOffsetY
+                    guard distance > 0.5 else {
+                        return SynthesisDecision(targetOffsetY: nil, wroteOffset: false, reason: "streaming-reveal-monotonic")
+                    }
+                    let smoothed = metrics.currentOffsetY + min(distance, max(0.5, distance * 0.24))
+                    return SynthesisDecision(targetOffsetY: min(maxY, max(minY, smoothed)), wroteOffset: true, reason: "tier3-pinned-streaming-reveal")
+                }
                 return SynthesisDecision(targetOffsetY: target, wroteOffset: true, reason: "tier3-pinned-bottom")
             }
 

@@ -14,6 +14,15 @@
 
 ---
 
+## 0.37 Telegram 滚动与动效补齐
+
+- [x] 批次 A 代码与单测在 `codex/telegram-smooth-batch-a`，接入惯性、跳转、共享帧驱动和键盘过渡，补记上游授权。
+- [ ] 真机动态复测键盘升降、连甩，以及流式中点回到底部。
+- [x] 批次 B 代码与单测在 `codex/telegram-smooth-batch-b`，复用长回复正文，后台补代码颜色并精修 Core Text 遮罩。
+- [ ] 批次 B 真机复测长文流式、跨段选字、补色和性能。
+- [x] 批次 C 接线和测试在 `codex/telegram-smooth-batch-c`。
+- [ ] 真机验收按主人要求暂停。
+
 ## Gemini：美术与文案
 
 不接仓库。主人把下面「给 Gemini 的话」整段发给它。

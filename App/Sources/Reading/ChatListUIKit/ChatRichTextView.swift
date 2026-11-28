@@ -29,11 +29,19 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     var hasPaintedLiveTail: Bool { currentIsLiveTail && appliedRenderToken != 0 }
 
     var revealSnapshotTotalPoints: Int? {
-        appliedRevealSnapshot?.totalPoints
+        guard let snap = appliedRevealSnapshot,
+              snap.sourceRenderToken == currentRendered.renderToken else {
+            return nil
+        }
+        return snap.totalPoints
     }
 
     var hasActiveFlyingSnippets: Bool {
         revealMaskCoordinator.snippetHost.activeCount > 0
+    }
+
+    var hasActiveReveal: Bool {
+        hasActiveFlyingSnippets || (revealSession.map { !$0.isComplete } ?? false)
     }
 
     /// Local bottom of the line currently being revealed, or the first line while tiles are being prepared.
@@ -95,6 +103,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     private let tileRoot = CALayer()
     private var tileLayers: [CALayer] = []
+    private var lastFrozenTiles: ChatRenderedTiles?
 
     private var selectionTextView: UITextView?
     private var isActivatingSelection = false
@@ -159,6 +168,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     private var isExternallyRevealControlled = false
     private var externalRevealState: MessageRevealTimeline.SliceRevealState = .complete
     private var lastExternalLocalPoints: Double = 0
+    private var lastExternalSnapshotToken: UInt64 = 0
     private var hasAppliedExternalRevealBaseline = false
     private var lastAppliedBoundsWidth: CGFloat = 0
 
@@ -329,12 +339,19 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             reduceMotion: style.reduceMotion,
             attributedLength: rendered.attributed.length
         )
+        let keepFrozenTilesInLive = isLive
+            && !isLiveTail
+            && rendered.frozenPrefixLength > 0
+            && restoredRange == nil
+            && !(selectionTextView != nil && oldRange.length > 0)
 
-        let keepLiveTailGeneration = sameOwner
-            && style.styleKey == lastStyleKey
-            && (isLiveTail || externalRevealControlled)
+        let keepRevealGeneration = (isLiveTail || externalRevealControlled)
             && (lastIsLiveTail || isExternallyRevealControlled)
             && eligibleReveal
+        let keepFrozenGeneration = keepFrozenTilesInLive && currentRendered.frozenPrefixLength > 0
+        let keepLiveTailGeneration = sameOwner
+            && style.styleKey == lastStyleKey
+            && (keepRevealGeneration || keepFrozenGeneration)
             && restoredRange == nil
             && selectionTextView == nil
         if !keepLiveTailGeneration {
@@ -372,7 +389,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 && selectionTextView != nil
                 && !rendered.isEmpty
 
-            if isLive || restoredRange != nil {
+            if (isLive && !keepFrozenTilesInLive) || restoredRange != nil {
                 isAwaitingFinalizedTiles = false
                 activeRenderKey = ""
                 inFlightRenderKey = ""
@@ -452,7 +469,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             activeRenderKey = ""
             appliedRenderKey = ""
             inFlightRenderKey = ""
-        } else if isLive {
+        } else if isLive && !keepFrozenTilesInLive {
             // Non-tail live view (e.g., live-pulse): retain TextKit 2 path without reveal mask.
             teardownReveal()
             isAwaitingFinalizedTiles = false
@@ -523,6 +540,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         isExternallyRevealControlled = false
         externalRevealState = .complete
         lastExternalLocalPoints = 0
+        lastExternalSnapshotToken = 0
         hasAppliedExternalRevealBaseline = false
         teardownReveal()
     }
@@ -543,6 +561,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         switch externalRevealState {
         case .hidden:
             lastExternalLocalPoints = 0
+            lastExternalSnapshotToken = 0
             hasAppliedExternalRevealBaseline = true
             revealMaskCoordinator.clearFlyingSnippets()
             revealMaskCoordinator.lockMaskBeforeTileContents(
@@ -563,12 +582,19 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 return
             }
             let clampedLocal = min(Double(snap.totalPoints), max(0, localPoints))
+            let snapshotChanged = snap.sourceRenderToken != lastExternalSnapshotToken
+            lastExternalSnapshotToken = snap.sourceRenderToken
             let newlyRevealed: [(lineHasRTL: Bool, units: [ChatRevealAtomicUnit])]
             if !hasAppliedExternalRevealBaseline {
                 // First sample after a live->settled handoff seeds the baseline without re-spawning
                 // flying snippets for glyphs that were already visible prior to handoff.
                 hasAppliedExternalRevealBaseline = true
                 lastExternalLocalPoints = clampedLocal
+                newlyRevealed = []
+            } else if snapshotChanged && (clampedLocal - lastExternalLocalPoints) > 36 {
+                // Sealed slice absorbed a previously visible tail slice (e.g. rt1 merged into rt0):
+                // advance baseline silently so already-visible text stays rock-solid with zero re-animation.
+                lastExternalLocalPoints = max(lastExternalLocalPoints, clampedLocal)
                 newlyRevealed = []
             } else {
                 let prev = min(lastExternalLocalPoints, clampedLocal)
@@ -631,6 +657,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         isExternallyRevealControlled = false
         externalRevealState = .complete
         lastExternalLocalPoints = 0
+        lastExternalSnapshotToken = 0
         hasAppliedExternalRevealBaseline = false
         lastAppliedBoundsWidth = 0
         lastRenderToken = 0
@@ -669,6 +696,26 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             }
         } else {
             publishSelection(false)
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            ChatRevealDisplayDriver.shared.unregister(self)
+        } else {
+            syncRevealDisplayDriver()
+        }
+    }
+
+    override var isHidden: Bool {
+        didSet {
+            guard isHidden != oldValue else { return }
+            if isHidden {
+                ChatRevealDisplayDriver.shared.unregister(self)
+            } else if window != nil {
+                syncRevealDisplayDriver()
+            }
         }
     }
 
@@ -755,7 +802,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             return
         }
 
-        if !wantsRevealTiles {
+        let previousFrozenTiles = currentRendered.frozenPrefixLength > 0 ? lastFrozenTiles : nil
+        if !wantsRevealTiles && previousFrozenTiles == nil {
             clearTileLayers()
         }
         let requestedToken = currentRendered.renderToken
@@ -772,7 +820,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             scale: scale,
             palette: ChatTextRenderPalette.make(style: style),
             includeRevealSnapshot: wantsRevealTiles,
-            sourceRenderToken: requestedToken
+            sourceRenderToken: requestedToken,
+            frozenPrefixLength: currentRendered.frozenPrefixLength,
+            frozenStyleKey: style.styleKey,
+            previousFrozenTiles: previousFrozenTiles
         )
 
         let canRenderSync = currentRendered.attributed.length <= 80 && !currentRendered.decorations.hasAny
@@ -834,6 +885,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             }
         }
         isAwaitingFinalizedTiles = false
+        lastFrozenTiles = rendered.frozenPrefix == nil ? nil : rendered
         activeTileCount = rendered.tiles.count
         appliedRevealSnapshot = rendered.revealSnapshot
         appliedRenderToken = token
@@ -883,7 +935,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                     maskState: preLockState,
                     bounds: bounds,
                     tileRoot: tileRoot,
-                    overlayHost: layer
+                    overlayHost: layer,
+                    useFeather: revealMaskCoordinator.snippetHost.activeCount == 0
                 )
             }
         }
@@ -932,7 +985,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         updateAccessibility()
     }
 
-    private func clearTileLayers() {
+    private func clearTileLayers(keepingFrozenPrefix: Bool = false) {
+        if !keepingFrozenPrefix { lastFrozenTiles = nil }
         appliedRenderKey = ""
         appliedRevealSnapshot = nil
         appliedRenderToken = 0
@@ -1120,6 +1174,46 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             && revealMaskCoordinator.snippetHost.activeCount == 0 {
             ChatRevealDisplayDriver.shared.unregister(self)
         }
+    }
+
+    /// Live code has already been laid out. Update only foreground attributes in TextKit.
+    func updateLiveCodeColors(_ attributed: NSAttributedString, animated: Bool) {
+        guard currentIsLive, let textView = selectionTextView,
+              attributed.length == currentRendered.attributed.length,
+              attributed != currentRendered.attributed else { return }
+        let storage = textView.textStorage
+        guard storage.length == attributed.length else { return }
+        if animated, window != nil, !bounds.isEmpty, textView.selectedRange.length == 0 {
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = 0.1
+            layer.add(fade, forKey: "liveCodeColor")
+        }
+        storage.beginEditing()
+        attributed.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: attributed.length)) { color, range, _ in
+            guard let color = color as? UIColor else { return }
+            var existingRange = NSRange()
+            let existingColor = storage.attribute(.foregroundColor, at: range.location, effectiveRange: &existingRange) as? UIColor
+            if existingColor != color || NSMaxRange(existingRange) < NSMaxRange(range) {
+                storage.addAttribute(.foregroundColor, value: color, range: range)
+            }
+        }
+        storage.endEditing()
+        currentRendered = ChatRenderedProse(
+            attributed: attributed,
+            decorations: currentRendered.decorations,
+            topInset: currentRendered.topInset,
+            bottomInset: currentRendered.bottomInset,
+            renderToken: currentRendered.renderToken,
+            hasLinks: currentRendered.hasLinks,
+            liveTailIndex: currentRendered.liveTailIndex,
+            spacingAfter: currentRendered.spacingAfter,
+            frozenPrefixLength: currentRendered.frozenPrefixLength
+        )
+    }
+
+    func cancelLiveCodeColorTransition() {
+        layer.removeAnimation(forKey: "liveCodeColor")
     }
 
     // MARK: - Lazy TextKit 2 Selection TextView

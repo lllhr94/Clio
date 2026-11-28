@@ -84,6 +84,7 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         let richTextView: ChatRichTextView?
         let expectedHeight: CGFloat
         let attributedLength: Int
+        var textSample: String = ""
     }
 
     private var messageRevealCoordinator: MessageRevealCoordinator?
@@ -229,6 +230,26 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         CATransaction.setDisableActions(true)
         continueButton.configuration = cfg
         CATransaction.commit()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            ChatRevealDisplayDriver.shared.unregister(self)
+        } else {
+            syncMessageRevealDriver()
+        }
+    }
+
+    override var isHidden: Bool {
+        didSet {
+            guard isHidden != oldValue else { return }
+            if isHidden {
+                ChatRevealDisplayDriver.shared.unregister(self)
+            } else if window != nil {
+                syncMessageRevealDriver()
+            }
+        }
     }
 
     override func prepareForReuse() {
@@ -406,6 +427,13 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         richTextViews.contains { !$0.isHidden && $0.hasPaintedLiveTail }
     }
 
+    var hasActiveReveal: Bool {
+        if let coord = messageRevealCoordinator, !coord.isComplete {
+            return true
+        }
+        return richTextViews.contains { !$0.isHidden && $0.hasActiveReveal }
+    }
+
     func revealedLineBottom(in view: UIView) -> CGFloat? {
         if let coord = messageRevealCoordinator, !coord.isComplete,
            let activeIndex = coord.timeline.activeSliceIndex(forCursor: coord.cursorPoints),
@@ -488,10 +516,15 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
             let weight: Int
             if let tv = binding.richTextView {
                 weight = tv.revealSnapshotTotalPoints
-                    ?? MessageRevealTimeline.estimatedTextWeight(
-                        attributedLength: binding.attributedLength,
-                        fontSize: style.readingSize
-                    )
+                    ?? (binding.textSample.isEmpty
+                        ? MessageRevealTimeline.estimatedTextWeight(
+                            attributedLength: binding.attributedLength,
+                            fontSize: style.readingSize
+                        )
+                        : MessageRevealTimeline.estimatedTextWeight(
+                            text: binding.textSample,
+                            fontSize: style.readingSize
+                        ))
             } else {
                 weight = MessageRevealTimeline.blockWeight(forHeight: binding.expectedHeight)
             }
@@ -951,22 +984,22 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         let widthKey = Int(((entry.contentWidth + style.metrics.spacePage * 2) * 2).rounded())
         let isLive = isLiveStreamingOnly || (currentRow?.isFreshWriting ?? false)
         let hasActiveSelection = transferredSelection != nil || !activeSelectionOwnerIDs().isEmpty
-        let totalTextLen = entry.slices.reduce(0) { acc, measured in
+        let textSliceLengths: [Int] = entry.slices.compactMap { measured in
             switch measured.slice {
-            case .richText(let prose): return acc + prose.attributed.length
-            case .pictures(let words, _, _): return acc + (words?.attributed.length ?? 0)
-            default: return acc
+            case .richText(let prose): return prose.attributed.length
+            case .pictures(let words, _, _): return words?.attributed.length
+            default: return nil
             }
         }
         let continuingOwnReveal = messageRevealCoordinator != nil
             && revealOwnerID == lineID
             && !(messageRevealCoordinator?.isComplete ?? true)
-        let useUnifiedReveal = style.fade
-            && !style.reduceMotion
-            && !hasActiveSelection
-            && totalTextLen > 0
-            && totalTextLen <= ChatRevealPolicy.maxTailAttributedLength * 3
-            && (isLive || transferredReveal != nil || continuingOwnReveal)
+        let useUnifiedReveal = ChatRevealPolicy.shouldUseUnifiedReveal(
+            fade: style.fade,
+            reduceMotion: style.reduceMotion,
+            hasActiveSelection: hasActiveSelection,
+            sliceLengths: textSliceLengths
+        ) && (isLive || transferredReveal != nil || continuingOwnReveal)
 
         var totalRichTextCount = 0
         for measured in entry.slices {
@@ -1016,7 +1049,8 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
                     view: tv,
                     richTextView: tv,
                     expectedHeight: measured.height,
-                    attributedLength: rendered.attributed.length
+                    attributedLength: rendered.attributed.length,
+                    textSample: rendered.attributed.string
                 ))
                 rtIndex += 1
 
@@ -1038,9 +1072,10 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
                 cb.onSelectionActiveChanged = { [weak self] uuid, active in
                     self?.callbacks.onSelectionChanged(uuid, active)
                 }
-                cb.configure(slice: codeSlice, unfolded: unfoldedSlices.contains(sliceIndex), style: style)
+                let codeOwnerID = "\(lineID)#code\(sliceIndex)"
+                cb.configure(ownerID: codeOwnerID, slice: codeSlice, unfolded: unfoldedSlices.contains(sliceIndex), style: style)
                 nextRevealBindings.append(RevealSliceBinding(
-                    id: "\(lineID)#code\(sliceIndex)",
+                    id: codeOwnerID,
                     kind: .code,
                     view: cb,
                     richTextView: nil,
@@ -1135,7 +1170,8 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
                         view: tv,
                         richTextView: tv,
                         expectedHeight: measured.height,
-                        attributedLength: words.attributed.length
+                        attributedLength: words.attributed.length,
+                        textSample: words.attributed.string
                     ))
                     rtIndex += 1
                 }

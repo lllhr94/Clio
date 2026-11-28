@@ -27,6 +27,8 @@ private enum ChatAvatarTapBounce {
 final class ChatPetAvatarView: UIView {
     private let bounceView = UIView()
     private let bgLayer = CALayer()
+    private let sheenLayer = CAGradientLayer()
+    private let rimLayer = CAShapeLayer()
     private let imageView = UIImageView()
     private let fallbackView = UILabel()
     private lazy var tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleAvatarTap))
@@ -58,6 +60,9 @@ final class ChatPetAvatarView: UIView {
         addSubview(bounceView)
 
         bounceView.layer.addSublayer(bgLayer)
+        sheenLayer.startPoint = CGPoint(x: 0.5, y: 0)
+        sheenLayer.endPoint = CGPoint(x: 0.5, y: 1)
+        bounceView.layer.addSublayer(sheenLayer)
         imageView.contentMode = .scaleAspectFit
         imageView.clipsToBounds = true
         bounceView.addSubview(imageView)
@@ -66,6 +71,10 @@ final class ChatPetAvatarView: UIView {
         fallbackView.adjustsFontSizeToFitWidth = true
         fallbackView.isHidden = true
         bounceView.addSubview(fallbackView)
+
+        rimLayer.fillColor = nil
+        rimLayer.lineWidth = 0.75
+        bounceView.layer.addSublayer(rimLayer)
 
         tapGesture.isEnabled = false
         addGestureRecognizer(tapGesture)
@@ -113,12 +122,15 @@ final class ChatPetAvatarView: UIView {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             bgLayer.isHidden = true
+            sheenLayer.isHidden = true
+            rimLayer.isHidden = false
             CATransaction.commit()
             imageView.isHidden = false
             fallbackView.isHidden = true
             imageView.contentMode = .scaleAspectFill
             imageView.image = picture
             imageView.layer.magnificationFilter = .linear
+            refreshColors(resolvedWash: resolvedWash)
             setNeedsLayout()
             return
         }
@@ -132,6 +144,8 @@ final class ChatPetAvatarView: UIView {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             bgLayer.isHidden = !avatar
+            sheenLayer.isHidden = true
+            rimLayer.isHidden = !avatar
             CATransaction.commit()
             imageView.isHidden = false
             fallbackView.isHidden = true
@@ -143,6 +157,8 @@ final class ChatPetAvatarView: UIView {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             bgLayer.isHidden = !avatar
+            sheenLayer.isHidden = !avatar
+            rimLayer.isHidden = !avatar
             CATransaction.commit()
             imageView.image = nil
             imageView.isHidden = true
@@ -166,9 +182,16 @@ final class ChatPetAvatarView: UIView {
 
     private func refreshColors(resolvedWash: UIColor? = nil) {
         let color = (resolvedWash ?? UIColor(currentWash ?? Ink.accentWash).resolvedColor(with: traitCollection)).cgColor
+        let isDark = traitCollection.userInterfaceStyle == .dark
+        let ruleColor = UIColor(Ink.rule).resolvedColor(with: traitCollection)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         bgLayer.backgroundColor = color
+        sheenLayer.colors = [
+            UIColor.white.withAlphaComponent(isDark ? 0.08 : 0.36).cgColor,
+            UIColor.clear.cgColor,
+        ]
+        rimLayer.strokeColor = ruleColor.withAlphaComponent(isDark ? 0.48 : 0.45).cgColor
         CATransaction.commit()
         fallbackView.textColor = UIColor(Ink.ink)
     }
@@ -183,6 +206,10 @@ final class ChatPetAvatarView: UIView {
         CATransaction.setDisableActions(true)
         bgLayer.frame = bounds
         bgLayer.cornerRadius = side * 0.5
+        sheenLayer.frame = bounds
+        sheenLayer.cornerRadius = side * 0.5
+        rimLayer.frame = bounds
+        rimLayer.path = UIBezierPath(ovalIn: bounds.insetBy(dx: 0.375, dy: 0.375)).cgPath
         CATransaction.commit()
 
         if bgLayer.isHidden && isAvatarCircle {
@@ -815,7 +842,7 @@ final class ChatBotFooterView: UIView {
     private var lastColorSignature = ""
 
     func configure(row: ChatListRowItem, showsSelectText: Bool = true) {
-        let newest = row.isLatestBot
+        let newest = row.isLatestBot && row.isLastLine
         let signature = "\(row.line.id)|\(newest)|\(row.showStats)|\(row.isRoom)|\(row.isSpeakingThisLine)|\(row.line.seconds ?? -1)|\(row.line.tokens ?? -1)|\(showsSelectText)|\(UIScale.factor)"
         if signature != lastConfigSignature {
             lastConfigSignature = signature

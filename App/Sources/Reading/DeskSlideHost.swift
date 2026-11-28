@@ -45,11 +45,16 @@ struct DeskSlideHost<Sidebar: View>: View {
             }
             .onEnded { value in
                 guard pull != 0, sideWidth > 0 else { return }
-                let fling = value.predictedEndTranslation.width
-                let settleAnimation: Animation? = effectiveReduceMotion ? nil : Ink.Motion.settle
-                let transitionAnimation: Animation? = effectiveReduceMotion ? nil : Ink.Motion.unfold
+                let velocityX = value.velocity.width
+                let projectedPull = ClioTransition.projectLandingOffset(
+                    currentOffset: pull,
+                    velocityPtPerSec: velocityX,
+                    decelerationRate: UIScrollView.DecelerationRate.fast.rawValue
+                )
+                let settleAnimation: Animation? = effectiveReduceMotion ? nil : ClioMotionPreset.snappyLayout.swiftUIAnimation
+                let transitionAnimation: Animation? = effectiveReduceMotion ? nil : ClioMotionPreset.interactivePanel.swiftUIAnimation
                 if sideOpen {
-                    if -pull > sideWidth * 0.3 || fling < -180 {
+                    if -pull > sideWidth * 0.3 || projectedPull < -sideWidth * 0.42 {
                         Haptics.light()
                         withAnimation(transitionAnimation) {
                             pull = 0
@@ -60,7 +65,7 @@ struct DeskSlideHost<Sidebar: View>: View {
                         withAnimation(settleAnimation) { pull = 0 }
                     }
                 } else {
-                    if pull > sideWidth * 0.35 || fling > sideWidth * 0.72 {
+                    if pull > sideWidth * 0.35 || projectedPull > sideWidth * 0.55 {
                         Haptics.light()
                         withAnimation(transitionAnimation) {
                             pull = 0

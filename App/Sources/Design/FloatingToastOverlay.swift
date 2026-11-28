@@ -402,10 +402,9 @@ private final class FloatingToastWindowController: NSObject {
         let overlap = max(0, source.bounds.maxY - source.safeAreaInsets.bottom - localEnd.minY)
         let resolved: CGFloat = overlap > 10 ? overlap + Ink.Space.m : 0
         guard abs(state.keyboardClearance - resolved) > 0.5 else { return }
-        let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
-        withAnimation(.easeOut(duration: max(0.16, duration))) {
+        ClioTransition.syncWithKeyboardNotification(note, swiftUIUpdates: {
             state.keyboardClearance = resolved
-        }
+        })
     }
 
     private func isSystemAlertWindow(_ other: UIWindow) -> Bool {

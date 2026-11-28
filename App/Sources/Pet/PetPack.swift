@@ -304,8 +304,20 @@ enum PetSheets {
     }()
 
     private static let observersInstalled: Bool = {
-        NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { PetSheets.purgeAll() }
+        let governor = RuntimeBudgetGovernor.shared
+        governor.observeMemoryWarning { PetSheets.purgeAll() }
+        governor.observeBudget { snapshot in
+            let cache = PetSheets.inactiveStills
+            switch snapshot.tier {
+            case .full:
+                cache.countLimit = 24
+                cache.totalCostLimit = 2 * 1024 * 1024
+            case .conserve, .critical:
+                cache.countLimit = 12
+                cache.totalCostLimit = 1024 * 1024
+                cache.removeAllObjects()
+                PetSheets.evictPlaceholders(except: PetSheets.activeIDs)
+            }
         }
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { PetSheets.purgeTransient() }
@@ -780,7 +792,9 @@ struct SpritePet: View {
             if let animation, scenePhase == .active, ended != playback,
                let first = animation.frames.first, animation.frames.contains(where: { $0.i != first.i }) {
                 let sleeping = pack.states["sleeping"]?.contains(anim) == true
-                TimelineView(.animation(minimumInterval: sleeping ? 1.0 / 4 : 1.0 / 12)) { timeline in
+                let idle = pack.states["idle"]?.contains(anim) == true
+                let fps = sleeping ? 4 : (idle ? RuntimeBudgetGovernor.shared.snapshot.petIdleFPS : 12)
+                TimelineView(.animation(minimumInterval: 1.0 / Double(fps))) { timeline in
                     frame(at: timeline.date, unit: unit)
                 }
             } else {

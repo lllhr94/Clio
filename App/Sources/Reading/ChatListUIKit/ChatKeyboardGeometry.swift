@@ -322,3 +322,182 @@ enum ChatDockCardBudget {
         )
     }
 }
+
+/// Interruption-safe per-frame bottom-inset synthesizer unifying:
+/// 1. Direct presentation-layer tracking of `view.keyboardLayoutGuide.topAnchor` during docked keyboard
+///    animations and interactive drag-dismiss (eliminating the `safeAreaBottom` ~34pt end-snap and
+///    mid-flight `kbProgress` retarget teleportation).
+/// 2. Post-drag finger-lift grace window so releasing an interactive keyboard swipe never snaps back to
+///    the stale keyboard-open inset before `keyboardWillChangeFrameNotification` arrives.
+/// 3. Pre-animation commit hold (`< 0.05s`) waiting for UIKit to attach its native CoreAnimation spring
+///    instead of stepping briefly on a mismatched smoothstep curve.
+/// 4. Frame-rate-independent exponential chase fallback for floating/split keyboards and composer height changes.
+enum ChatKeyboardInsetStepSolver {
+    struct Input: Equatable, Sendable {
+        let currentBottomInset: CGFloat
+        let targetBottomInset: CGFloat
+        let hostMinY: CGFloat
+        let hostMaxY: CGFloat
+        let hostHeight: CGFloat
+        let safeAreaBottom: CGFloat
+        let restingComposerHeight: CGFloat
+        let appliedComposerHeight: CGFloat
+        let extraBottomPadding: CGFloat
+        let mode: ChatKeyboardMode
+        let presentationGuideTopY: CGFloat?
+        let hasActivePresentationAnimation: Bool
+        let isInteractiveDragging: Bool
+        let isPostDragGraceActive: Bool
+        let inKeyboardTransitionWindow: Bool
+        let elapsedSinceTransitionStart: TimeInterval
+        let dt: TimeInterval
+        let fallbackDuration: TimeInterval
+        let reduceMotion: Bool
+    }
+
+    struct Output: Equatable, Sendable {
+        let nextBottomInset: CGFloat
+        let nextAppliedComposerHeight: CGFloat
+        let finished: Bool
+        let usedLivePresentation: Bool
+    }
+
+    nonisolated static func livePresentationBottomInset(
+        probeTopY: CGFloat,
+        hostMinY: CGFloat,
+        hostMaxY: CGFloat,
+        hostHeight: CGFloat,
+        safeAreaBottom: CGFloat,
+        composerHeight: CGFloat,
+        extraBottomPadding: CGFloat
+    ) -> CGFloat {
+        let safe = max(0, safeAreaBottom)
+        let composer = max(0, composerHeight)
+        let extra = max(0, extraBottomPadding)
+        let restingBottomY = max(hostMinY, hostMaxY - safe)
+        let clampedAvoided = max(
+            hostMinY + min(composer, max(0, hostHeight)),
+            min(restingBottomY, probeTopY)
+        )
+        let liveOcclusion = max(0, restingBottomY - clampedAvoided)
+        return safe + composer + liveOcclusion + extra
+    }
+
+    nonisolated static func step(_ input: Input) -> Output {
+        let dt = min(max(input.dt, 1.0 / 240.0), 1.0 / 20.0)
+        let targetComposer = max(0, input.restingComposerHeight)
+        let startComposer = input.appliedComposerHeight > 0.5 ? input.appliedComposerHeight : targetComposer
+        let composerDiff = targetComposer - startComposer
+        let nextComposer: CGFloat
+        let composerSettled: Bool
+        if input.reduceMotion || abs(composerDiff) <= 0.5 {
+            nextComposer = targetComposer
+            composerSettled = true
+        } else {
+            let composerAlpha = CGFloat(1.0 - exp(-dt / 0.045))
+            let chased = startComposer + composerDiff * composerAlpha
+            if abs(targetComposer - chased) <= 0.5 {
+                nextComposer = targetComposer
+                composerSettled = true
+            } else {
+                nextComposer = chased
+                composerSettled = false
+            }
+        }
+
+        let canUseDockedGuide = input.mode != .floatingOrSplit
+        let validProbeTopY: CGFloat? = {
+            guard canUseDockedGuide, let topY = input.presentationGuideTopY, topY.isFinite else { return nil }
+            return topY
+        }()
+
+        // 1. Active interactive drag or post-drag grace window: ALWAYS track live guide presentation
+        //    directly so finger release never snaps back to a stale keyboard-open `targetBottomInset`.
+        if (input.isInteractiveDragging || input.isPostDragGraceActive), let probeTopY = validProbeTopY {
+            let resolvedComposer = input.isInteractiveDragging ? targetComposer : nextComposer
+            let live = livePresentationBottomInset(
+                probeTopY: probeTopY,
+                hostMinY: input.hostMinY,
+                hostMaxY: input.hostMaxY,
+                hostHeight: input.hostHeight,
+                safeAreaBottom: input.safeAreaBottom,
+                composerHeight: resolvedComposer,
+                extraBottomPadding: input.extraBottomPadding
+            )
+            return Output(
+                nextBottomInset: live,
+                nextAppliedComposerHeight: resolvedComposer,
+                finished: false,
+                usedLivePresentation: true
+            )
+        }
+
+        // 2. Native CoreAnimation keyboard spring active on docked guide: 1:1 pixel-exact tracking.
+        if input.hasActivePresentationAnimation, let probeTopY = validProbeTopY {
+            let live = livePresentationBottomInset(
+                probeTopY: probeTopY,
+                hostMinY: input.hostMinY,
+                hostMaxY: input.hostMaxY,
+                hostHeight: input.hostHeight,
+                safeAreaBottom: input.safeAreaBottom,
+                composerHeight: nextComposer,
+                extraBottomPadding: input.extraBottomPadding
+            )
+            return Output(
+                nextBottomInset: live,
+                nextAppliedComposerHeight: nextComposer,
+                finished: false,
+                usedLivePresentation: true
+            )
+        }
+
+        // 3. Pre-animation commit hold (< 0.05s after `keyboardWillChangeFrame` before UIKit attaches
+        //    its CoreAnimation spring): hold steady instead of stepping on a mismatched curve.
+        if input.inKeyboardTransitionWindow,
+           !input.reduceMotion,
+           canUseDockedGuide,
+           input.elapsedSinceTransitionStart < 0.05,
+           let probeTopY = validProbeTopY {
+            let live = livePresentationBottomInset(
+                probeTopY: probeTopY,
+                hostMinY: input.hostMinY,
+                hostMaxY: input.hostMaxY,
+                hostHeight: input.hostHeight,
+                safeAreaBottom: input.safeAreaBottom,
+                composerHeight: nextComposer,
+                extraBottomPadding: input.extraBottomPadding
+            )
+            if abs(live - input.currentBottomInset) <= 2.0 && abs(input.targetBottomInset - input.currentBottomInset) > 2.0 {
+                return Output(
+                    nextBottomInset: input.currentBottomInset,
+                    nextAppliedComposerHeight: nextComposer,
+                    finished: false,
+                    usedLivePresentation: true
+                )
+            }
+        }
+
+        // 4. Interruption-safe exponential chase fallback (floating/split keyboard, composer resize,
+        //    or post-animation settle). Guaranteed C^0 continuous across any mid-flight retargeting.
+        let diff = input.targetBottomInset - input.currentBottomInset
+        if input.reduceMotion || abs(diff) <= 0.5 {
+            return Output(
+                nextBottomInset: input.targetBottomInset,
+                nextAppliedComposerHeight: targetComposer,
+                finished: true,
+                usedLivePresentation: false
+            )
+        }
+
+        let tau = max(0.035, min(0.14, input.fallbackDuration * 0.28))
+        let alpha = CGFloat(1.0 - exp(-dt / tau))
+        let next = input.currentBottomInset + diff * alpha
+        let settled = abs(input.targetBottomInset - next) <= 0.5 && composerSettled
+        return Output(
+            nextBottomInset: settled ? input.targetBottomInset : next,
+            nextAppliedComposerHeight: settled ? targetComposer : nextComposer,
+            finished: settled,
+            usedLivePresentation: false
+        )
+    }
+}

@@ -81,6 +81,7 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
         currentEntry = nil
         actions = nil
         richTextView.resetForReuse()
+        bubbleView.alpha = 1
         meAvatar.resetBounce()
         photoViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         onQuoteExcerpt = nil
@@ -108,6 +109,17 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
 
     func containsAttachment(_ attachmentID: String) -> Bool {
         currentRow?.line.refs.contains(attachmentID) == true
+    }
+
+    /// Returns the rendered user bubble rect in `targetView` coordinates for overlay send-flight targeting.
+    func bubbleFrame(in targetView: UIView) -> CGRect? {
+        guard !bubbleView.isHidden, !bubbleView.bounds.isEmpty else { return nil }
+        return bubbleView.convert(bubbleView.bounds, to: targetView)
+    }
+
+    /// Hides or reveals the seated user bubble while an independent send-flight overlay travels to it.
+    func setBubbleHiddenForSendFlight(_ hidden: Bool) {
+        bubbleView.alpha = hidden ? 0 : 1
     }
 
     func configure(
@@ -769,6 +781,7 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
     private let tailLabel = UILabel()
     private let fadeOverlay = CAGradientLayer()
     private var lastColorSignature = ""
+    private var isCompact = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -809,15 +822,34 @@ final class ChatLiveThinkingCell: UICollectionViewCell {
         refreshColors()
     }
 
-    static func fixedHeight() -> CGFloat {
+    static func fixedHeight(compact: Bool) -> CGFloat {
+        if compact { return ceil(ChatCellMetrics.disclosureHeaderHeight + ChatCellMetrics.rowSpacing) }
         let font = UIFont.systemFont(ofSize: Ink.Size.small)
         let cardH = ceil(font.lineHeight * 3) + Ink.Space.s * 2
         return ceil(ChatCellMetrics.disclosureHeaderHeight + ChatCellMetrics.disclosureGap + cardH + ChatCellMetrics.rowSpacing)
     }
 
-    func configure(text: String) {
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        isCompact = false
+        cardView.isHidden = false
+        headerLabel.layer.removeAllAnimations()
+    }
+
+    func configure(text: String, compact: Bool, animateCollapse: Bool = false) {
+        let shouldAnimate = animateCollapse && compact && !isCompact
+        isCompact = compact
+        cardView.isHidden = compact
         headerLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
-        headerLabel.text = Words.t("正在沉吟") + " · \(text.count) 字"
+        if compact {
+            headerLabel.text = L.t("chat.thoughtProcess")
+        } else {
+            headerLabel.text = Words.t("正在沉吟") + " · \(text.count) 字"
+        }
+        if shouldAnimate {
+            headerLabel.layer.opacity = 0.65
+            ClioTransition.animateScalarFromPresentation(layer: headerLabel.layer, keyPath: "opacity", to: 1)
+        }
         tailLabel.font = UIFont.systemFont(ofSize: Ink.Size.small)
         let cut = text.suffix(220)
         tailLabel.text = cut.split(separator: "\n", omittingEmptySubsequences: true).suffix(3).joined(separator: "\n")
@@ -1575,6 +1607,7 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
     private var lineLabels: [UILabel] = []
 
     private var currentLines: [ToolTail.Line] = []
+    private var compact = false
     private var currentStyle: ChatListStyle?
     private weak var observedTail: ToolTail?
     private var cancellable: AnyCancellable?
@@ -1614,9 +1647,11 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
         super.prepareForReuse()
         stopObserving()
         currentLines = []
+        compact = false
         currentStyle = nil
         lastReportedHeight = -1
         lastColorSignature = ""
+        cardView.layer.removeAnimation(forKey: "opacity")
         cardView.isHidden = true
         cardView.isAccessibilityElement = false
         for label in lineLabels {
@@ -1632,7 +1667,12 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
         onHeightChanged = nil
     }
 
-    static func measureHeight(lines: [ToolTail.Line], style: ChatListStyle) -> CGFloat {
+    static func displayedLines(_ lines: [ToolTail.Line], compact: Bool) -> [ToolTail.Line] {
+        compact ? Array(lines.suffix(1)) : lines
+    }
+
+    static func measureHeight(lines: [ToolTail.Line], style: ChatListStyle, compact: Bool = false) -> CGFloat {
+        let lines = displayedLines(lines, compact: compact)
         guard !lines.isEmpty else { return 1 }
         let font = Ink.uiMono(style.metrics.sizeMicro, bold: false, preference: style.code)
         let lineH = ceil(font.lineHeight)
@@ -1646,12 +1686,15 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
         tail: ToolTail,
         style: ChatListStyle,
         expectedHeight: CGFloat = -1,
+        compact: Bool = false,
         onHeightChanged: @escaping (CGFloat) -> Void
     ) {
+        let animateCollapse = compact && !self.compact && currentLines.count > 1 && !style.reduceMotion
+        self.compact = compact
         self.currentStyle = style
         self.onHeightChanged = onHeightChanged
 
-        let measured = Self.measureHeight(lines: tail.lines, style: style)
+        let measured = Self.measureHeight(lines: tail.lines, style: style, compact: compact)
         if observedTail !== tail {
             cancellable?.cancel()
             observedTail = tail
@@ -1666,6 +1709,10 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
             lastReportedHeight = expectedHeight >= 0 ? expectedHeight : measured
             applyLines(tail.lines, reportHeight: expectedHeight >= 0)
         }
+        if animateCollapse {
+            cardView.layer.opacity = 0.65
+            ClioTransition.animateScalarFromPresentation(layer: cardView.layer, keyPath: "opacity", to: 1)
+        }
         refreshColors()
         setNeedsLayout()
     }
@@ -1676,12 +1723,13 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
         for idx in 0..<currentLines.count where idx < lineLabels.count {
             lineLabels[idx].font = font
         }
-        lastReportedHeight = Self.measureHeight(lines: currentLines, style: style)
+        lastReportedHeight = Self.measureHeight(lines: currentLines, style: style, compact: compact)
         refreshColors()
         setNeedsLayout()
     }
 
     private func applyLines(_ lines: [ToolTail.Line], reportHeight: Bool) {
+        let lines = Self.displayedLines(lines, compact: compact)
         currentLines = lines
         guard !lines.isEmpty else {
             cardView.isHidden = true

@@ -1,40 +1,45 @@
+import Observation
 import QuartzCore
 import SwiftUI
 import UIKit
 
-/// Counts frames with the screen's own clock and reports twice a second.
-@MainActor
-final class FrameClock: ObservableObject {
-    @Published private(set) var fps = 0
-    @Published private(set) var worst = 0.0
-    private var link: CADisplayLink?
-    private var frames = 0
-    private var since = CACurrentMediaTime()
-    private var last = CACurrentMediaTime()
-    private var longest = 0.0
+/// Samples the shared clock without publishing individual frame callbacks to SwiftUI.
+@MainActor @Observable
+final class FrameMeterReading {
+    private(set) var fps = 0
+    private(set) var worst = 0.0
+    @ObservationIgnored private var link: SharedFrameLink?
+    @ObservationIgnored private var frames = 0
+    @ObservationIgnored private var since: CFTimeInterval?
+    @ObservationIgnored private var last: CFTimeInterval?
+    @ObservationIgnored private var longest = 0.0
 
     func start() {
         guard link == nil else { return }
-        let link = CADisplayLink(target: Ticker(self), selector: #selector(Ticker.tick(_:)))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
-        link.add(to: .main, forMode: .common)
-        self.link = link
-        since = CACurrentMediaTime()
-        last = since
+        link = SharedFrameDriver.shared.add(rate: .max, isActive: { [weak self] in self != nil }) { [weak self] tick in
+            self?.sample(tick.timestamp)
+        }
     }
 
     func stop() {
         link?.invalidate()
         link = nil
         frames = 0
+        since = nil
+        last = nil
         longest = 0
     }
 
-    fileprivate func tick(_ time: CFTimeInterval) {
+    private func sample(_ time: CFTimeInterval) {
+        guard let start = since, let previous = last else {
+            since = time
+            last = time
+            return
+        }
         frames += 1
-        longest = max(longest, time - last)
+        longest = max(longest, time - previous)
         last = time
-        let span = time - since
+        let span = time - start
         if span >= 0.5 {
             fps = Int((Double(frames) / span).rounded())
             worst = longest * 1000
@@ -43,21 +48,11 @@ final class FrameClock: ObservableObject {
             since = time
         }
     }
-
-    /// CADisplayLink holds its target strongly; this keeps the clock itself free to go.
-    private final class Ticker: NSObject {
-        weak var clock: FrameClock?
-        init(_ clock: FrameClock) { self.clock = clock }
-        @objc func tick(_ link: CADisplayLink) {
-            let time = link.timestamp
-            MainActor.assumeIsolated { clock?.tick(time) }
-        }
-    }
 }
 
 /// A small tag in the corner: frames per second, and the longest frame in the last half second.
 struct FrameMeter: View {
-    @ObservedObject var clock: FrameClock
+    let clock: FrameMeterReading
     @Environment(\.scenePhase) private var phase
 
     var body: some View {
@@ -89,7 +84,7 @@ struct FrameMeter: View {
 @MainActor
 enum MeterWindow {
     private static var window: UIWindow?
-    private static var clock: FrameClock?
+    private static var clock: FrameMeterReading?
 
     static func set(_ on: Bool) {
         if !on {
@@ -104,7 +99,7 @@ enum MeterWindow {
         let window = PassThroughWindow(windowScene: scene)
         window.windowLevel = .statusBar + 1
         window.backgroundColor = .clear
-        let clock = FrameClock()
+        let clock = FrameMeterReading()
         self.clock = clock
         let host = UIHostingController(rootView: FrameMeter(clock: clock).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing).padding(.trailing, Ink.Space.s).padding(.top, Ink.Space.huge))
         host.view.backgroundColor = .clear

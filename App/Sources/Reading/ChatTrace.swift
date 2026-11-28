@@ -742,7 +742,7 @@ struct Trace: View {
         return VStack(alignment: .leading, spacing: 0) {
             Button {
                 Haptics.light()
-                withAnimation(Ink.Motion.unfold) { commandsOpen.toggle() }
+                withAnimation(ClioTransition.layoutAnimation) { commandsOpen.toggle() }
             } label: {
                 HStack(spacing: Ink.Space.s) {
                     Image(systemName: "terminal")
@@ -1090,7 +1090,7 @@ struct Trace: View {
             Button {
                 let willOpen = !open
                 DiagTrail.record(willOpen ? "展开步骤(\(line.tools.count)步)" : "收起步骤")
-                withAnimation(Ink.Motion.unfold) { open.toggle() }
+                withAnimation(ClioTransition.layoutAnimation) { open.toggle() }
             } label: {
                 HStack(spacing: Ink.Space.s) {
                     let agg = Self.aggregateStatus(for: line)
@@ -1121,7 +1121,7 @@ struct Trace: View {
                 VStack(alignment: .leading, spacing: 0) {
                     if hidden > 0 {
                         Button {
-                            withAnimation(Ink.Motion.unfold) { open = true }
+                            withAnimation(ClioTransition.layoutAnimation) { open = true }
                         } label: {
                             Text("前面还有 \(hidden) 步")
                                 .font(Ink.footnote).foregroundStyle(Ink.inkFaint)
@@ -1136,10 +1136,7 @@ struct Trace: View {
                     }
                 }
                 .padding(.top, Ink.Space.m)
-                .transition(.asymmetric(
-                    insertion: .opacity.animation(Ink.Motion.settle.delay(0.08)),
-                    removal: .opacity.animation(.easeOut(duration: 0.12))
-                ))
+                .transition(.opacity)
             }
         }
         .clipped()
@@ -1200,10 +1197,10 @@ struct Trace: View {
             if filtered != keepsakes { keepsakes = filtered }
             mountRevision = MountedFolders.revision
         }
-        .animation(Ink.Motion.settle, value: line.tools.count)
+        .animation(ClioTransition.shouldSimplifyMotion ? nil : Ink.Motion.settle, value: line.tools.count)
         // Done: everything folds into the initial state again.
         .onChange(of: line.live) { _, live in
-            if !live { withAnimation(Ink.Motion.unfold) { open = initiallyOpen } }
+            if !live { withAnimation(ClioTransition.layoutAnimation) { open = initiallyOpen } }
         }
         if !line.live, changedFiles.count >= 2 {
             changesCard
@@ -1388,7 +1385,7 @@ struct Trace: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 guard more != nil else { return }
-                withAnimation(Ink.Motion.settle) {
+                withAnimation(ClioTransition.layoutAnimation) {
                     if shown { peeking.remove(index) } else { peeking.insert(index) }
                 }
             }
