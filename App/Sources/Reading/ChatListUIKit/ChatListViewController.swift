@@ -265,10 +265,15 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
     private let keyboardSpacerView = UIView()
     private var insetDisplayLink: CADisplayLink?
-    private var insetCatchUpStartTime: CFTimeInterval = 0
-    private var insetCatchUpDuration: CFTimeInterval = 0
-    private var insetCatchUpFromBottom: CGFloat = 0
-    private var insetCatchUpToBottom: CGFloat = 0
+    private var insetTransitionStartTime: CFTimeInterval = 0
+    private var insetLastTickTime: CFTimeInterval = 0
+    private var insetFallbackDuration: CFTimeInterval = 0.22
+    private var appliedComposerHeight: CGFloat = 0
+    private var isInteractiveKeyboardTracking = false
+    private var didMoveKeyboardDuringInteractiveDrag = false
+    private var interactiveKeyboardDragStartInset: CGFloat = 0
+    private var interactiveKeyboardPostDragDeadline: CFTimeInterval = 0
+    private var lastInteractiveDragVelocityY: CGFloat = 0
     private var targetTopInset: CGFloat = 0
     private var targetBottomInset: CGFloat = 0
 
@@ -529,6 +534,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView?.visibleCells.forEach { ($0 as? ChatAssistantCell)?.setRevealVisible(false) }
         styleObservationGeneration &+= 1
         activeKeyboardDeadline = 0
+        isInteractiveKeyboardTracking = false
+        didMoveKeyboardDuringInteractiveDrag = false
+        interactiveKeyboardPostDragDeadline = 0
         stopInsetDisplayLink()
         cancelAllSendFlightOverlays()
         clearReplyPerchClearance()
@@ -576,7 +584,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         container.onMeasuredHeightChanged = { [weak self] height in
             guard let self, !self.isDismantled else { return }
             if abs(self.measuredBottomDockHeight - height) > 0.5 {
+                let wasUnmeasured = self.measuredBottomDockHeight <= 0.5
                 self.measuredBottomDockHeight = height
+                if wasUnmeasured {
+                    self.appliedComposerHeight = height
+                }
                 self.updateCollectionInsetsIfNeeded()
             }
         }
@@ -2551,16 +2563,19 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         activeKeyboardStartOverlap = beginOverlap
         activeKeyboardEndOverlap = endOverlap
         activeKeyboardDuration = duration
+        let now = CACurrentMediaTime()
         if duration > 0.01 {
-            activeKeyboardDeadline = CACurrentMediaTime() + duration + 0.12
+            activeKeyboardDeadline = now + duration + 0.14
             setKeyboardTransitioning(true)
         } else {
             activeKeyboardDeadline = 0
             setKeyboardTransitioning(false)
         }
-
-        if insetDisplayLink != nil && abs(insetCatchUpToBottom - insetCatchUpFromBottom) > 0.5 && duration > 0.01 {
-            insetCatchUpDuration = max(0.08, duration)
+        // Clear post-drag grace once the system keyboard notification has taken over the trajectory.
+        if !collectionView.isDragging {
+            interactiveKeyboardPostDragDeadline = 0
+            isInteractiveKeyboardTracking = false
+            didMoveKeyboardDuringInteractiveDrag = false
         }
 
         let resolved = resolvedEffectiveOcclusion()
@@ -2596,6 +2611,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         guard isViewVisible else {
             pendingKeyboardSync = true
             activeKeyboardDeadline = 0
+            isInteractiveKeyboardTracking = false
+            didMoveKeyboardDuringInteractiveDrag = false
+            interactiveKeyboardPostDragDeadline = 0
             setKeyboardTransitioning(false)
             stopInsetDisplayLink()
             return
@@ -2623,12 +2641,32 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             actions.onKeyboardVisibilityChanged(kbOpen)
         }
         activeKeyboardDeadline = 0
-        if insetDisplayLink != nil {
+        isInteractiveKeyboardTracking = false
+        didMoveKeyboardDuringInteractiveDrag = false
+        interactiveKeyboardPostDragDeadline = 0
+
+        let guideProbe = currentDockedGuidePresentationTopY()
+        if guideProbe?.isAnimating == true {
+            // An overlapping keyboard animation (e.g. IME toolbar + keyboard dismiss) is still running;
+            // keep tracking the live presentation layer instead of hard-snapping mid-flight.
+            targetBottomInset = resolved.collectionBottomInset
+            ensureInsetDisplayLink(fallbackDuration: max(0.12, activeKeyboardDuration), resetTransitionStart: false)
+        } else if insetDisplayLink != nil {
             stopInsetDisplayLink()
+            appliedComposerHeight = currentRestingComposerHeight()
+            targetBottomInset = resolved.collectionBottomInset
             applyInsetsNow(top: targetTopInset, bottom: resolved.collectionBottomInset)
         } else {
             updateCollectionInsetsIfNeeded()
         }
+    }
+
+    private func currentRestingComposerHeight() -> CGFloat {
+        let safeBottom = view.safeAreaInsets.bottom
+        if bottomDockContainerView != nil {
+            return measuredBottomDockHeight > 0 ? measuredBottomDockHeight : max(0, hostBottomInset - safeBottom)
+        }
+        return max(0, hostBottomInset - safeBottom)
     }
 
     private func currentKeyboardPresentationTopY() -> CGFloat? {
@@ -2641,27 +2679,44 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         return topY
     }
 
-    private func currentKeyboardAnimationProgress() -> CGFloat? {
-        let kbDelta = activeKeyboardEndOverlap - activeKeyboardStartOverlap
-        guard abs(kbDelta) > 1,
-              keyboardSpacerView.layer.animationKeys()?.isEmpty == false,
-              let presentationTopY = currentKeyboardPresentationTopY(),
-              view.bounds.height > 0 else {
-            return nil
+    /// Reads the live presentation Y of `view.keyboardLayoutGuide.topAnchor` directly from CoreAnimation
+    /// without dividing by `endOverlap = 0`, staying immune to `safeAreaBottom` (~34pt) deficits and
+    /// SwiftUI composer intrinsic height updates.
+    private func currentDockedGuidePresentationTopY() -> (topY: CGFloat, isAnimating: Bool)? {
+        guard view.bounds.height > 0 else { return nil }
+        let spacerAnimating = keyboardSpacerView.layer.animationKeys()?.isEmpty == false
+        let dockAnimating = (bottomDockDockedConstraint?.isActive == true)
+            && (bottomDockContainerView?.layer.animationKeys()?.isEmpty == false)
+        let isAnimating = spacerAnimating || dockAnimating
+        if let spacerTopY = currentKeyboardPresentationTopY() {
+            return (spacerTopY, isAnimating)
         }
-        let currentOverlap = max(0, view.bounds.maxY - presentationTopY)
-        let raw = (currentOverlap - activeKeyboardStartOverlap) / kbDelta
-        return min(1, max(0, raw))
+        if bottomDockDockedConstraint?.isActive == true,
+           let dock = bottomDockContainerView,
+           dock.bounds.height > 1,
+           let pres = dock.layer.presentation(),
+           pres.frame.maxY.isFinite,
+           pres.frame.maxY > 0 {
+            return (pres.frame.maxY, isAnimating)
+        }
+        return nil
     }
 
-    private func startInsetCatchUp(toBottom desiredBottom: CGFloat, duration: TimeInterval) {
-        guard collectionView != nil else { return }
-        insetCatchUpFromBottom = collectionView.contentInset.bottom
-        insetCatchUpToBottom = desiredBottom
-        insetCatchUpStartTime = CACurrentMediaTime()
-        insetCatchUpDuration = max(0.08, duration)
+    private var isKeyboardTransitionOrPostDragActive: Bool {
+        let now = CACurrentMediaTime()
+        return now <= activeKeyboardDeadline
+            || now <= interactiveKeyboardPostDragDeadline
+            || isInteractiveKeyboardTracking
+    }
 
+    private func ensureInsetDisplayLink(fallbackDuration: TimeInterval, resetTransitionStart: Bool) {
+        guard collectionView != nil else { return }
+        insetFallbackDuration = max(0.08, fallbackDuration)
+        if resetTransitionStart || insetDisplayLink == nil {
+            insetTransitionStartTime = CACurrentMediaTime()
+        }
         if insetDisplayLink == nil {
+            insetLastTickTime = 0
             let link = CADisplayLink(target: InsetClock(self), selector: #selector(InsetClock.beat(_:)))
             link.preferredFrameRateRange = ClioTransition.currentFrameRatePolicy.caFrameRateRange
             link.add(to: .main, forMode: .common)
@@ -2672,6 +2727,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private func stopInsetDisplayLink() {
         insetDisplayLink?.invalidate()
         insetDisplayLink = nil
+        insetLastTickTime = 0
     }
 
     private func stepInsetTick(_ link: CADisplayLink) {
@@ -2681,32 +2737,58 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return
         }
         let now = link.timestamp
-        if collectionView.isDragging, let probeTopY = currentKeyboardPresentationTopY() {
-            // Interactive keyboard drag-dismiss: sample presentation geometry directly.
-            let liveResult = resolvedEffectiveOcclusion(interactiveProbeTopY: probeTopY)
-            publishEffectiveBottomGeometryIfNeeded(liveResult)
-            applyInsetsNow(top: targetTopInset, bottom: liveResult.collectionBottomInset, publishMetrics: false)
-            return
+        let dt: TimeInterval = insetLastTickTime > 0 ? max(1.0 / 240.0, min(1.0 / 20.0, now - insetLastTickTime)) : (1.0 / 120.0)
+        insetLastTickTime = now
+
+        let hostBounds = view.bounds
+        let safeBottom = view.safeAreaInsets.bottom
+        let restingComposerH = currentRestingComposerHeight()
+        let guideProbe = currentDockedGuidePresentationTopY()
+        let isDraggingInteractive = collectionView.isDragging && isInteractiveKeyboardTracking
+        let isPostDragGrace = !isDraggingInteractive && now <= interactiveKeyboardPostDragDeadline
+        if !isDraggingInteractive && interactiveKeyboardPostDragDeadline > 0 && now > interactiveKeyboardPostDragDeadline {
+            interactiveKeyboardPostDragDeadline = 0
+            isInteractiveKeyboardTracking = false
+            didMoveKeyboardDuringInteractiveDrag = false
         }
 
-        let progress: CGFloat
-        if now <= activeKeyboardDeadline,
-           let kbProgress = currentKeyboardAnimationProgress() {
-            progress = kbProgress
-        } else {
-            let elapsed = max(0, now - insetCatchUpStartTime)
-            let dur = max(0.01, insetCatchUpDuration)
-            let t = min(1, elapsed / dur)
-            progress = CGFloat(t * t * (3 - 2 * t))
+        let currentBottom = collectionView.contentInset.bottom
+        let step = ChatKeyboardInsetStepSolver.step(.init(
+            currentBottomInset: currentBottom,
+            targetBottomInset: targetBottomInset,
+            hostMinY: hostBounds.minY,
+            hostMaxY: hostBounds.maxY,
+            hostHeight: hostBounds.height,
+            safeAreaBottom: safeBottom,
+            restingComposerHeight: restingComposerH,
+            appliedComposerHeight: appliedComposerHeight,
+            extraBottomPadding: Ink.Space.m,
+            mode: lastEffectiveOcclusion.mode,
+            presentationGuideTopY: guideProbe?.topY,
+            hasActivePresentationAnimation: guideProbe?.isAnimating == true,
+            isInteractiveDragging: isDraggingInteractive,
+            isPostDragGraceActive: isPostDragGrace,
+            inKeyboardTransitionWindow: now <= activeKeyboardDeadline,
+            elapsedSinceTransitionStart: max(0, now - insetTransitionStartTime),
+            dt: dt,
+            fallbackDuration: insetFallbackDuration,
+            reduceMotion: reduceMotionEnabled
+        ))
+        appliedComposerHeight = step.nextAppliedComposerHeight
+
+        if isDraggingInteractive {
+            if abs(step.nextBottomInset - interactiveKeyboardDragStartInset) > 1.0 {
+                didMoveKeyboardDuringInteractiveDrag = true
+            }
+            if let probeTopY = guideProbe?.topY {
+                // Keep local occlusion current without mutating SwiftUI @State at 120Hz while dragging.
+                lastEffectiveOcclusion = resolvedEffectiveOcclusion(interactiveProbeTopY: probeTopY)
+            }
         }
 
-        let nextBottom = insetCatchUpFromBottom + (insetCatchUpToBottom - insetCatchUpFromBottom) * progress
-        let finished = progress >= 1 || abs(nextBottom - insetCatchUpToBottom) < 0.5
-        let resolvedBottom = finished ? insetCatchUpToBottom : nextBottom
+        applyInsetsNow(top: targetTopInset, bottom: step.nextBottomInset, publishMetrics: step.finished)
 
-        applyInsetsNow(top: targetTopInset, bottom: resolvedBottom, publishMetrics: finished)
-
-        if finished {
+        if step.finished {
             stopInsetDisplayLink()
         }
     }
@@ -2740,7 +2822,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if bottomDockContainerView != nil {
             let occlusion = resolvedEffectiveOcclusion()
             syncBottomDockConstraints(for: occlusion)
-            publishEffectiveBottomGeometryIfNeeded(occlusion)
+            if !collectionView.isDragging {
+                publishEffectiveBottomGeometryIfNeeded(occlusion)
+            } else {
+                lastEffectiveOcclusion = occlusion
+            }
             desiredBottom = occlusion.collectionBottomInset
         } else {
             let resolvedBottom = hostBottomInset > 0 ? hostBottomInset : view.safeAreaInsets.bottom
@@ -2756,30 +2842,41 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
         guard hasPerformedInitialScroll else {
             stopInsetDisplayLink()
+            appliedComposerHeight = currentRestingComposerHeight()
             applyInsetsNow(top: desiredTop, bottom: desiredBottom)
+            return
+        }
+
+        // Never kill live presentation tracking or snap to stale keyboard-open `desiredBottom`
+        // during an active interactive drag-dismiss or its post-drag finger-lift grace window.
+        let now = CACurrentMediaTime()
+        if (collectionView.isDragging && isInteractiveKeyboardTracking) || now <= interactiveKeyboardPostDragDeadline {
+            ensureInsetDisplayLink(fallbackDuration: 0.25, resetTransitionStart: false)
             return
         }
 
         let bottomDelta = desiredBottom - collectionView.contentInset.bottom
         if abs(bottomDelta) <= 0.5 {
-            stopInsetDisplayLink()
-            applyInsetsNow(top: desiredTop, bottom: desiredBottom)
+            if insetDisplayLink == nil || !isKeyboardTransitionOrPostDragActive {
+                stopInsetDisplayLink()
+                appliedComposerHeight = currentRestingComposerHeight()
+                applyInsetsNow(top: desiredTop, bottom: desiredBottom)
+            }
             return
         }
 
-        let now = CACurrentMediaTime()
         let inKeyboardWindow = now <= activeKeyboardDeadline
             && activeKeyboardDuration > 0.01
             && abs(activeKeyboardEndOverlap - activeKeyboardStartOverlap) > 1
-        let isInteractiveFingerFollow = collectionView.isDragging && !inKeyboardWindow
-        let shouldSnapImmediately = isInteractiveFingerFollow || (reduceMotionEnabled && (!inKeyboardWindow || activeKeyboardDuration <= 0.01))
+        let shouldSnapImmediately = reduceMotionEnabled && (!inKeyboardWindow || activeKeyboardDuration <= 0.01)
 
         if shouldSnapImmediately {
             stopInsetDisplayLink()
+            appliedComposerHeight = currentRestingComposerHeight()
             applyInsetsNow(top: desiredTop, bottom: desiredBottom)
         } else {
             let duration = inKeyboardWindow ? max(0.08, activeKeyboardDuration) : 0.22
-            startInsetCatchUp(toBottom: desiredBottom, duration: duration)
+            ensureInsetDisplayLink(fallbackDuration: duration, resetTransitionStart: inKeyboardWindow)
         }
     }
 
@@ -3548,10 +3645,16 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             cancelAllSendFlightOverlays()
         }
         let interactiveKeyboardDismiss = lastEffectiveOcclusion.isKeyboardVisiblyOccluding
+            || currentKeyboardLayoutOverlap() > view.safeAreaInsets.bottom + 1
         scrollArbiter.beginUserTouchScroll(interactiveKeyboardDismiss: interactiveKeyboardDismiss)
         if interactiveKeyboardDismiss {
+            isInteractiveKeyboardTracking = true
+            didMoveKeyboardDuringInteractiveDrag = false
+            interactiveKeyboardDragStartInset = collectionView.contentInset.bottom
+            interactiveKeyboardPostDragDeadline = 0
+            lastInteractiveDragVelocityY = 0
             bottomDockFocusBridge?.suppressFocusHaptic = true
-            startInsetCatchUp(toBottom: targetBottomInset, duration: 0.25)
+            ensureInsetDisplayLink(fallbackDuration: 0.25, resetTransitionStart: false)
         }
         if isProgrammaticScroll {
             animatedScrollID &+= 1
@@ -3572,6 +3675,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         withVelocity velocity: CGPoint,
         targetContentOffset: UnsafeMutablePointer<CGPoint>
     ) {
+        lastInteractiveDragVelocityY = velocity.y
         // CX-08: Prevent manual flicks from overshooting past the actively pacing reveal boundary into blank tail space.
         guard revealFollowItem != nil else { return }
         let revealLimitY = bottomOffsetFollowingReveal()
@@ -3582,6 +3686,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if isInteractiveKeyboardTracking {
+            let guideAnimating = currentDockedGuidePresentationTopY()?.isAnimating == true
+            if didMoveKeyboardDuringInteractiveDrag || guideAnimating || lastInteractiveDragVelocityY < -0.05 {
+                // Keep tracking live keyboard presentation across the finger-lift gap until
+                // `keyboardWillChangeFrame`/`keyboardDidChangeFrame` settles the dismiss or pop-back.
+                interactiveKeyboardPostDragDeadline = CACurrentMediaTime() + 0.45
+                ensureInsetDisplayLink(fallbackDuration: 0.25, resetTransitionStart: false)
+            } else {
+                isInteractiveKeyboardTracking = false
+                interactiveKeyboardPostDragDeadline = 0
+            }
+        }
         actions.onChromeDragEnded()
         if decelerate {
             actions.onScrollPhaseChanged("惯性")
@@ -3666,7 +3782,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let prevPinned = isPinnedToBottom
         scrollArbiter.endUserTouchScroll(shouldPinToBottom: shouldFollow)
         bottomDockFocusBridge?.suppressFocusHaptic = false
-        if insetDisplayLink != nil && CACurrentMediaTime() > activeKeyboardDeadline {
+        if insetDisplayLink != nil && !isKeyboardTransitionOrPostDragActive {
             stopInsetDisplayLink()
             updateCollectionInsetsIfNeeded()
         }
@@ -3678,7 +3794,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             && scrollView.contentOffset.y > revealLimitY + 1
         if (overshotReveal || (isPinnedToBottom && distanceFromBottom > 2))
             && insetDisplayLink == nil
-            && CACurrentMediaTime() > activeKeyboardDeadline
+            && !isKeyboardTransitionOrPostDragActive
         {
             scrollToBottom(animated: abs(distanceFromBottom) > 12)
         }

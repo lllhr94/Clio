@@ -238,4 +238,138 @@ final class Batch2BMotionScrollRepairAppTests: XCTestCase {
         )
         XCTAssertGreaterThanOrEqual(coord.cursorPoints, 380.0)
     }
+
+    func testKeyboardInsetStepSolverTracksDockedDismissToSafeAreaWithZeroEndSnap() {
+        // iPhone 17 Pro geometry: hostHeight=874, safeAreaBottom=34 -> restingBottomY=840.
+        // Composer=72, extra=12 -> resting closed inset = 34 + 72 + 0 + 12 = 118.
+        // Open keyboard topY=538 -> occlusion=302 -> open inset = 420.
+        let atStart = ChatKeyboardInsetStepSolver.step(.init(
+            currentBottomInset: 420,
+            targetBottomInset: 118,
+            hostMinY: 0,
+            hostMaxY: 874,
+            hostHeight: 874,
+            safeAreaBottom: 34,
+            restingComposerHeight: 72,
+            appliedComposerHeight: 72,
+            extraBottomPadding: 12,
+            mode: .hardwareOrNone,
+            presentationGuideTopY: 538,
+            hasActivePresentationAnimation: true,
+            isInteractiveDragging: false,
+            isPostDragGraceActive: false,
+            inKeyboardTransitionWindow: true,
+            elapsedSinceTransitionStart: 0.01,
+            dt: 1.0 / 120.0,
+            fallbackDuration: 0.38,
+            reduceMotion: false
+        ))
+        XCTAssertEqual(atStart.nextBottomInset, 420, accuracy: 0.01)
+
+        // When keyboardLayoutGuide reaches resting safeAreaLayoutGuide.bottomAnchor (840pt, NOT 874pt),
+        // the computed bottom inset MUST reach 118.0 with 0.0pt deficit (no 34pt end-snap!).
+        let atEnd = ChatKeyboardInsetStepSolver.step(.init(
+            currentBottomInset: 122,
+            targetBottomInset: 118,
+            hostMinY: 0,
+            hostMaxY: 874,
+            hostHeight: 874,
+            safeAreaBottom: 34,
+            restingComposerHeight: 72,
+            appliedComposerHeight: 72,
+            extraBottomPadding: 12,
+            mode: .hardwareOrNone,
+            presentationGuideTopY: 840,
+            hasActivePresentationAnimation: true,
+            isInteractiveDragging: false,
+            isPostDragGraceActive: false,
+            inKeyboardTransitionWindow: true,
+            elapsedSinceTransitionStart: 0.35,
+            dt: 1.0 / 120.0,
+            fallbackDuration: 0.38,
+            reduceMotion: false
+        ))
+        XCTAssertEqual(atEnd.nextBottomInset, 118.0, accuracy: 0.01)
+    }
+
+    func testKeyboardInsetStepSolverPostDragGraceNeverSnapsBackToStaleKeyboardOpenInset() {
+        // User interactively dragged keyboard halfway down (probeTopY=778 -> live inset=180pt),
+        // then lifted their finger BEFORE keyboardWillChangeFrame arrived (targetBottomInset is still stale 420pt!).
+        let afterLift = ChatKeyboardInsetStepSolver.step(.init(
+            currentBottomInset: 180,
+            targetBottomInset: 420,
+            hostMinY: 0,
+            hostMaxY: 874,
+            hostHeight: 874,
+            safeAreaBottom: 34,
+            restingComposerHeight: 72,
+            appliedComposerHeight: 72,
+            extraBottomPadding: 12,
+            mode: .docked,
+            presentationGuideTopY: 778,
+            hasActivePresentationAnimation: false,
+            isInteractiveDragging: false,
+            isPostDragGraceActive: true,
+            inKeyboardTransitionWindow: false,
+            elapsedSinceTransitionStart: 0.25,
+            dt: 1.0 / 120.0,
+            fallbackDuration: 0.25,
+            reduceMotion: false
+        ))
+        XCTAssertEqual(afterLift.nextBottomInset, 180.0, accuracy: 0.01, "Releasing interactive drag must never snap back to stale 420pt")
+        XCTAssertFalse(afterLift.finished)
+    }
+
+    func testKeyboardInsetStepSolverRetargetAndComposerCollapseStayContinuous() {
+        // Pre-animation hold (< 0.05s before UIKit attaches CAAnimation) keeps inset steady instead of curve-switching.
+        let held = ChatKeyboardInsetStepSolver.step(.init(
+            currentBottomInset: 420,
+            targetBottomInset: 118,
+            hostMinY: 0,
+            hostMaxY: 874,
+            hostHeight: 874,
+            safeAreaBottom: 34,
+            restingComposerHeight: 72,
+            appliedComposerHeight: 72,
+            extraBottomPadding: 12,
+            mode: .hardwareOrNone,
+            presentationGuideTopY: 538,
+            hasActivePresentationAnimation: false,
+            isInteractiveDragging: false,
+            isPostDragGraceActive: false,
+            inKeyboardTransitionWindow: true,
+            elapsedSinceTransitionStart: 0.016,
+            dt: 1.0 / 120.0,
+            fallbackDuration: 0.38,
+            reduceMotion: false
+        ))
+        XCTAssertEqual(held.nextBottomInset, 420.0, accuracy: 0.01)
+
+        // Mid-dismiss: IME commits 2-line text -> 1-line (restingComposerHeight drops 96 -> 72) while guide moves 6pt.
+        // appliedComposerHeight must ease gradually instead of teleporting -24pt in one frame.
+        let midDismiss = ChatKeyboardInsetStepSolver.step(.init(
+            currentBottomInset: 350,
+            targetBottomInset: 118,
+            hostMinY: 0,
+            hostMaxY: 874,
+            hostHeight: 874,
+            safeAreaBottom: 34,
+            restingComposerHeight: 72,
+            appliedComposerHeight: 96,
+            extraBottomPadding: 12,
+            mode: .hardwareOrNone,
+            presentationGuideTopY: 638, // occlusion = 202, +34+12 = 248 + appliedComposer
+            hasActivePresentationAnimation: true,
+            isInteractiveDragging: false,
+            isPostDragGraceActive: false,
+            inKeyboardTransitionWindow: true,
+            elapsedSinceTransitionStart: 0.12,
+            dt: 1.0 / 120.0,
+            fallbackDuration: 0.38,
+            reduceMotion: false
+        ))
+        XCTAssertGreaterThan(midDismiss.nextAppliedComposerHeight, 88.0)
+        XCTAssertLessThan(midDismiss.nextAppliedComposerHeight, 96.0)
+        XCTAssertLessThan(abs(midDismiss.nextBottomInset - 350.0), 15.0)
+    }
 }
