@@ -4,7 +4,8 @@ import Foundation
 
 /// 备份: everything Clio keeps — companions, conversations, memory, portraits, skills, settings — in one file, and back.
 /// The outer plaintext format is `CLIO-BACKUP-1\n`; when encrypted with a passphrase (always required when `#keys`
-/// is included), the whole archive is sealed in `CLIO-BACKUP-ENC-1\n` via `BackupCrypto`.
+/// is included), the archive is streamed in authenticated chunks (`CLIO-BACKUP-ENC-2\n`) via `BackupCrypto`
+/// (restore transparently supports both legacy `CLIO-BACKUP-ENC-1\n` and streaming `CLIO-BACKUP-ENC-2\n`).
 enum Backup {
     private static let magic = Data("CLIO-BACKUP-1\n".utf8)
     private static let magicPrefix = Data("CLIO-BACKUP-".utf8)

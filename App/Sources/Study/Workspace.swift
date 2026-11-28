@@ -831,6 +831,7 @@ enum Workspace {
                     do {
                         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                         try Data(text.utf8).write(to: url, options: .atomic)
+                        Task { await ArtifactIndex.shared.markFilesDirty() }
                         return true
                     } catch {
                         return false

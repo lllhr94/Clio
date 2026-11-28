@@ -67,6 +67,7 @@ actor ArtifactIndex {
         let keeping: Bool
         let mountsRevision: UInt64
         let liveFingerprints: [String: String]
+        let filesFingerprint: [FileVersion]
     }
 
     private var persistedRecords: [String: Record]?
@@ -155,11 +156,24 @@ actor ArtifactIndex {
     }
 
     func refresh(live: [String: [Entry]], keeping: Bool, force: Bool = false) throws -> [Record] {
+        // Always stat live workspace + mounted files so deletions/edits made via DeskTrash or Apple's Files app
+        // are reflected immediately with zero stale ghost artifacts; skip re-decoding unchanged historical chat JSONs.
+        let mounts = MountedFolders.all()
+        var files = try Self.files(root: Workspace.root, mount: nil)
+        for mount in mounts {
+            try Task.checkCancellation()
+            guard let opened = MountedFolders.openForUI(mount) else { continue }
+            defer { opened.token.stop() }
+            let located = try Self.files(root: opened.url, mount: mount)
+            if MountedFolders.isCurrent(mount) { files += located }
+        }
+
         let signature = RefreshSignature(
             mutationEpoch: mutationEpoch,
             keeping: keeping,
             mountsRevision: MountedFolders.revision,
-            liveFingerprints: Self.fingerprint(live: live)
+            liveFingerprints: Self.fingerprint(live: live),
+            filesFingerprint: files.map(\.version)
         )
         if !force, lastSignature == signature {
             return lastAvailable
@@ -168,12 +182,12 @@ actor ArtifactIndex {
         var sources = live.flatMap { Self.sources(in: $0.value, chat: $0.key) }
         if keeping {
             let directory = Disk.url("chats")
-            if let files = try? FileManager.default.contentsOfDirectory(
+            if let chatFiles = try? FileManager.default.contentsOfDirectory(
                 at: directory,
                 includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
             ) {
                 var seenKeys: Set<String> = []
-                for url in files where url.pathExtension == "json" {
+                for url in chatFiles where url.pathExtension == "json" {
                     try Task.checkCancellation()
                     let key = url.deletingPathExtension().lastPathComponent
                     guard key.hasPrefix("bot-") || key.hasPrefix("room-") else { continue }
@@ -200,15 +214,6 @@ actor ArtifactIndex {
                     diskSourcesCache.removeValue(forKey: cachedKey)
                 }
             }
-        }
-        let mounts = MountedFolders.all()
-        var files = try Self.files(root: Workspace.root, mount: nil)
-        for mount in mounts {
-            try Task.checkCancellation()
-            guard let opened = MountedFolders.openForUI(mount) else { continue }
-            defer { opened.token.stop() }
-            let located = try Self.files(root: opened.url, mount: mount)
-            if MountedFolders.isCurrent(mount) { files += located }
         }
         let result = try reconcile(sources: sources, files: files)
         lastSignature = signature
