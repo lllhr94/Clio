@@ -109,9 +109,10 @@ public final class WholeTurnRetryArbiter: @unchecked Sendable {
             return .stop
         }
 
-        // Explicit-off rejection is the highest-priority terminal state: blocks ALL downgrades, trims, regens, and backups.
+        // Explicit-off thinking parameter rejection is a terminal state: blocks downgrades, trims, regens, and backups.
+        // Non-thinking 400/422 errors (e.g. image payload too large, quota, bad image) are NOT thinking rejections.
         if explicitOffRequested, let failure = error as? ProviderError, failure.status == 400 || failure.status == 422 {
-            if Self.isThinkingParameterRejection(failure) || !Self.contextExceeded(error) {
+            if Self.isThinkingParameterRejection(failure) {
                 rejectsExplicitOff = true
                 return .stop
             }
@@ -133,11 +134,7 @@ public final class WholeTurnRetryArbiter: @unchecked Sendable {
         guard !hasOutput, !hasSideEffect, !hasUnknownOutcome else { return .stop }
         if hasTransientRetry, Self.transient(error) { return .retryTransient }
         if let failure = error as? ProviderError, failure.status == 400 || failure.status == 422 {
-            if explicitOffRequested {
-                rejectsExplicitOff = true
-                return .stop
-            }
-            if thinking != .auto, Self.isThinkingParameterRejection(failure) {
+            if !explicitOffRequested, thinking != .auto, Self.isThinkingParameterRejection(failure) {
                 return .retryWithoutThinking
             }
         }

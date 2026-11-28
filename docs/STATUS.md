@@ -1,5 +1,13 @@
 # 现状与交接
 
+## 0.37 Batch 5：核心稳定性收口（`antigravity/batch5-core-stability`）
+
+- **`CLIO-026` 后台到期回调补停子任务**：`BackgroundTurn.begin` 支持每任务独立 `onExpire` 回调，`SubtaskManager.runAttempt` 注册到期取消闭包，iOS 后台续跑到期时不再只停主轮而漏停异步子任务。
+- **`CLIO-016` 关闭思考误锁修复**：收紧 `WholeTurnRetryArbiter` 在 `thinking == .off` 下的 `rejectsExplicitOff` 判定为仅限 `isThinkingParameterRejection`，避免图片超限 400/422 或额度/鉴权类 400 阻断去图重试与备用模型切换；补齐 `WholeTurnRetryArbiterTests` 回归用例。
+- **`CLIO-025` 图标服务隐私防护**：`BrandIcon.isPublicIconDomain` 在请求 4 个公网图标聚合服务前统一拦截回环、局域网/裸 IP 及 `.local/.lan/.internal/.home.arpa/.ts.net` 等私网主机名，杜绝内网主机名外泄；补齐 `Batch5CoreStabilityTests`。
+- **`CLIO-077` 辅助对话出站统一**：`CasualChatView` 补齐 `!Disk.frozen` 与 `recipientIdentity` + `!isPaused` 二次核验；`TeamModel.loggedAuxiliaryProvider` 将闲谈轨与划词子对话统一接入 `ModelInputLog` 诊断记录。
+- **斗室内核 `killpg` 与单行防 OOM**：`DenKernel.run` 调用 `sys_setpgid(0, 0)` 隔离每条命令进程组，`DenKernel.kill:` 按独立 `pgid`（绝不触碰 `init` 的 `pgid 1`）调用 `send_group_signal` 清掉残留子进程；管道读线程为无换行输出增设 256 KB 强制刷新上限防 OOM。
+
 ## 0.37 Batch 4：安全加固、应用内网络路由与瘦身清理（`antigravity/batch4-security-memory-cleanup`）
 
 - **安全与记忆（Batch 4a）**：

@@ -102,7 +102,41 @@ actor BrandIcons {
         return image
     }
 
+    /// Rejects loopback, LAN, raw IP, and private mesh hostnames so internal service addresses
+    /// are never sent to public third-party favicon aggregators.
+    nonisolated static func isPublicIconDomain(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let probeURL: URL?
+        if trimmed.hasPrefix("https://") {
+            probeURL = URL(string: trimmed)
+        } else if trimmed.contains("://") {
+            return false
+        } else {
+            probeURL = URL(string: "https://\(trimmed)/")
+        }
+        guard let url = probeURL,
+              url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(), !host.isEmpty else {
+            return false
+        }
+        if LocalAddress.isLocal(url) || LocalAddress.isLiteralIP(host) {
+            return false
+        }
+        if host == "localhost" || host.hasSuffix(".localhost")
+            || host.hasSuffix(".local") || host.hasSuffix(".lan")
+            || host.hasSuffix(".internal") || host.hasSuffix(".home.arpa")
+            || host.hasSuffix(".ts.net") || !host.contains(".") {
+            return false
+        }
+        return true
+    }
+
     private func load(_ domain: String) async -> UIImage? {
+        guard Self.isPublicIconDomain(domain) else {
+            recordMiss(for: domain)
+            return nil
+        }
         let file = folder.appendingPathComponent(domain.replacingOccurrences(of: "/", with: "_") + ".png")
         if let data = try? Data(contentsOf: file), let image = Self.decodedIcon(data) {
             store(image, for: domain)

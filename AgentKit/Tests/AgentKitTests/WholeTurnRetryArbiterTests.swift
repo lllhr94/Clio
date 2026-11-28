@@ -147,4 +147,34 @@ final class WholeTurnRetryArbiterTests: XCTestCase {
         XCTAssertTrue(arbiter.allowsBackup(after: failure))
         XCTAssertFalse(arbiter.allowsBackup(after: CancellationError()))
     }
+
+    func testExplicitOffDoesNotLockOutNonThinking400ImageStripOrBackup() async throws {
+        // 1. 400 payload-too-large with inline image under thinking == .off must still retry without images.
+        let img = ImagePart(mediaType: "image/png", data: Data(repeating: 0xBB, count: 32))
+        let imgTooLarge = ProviderError(status: 400, "image_too_large")
+        let p1 = Script([
+            ([], imgTooLarge),
+            ([.text("ok without image"), .finish(reason: "stop")], nil),
+        ])
+        let arbiter1 = WholeTurnRetryArbiter()
+        var agent1 = Agent(provider: p1, model: "test", system: "")
+        agent1.thinking = .off
+        try await agent1.run(history: [.user("look", images: [img])], retryArbiter: arbiter1) { _ in }
+        XCTAssertEqual(p1.requests.count, 2)
+        XCTAssertTrue(p1.requests[1].messages[0].images.isEmpty)
+
+        // 2. Non-thinking 400 quota error under thinking == .off must NOT set rejectsExplicitOff (backup stays allowed).
+        let quotaErr = ProviderError(status: 400, "insufficient quota balance")
+        let p2 = Script([([], quotaErr)])
+        let arbiter2 = WholeTurnRetryArbiter()
+        var agent2 = Agent(provider: p2, model: "test", system: "")
+        agent2.thinking = .off
+        do {
+            try await agent2.run(history: [.user("hi")], retryArbiter: arbiter2) { _ in }
+            XCTFail("expected quota error")
+        } catch {
+            XCTAssertEqual(error as? ProviderError, quotaErr)
+        }
+        XCTAssertTrue(arbiter2.allowsBackup(after: quotaErr))
+    }
 }

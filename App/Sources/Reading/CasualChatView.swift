@@ -642,9 +642,13 @@ final class CasualTrackController: ObservableObject {
 
         // Casual Track uses the companion's flagship/default model, filtered skills (no quiet-musing/user-guide),
         // and strictly ZERO automatic memory or experience writes.
+        guard !Disk.frozen else { return }
         guard let found = team.resolveActive(bot.model ?? team.settings.defaultModel)
                 ?? team.resolveActive(team.settings.defaultModel),
-              let apiKey = await team.readAPIKey(for: found.endpoint), !apiKey.isEmpty else {
+              let recipient = found.endpoint.recipientIdentity,
+              let apiKey = await team.readAPIKey(for: found.endpoint), !apiKey.isEmpty,
+              !Disk.frozen,
+              team.settings.endpoints.contains(where: { $0.isActiveProtocol && !$0.isPaused && $0.recipientIdentity == recipient }) else {
             return
         }
 
@@ -658,7 +662,8 @@ final class CasualTrackController: ObservableObject {
         let skillHint = allowedSkills.isEmpty ? "" : "\n可用技能：" + allowedSkills.map(\.skill.name).joined(separator: "、")
         let systemPrompt = "你是「\(bot.name)」，当前在轻松闲谈轨和用户聊天。语气温和自然、简短分句；禁止自动改写记忆或执行重型任务；如果用户提出需要写代码、改文件或长流程处理的事项，先友好回应并建议转入正式对话。" + skillHint
 
-        let provider = found.endpoint.provider(key: apiKey, stableSystemPrefix: systemPrompt)
+        let rawProvider = found.endpoint.provider(key: apiKey, stableSystemPrefix: systemPrompt)
+        let provider = team.loggedAuxiliaryProvider(rawProvider, chat: TeamModel.key(bot: bot.id), system: systemPrompt)
         var agent = Agent(provider: provider, model: found.model, system: systemPrompt, tools: [])
         agent.thinking = .auto
         agent.customHeaders = found.endpoint.customNonSecretHeaders
