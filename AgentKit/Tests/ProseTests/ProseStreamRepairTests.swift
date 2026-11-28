@@ -98,6 +98,17 @@ final class ProseStreamRepairTests: XCTestCase {
         let bareBracket = ProseStreamRepairCore.repair("请看[说明文字")
         XCTAssertEqual(bareBracket.repaired, "请看说明文字")
         XCTAssertEqual(bareBracket.withheldSuffix, "[")
+
+        // Nested parentheses inside a streaming URL must not terminate link tracking early.
+        let nestedURL = ProseStreamRepairCore.repair("[文档](https://e.test/a(b)c_d")
+        XCTAssertEqual(nestedURL.repaired, "[文档](#)")
+        XCTAssertEqual(nestedURL.withheldSuffix, "https://e.test/a(b)c_d")
+
+        // Trailing lone backtick is withheld instead of forming empty ``; outer bold still closes around inline code.
+        let loneTick = ProseStreamRepairCore.repair("用法 `")
+        XCTAssertEqual(loneTick, ProseRepairOutput(repaired: "用法 ", withheldSuffix: "`", appliedClosers: []))
+        let boldCode = ProseStreamRepairCore.repair("**用法 `ls -la")
+        XCTAssertEqual(boldCode, ProseRepairOutput(repaired: "**用法 `ls -la`**", withheldSuffix: "", appliedClosers: ["`", "**"]))
     }
 
     // MARK: - TableWaterfillSolver Vectors (TBL-01 .. TBL-03)

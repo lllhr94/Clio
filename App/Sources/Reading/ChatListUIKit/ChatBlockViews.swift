@@ -469,11 +469,23 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
             columns: metrics
         )
         guard solved.count == natural.count else { return natural }
-        let widths = solved.map { ceil(CGFloat($0)) }
+        let solvedSum = solved.reduce(0, +)
+        if solvedSum > Double(available) + 0.5 {
+            // Floors exceed viewport: lock at integer ceiling floors for crisp horizontal scrolling.
+            return solved.map { ceil(CGFloat($0)) }
+        }
+        // Fits within viewport: floor per-column widths and distribute residual sub-pixel slack so sum never exceeds `available`.
+        var widths = solved.map { floor(CGFloat($0)) }
         let total = widths.reduce(0, +)
-        if total < available {
-            let extra = available - total
-            return widths.map { $0 + extra * $0 / max(1, total) }
+        let slack = floor(available - total)
+        if slack > 0 {
+            let extraPerCol = slack / max(1, total)
+            var distributed = widths.map { floor($0 + $0 * extraPerCol) }
+            let rem = floor(available - distributed.reduce(0, +))
+            if rem > 0, let widestIdx = distributed.indices.max(by: { distributed[$0] < distributed[$1] }) {
+                distributed[widestIdx] += rem
+            }
+            widths = distributed
         }
         return widths
     }

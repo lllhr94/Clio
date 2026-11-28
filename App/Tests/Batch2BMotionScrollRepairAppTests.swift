@@ -98,4 +98,16 @@ final class Batch2BMotionScrollRepairAppTests: XCTestCase {
             .instant
         )
     }
+
+    func testTableSpreadWidthsNeverExceedAvailableWidthDueToCeilingRounding() {
+        // Available room = 301 + 2*20 (colGap) + 2*16 (padH) = 373 -> inner available = 301 across 3 equal columns.
+        let widths = ChatTableBlockView.spreadWidths(
+            [180, 180, 180],
+            minTokenWidths: [60, 60, 60],
+            availableRoom: 373,
+            padH: 16
+        )
+        XCTAssertEqual(widths.count, 3)
+        XCTAssertLessThanOrEqual(widths.reduce(0, +), 301.0)
+    }
 }

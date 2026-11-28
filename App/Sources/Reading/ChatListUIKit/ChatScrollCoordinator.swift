@@ -227,6 +227,14 @@ public struct ChatScrollStateMachine<ItemID: Hashable & Sendable>: Sendable {
         return Self.scrollBounds(for: vp).maxY
     }
 
+    /// Transitions to `.detachedBrowsing` when host jumps to an older row, starts pagination,
+    /// activates text selection, or explicitly turns off bottom following.
+    public mutating func detachForUserNavigation() {
+        mode = .detachedBrowsing
+        isUserInteracting = false
+        settleAnchor = nil
+    }
+
     public mutating func resetForChatSwitch() {
         mode = .followingBottom
         isUserInteracting = false

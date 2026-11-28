@@ -119,10 +119,12 @@ public enum ProseStreamRepairCore {
 
         var inInlineCode = false
         var inlineTicks = 0
+        var inlineCodeOpenIdx: Int?
         var inDisplayMath = false
         var inInlineMath = false
         var openBracketIdx: Int?
         var linkOpenParenIdx: Int?
+        var linkParenDepth = 0
         var emphStack: [(Character, Int)] = []
 
         while i < n {
@@ -172,6 +174,7 @@ public enum ProseStreamRepairCore {
                 inInlineMath = false
                 openBracketIdx = nil
                 linkOpenParenIdx = nil
+                linkParenDepth = 0
                 emphStack.removeAll()
                 i += 1
                 continue
@@ -189,9 +192,11 @@ public enum ProseStreamRepairCore {
                 if !inInlineCode {
                     inInlineCode = true
                     inlineTicks = run
+                    inlineCodeOpenIdx = i
                 } else if run == inlineTicks {
                     inInlineCode = false
                     inlineTicks = 0
+                    inlineCodeOpenIdx = nil
                 }
                 i = k
                 continue
@@ -226,7 +231,7 @@ public enum ProseStreamRepairCore {
                 continue
             }
 
-            // Incomplete links & images: `[label](url)` / `![alt](url)`
+            // Incomplete links & images: `[label](url)` / `![alt](url)` (tracks nested `()` inside URLs)
             if ch == "[" && linkOpenParenIdx == nil {
                 openBracketIdx = i
                 i += 1
@@ -235,6 +240,7 @@ public enum ProseStreamRepairCore {
             if ch == "]" && openBracketIdx != nil && linkOpenParenIdx == nil {
                 if (i + 1) < n && chars[i + 1] == "(" {
                     linkOpenParenIdx = i + 1
+                    linkParenDepth = 0
                     i += 2
                     continue
                 } else {
@@ -243,9 +249,18 @@ public enum ProseStreamRepairCore {
                     continue
                 }
             }
+            if ch == "(" && linkOpenParenIdx != nil {
+                linkParenDepth += 1
+                i += 1
+                continue
+            }
             if ch == ")" && linkOpenParenIdx != nil {
-                openBracketIdx = nil
-                linkOpenParenIdx = nil
+                if linkParenDepth > 0 {
+                    linkParenDepth -= 1
+                } else {
+                    openBracketIdx = nil
+                    linkOpenParenIdx = nil
+                }
                 i += 1
                 continue
             }
@@ -254,6 +269,7 @@ public enum ProseStreamRepairCore {
                 if ch == "\n" {
                     openBracketIdx = nil
                     linkOpenParenIdx = nil
+                    linkParenDepth = 0
                 }
                 i += 1
                 continue
@@ -325,8 +341,20 @@ public enum ProseStreamRepairCore {
         var applied: [String] = []
         if inInlineCode {
             let closer = String(repeating: "`", count: inlineTicks)
-            repaired += closer
-            applied.append(closer)
+            if let openIdx = inlineCodeOpenIdx, openIdx + inlineTicks == chars.count {
+                // Bare trailing backtick(s) with no code body yet: withhold instead of forming empty `` delimiter.
+                repaired = String(chars[0..<openIdx])
+                withheld = closer + withheld
+            } else {
+                repaired += closer
+                applied.append(closer)
+            }
+            // Still close any outer emphasis markers (`**code \`ls` -> `**code \`ls\`**`).
+            for (sCh, sCnt) in emphStack.reversed() {
+                let emphCloser = String(repeating: String(sCh), count: sCnt)
+                repaired += emphCloser
+                applied.append(emphCloser)
+            }
         } else if inDisplayMath {
             if repaired.hasSuffix("$$") {
                 repaired.removeLast(2)
