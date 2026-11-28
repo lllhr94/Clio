@@ -1967,6 +1967,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 if let handoff {
                     pendingRevealTransfers[targetBotID] = handoff
                     settlingRevealID = targetBotID
+                    if let prevLimit = lastKnownRevealLimit,
+                       prevLimit.ownerID == "streaming-\(prev.streamGeneration)" {
+                        lastKnownRevealLimit = (ownerID: targetBotID, localOffsetY: prevLimit.localOffsetY)
+                    }
                 } else if canAutoPinToBottom, liveCell?.hasPaintedLiveTail != true {
                     pendingRevealTransfers[targetBotID] = .unseenReply
                     settlingRevealID = targetBotID
@@ -3102,7 +3106,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return
 
         case .overlayFlyIn:
-            guard let targetRect = cell.bubbleFrame(in: view),
+            guard let targetRect = cell.bubbleFrame(in: collectionView),
                   !targetRect.isEmpty else { return }
             let width = max(240, collectionView.bounds.width)
             let userEntry = layoutCache.measureUser(row: row, collectionWidth: width, style: currentStyle)
@@ -3120,16 +3124,24 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             hiddenForSendFlightIDs.insert(lineID)
             cell.setBubbleHiddenForSendFlight(true)
 
+            // Mount inside `collectionView` so the overlay emerges cleanly from behind the floating
+            // bottom composer AND scrolls in 1:1 lockstep if streaming begins before the spring settles.
             let overlay = ChatSendFlightOverlayView(entry: userEntry, traits: traitCollection)
             overlay.frame = targetRect
-            view.addSubview(overlay)
+            collectionView.addSubview(overlay)
             activeSendFlightOverlays[lineID] = overlay
 
-            let composerBottom = bottomDockContainerView?.frame.maxY
+            let composerBottomInView = bottomDockContainerView?.frame.maxY
                 ?? (view.bounds.height - view.safeAreaInsets.bottom)
-            let startCenterY = composerBottom - ChatBarMetrics.height * 0.5 - Ink.Space.s
-            let clampedStartY = min(targetRect.midY + view.bounds.height * 0.62, max(targetRect.midY + 28, startCenterY))
-            let startCenterX = targetRect.midX + (view.bounds.midX - targetRect.midX) * 0.30
+            let composerStartInCollection = collectionView.convert(
+                CGPoint(x: view.bounds.midX, y: composerBottomInView - ChatBarMetrics.height * 0.5 - Ink.Space.s),
+                from: view
+            )
+            let clampedStartY = min(
+                targetRect.midY + view.bounds.height * 0.62,
+                max(targetRect.midY + 28, composerStartInCollection.y)
+            )
+            let startCenterX = targetRect.midX + (composerStartInCollection.x - targetRect.midX) * 0.30
             let delta = MotionPolicyCore.additivePositionDelta(
                 oldCenter: (x: Double(startCenterX), y: Double(clampedStartY)),
                 newCenter: (x: Double(targetRect.midX), y: Double(targetRect.midY))
@@ -3158,10 +3170,66 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
 
             // Safety guard ensuring seated bubble is never left hidden even if layer animations cancel mid-transition.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.38) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self] in
                 self?.finishSendFlight(lineID: lineID, token: token)
             }
         }
+    }
+
+    private func streamingViewportMetricsForStateMachine() -> ViewportMetrics {
+        let vp = currentViewportMetrics()
+        guard revealFollowItem != nil else { return vp }
+        let revealedMaxY = Double(bottomOffsetFollowingReveal())
+        let effectiveContentHeight = max(0, revealedMaxY + vp.visibleHeight - vp.bottomSafeInset)
+        return ViewportMetrics(
+            visibleHeight: vp.visibleHeight,
+            contentHeight: min(vp.contentHeight, effectiveContentHeight),
+            contentOffsetY: vp.contentOffsetY,
+            topSafeInset: vp.topSafeInset,
+            bottomSafeInset: vp.bottomSafeInset
+        )
+    }
+
+    /// Evaluates over-one-screen top-edge lock using currently revealed content height.
+    /// Returns `(handled, pinnedTopJustActivated)`.
+    private func evaluateStreamingTopLockInsideTransaction() -> (handled: Bool, pinnedTopJustActivated: Bool) {
+        guard !isUserTouchScrolling,
+              selectingOwnerIDs.isEmpty,
+              !(currentState?.historyInView ?? false),
+              let state = currentState,
+              state.hasStreaming,
+              let section = itemIndexByID[.liveProse(state.streamGeneration)],
+              let attrs = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: section)) else {
+            return (false, false)
+        }
+        let replyKey = "streaming-\(state.streamGeneration)"
+        let allowStateMachine: Bool
+        if canAutoPinToBottom {
+            allowStateMachine = true
+        } else if case .pinningReplyTop(let pinnedID) = scrollStateMachine.mode, pinnedID == replyKey {
+            allowStateMachine = true
+        } else {
+            allowStateMachine = false
+        }
+        guard allowStateMachine else { return (false, false) }
+        let decision = scrollStateMachine.onStreamingGeometryUpdate(
+            viewport: streamingViewportMetricsForStateMachine(),
+            activeReplyID: replyKey,
+            activeReplyMinY: Double(attrs.frame.minY)
+        )
+        if case .pinningReplyTop = decision.mode,
+           let targetY = decision.targetContentOffsetY {
+            if abs(collectionView.contentOffset.y - CGFloat(targetY)) > 0.25 {
+                collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: CGFloat(targetY))
+            }
+            lastScrollOffsetY = collectionView.contentOffset.y
+            if isPinnedToBottom {
+                scrollArbiter.userScrolledAwayFromBottom()
+                return (true, true)
+            }
+            return (true, false)
+        }
+        return (false, false)
     }
 
     private func applyStreamingResizePreservingScroll() {
@@ -3179,44 +3247,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             collectionView.layoutIfNeeded()
 
             var handledByStateMachine = false
-            if !wasProgrammatic,
-               !isUserTouchScrolling,
-               selectingOwnerIDs.isEmpty,
-               !(currentState?.historyInView ?? false),
-               let state = currentState,
-               state.hasStreaming,
-               let section = itemIndexByID[.liveProse(state.streamGeneration)],
-               let attrs = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: section))
-            {
-                let replyKey = "streaming-\(state.streamGeneration)"
-                let allowStateMachine: Bool
-                if canAutoPinToBottom {
-                    allowStateMachine = true
-                } else if case .pinningReplyTop(let pinnedID) = scrollStateMachine.mode, pinnedID == replyKey {
-                    allowStateMachine = true
-                } else {
-                    allowStateMachine = false
-                }
-                if allowStateMachine {
-                    let decision = scrollStateMachine.onStreamingGeometryUpdate(
-                        viewport: currentViewportMetrics(),
-                        activeReplyID: replyKey,
-                        activeReplyMinY: Double(attrs.frame.minY)
-                    )
-                    if case .pinningReplyTop = decision.mode,
-                       let targetY = decision.targetContentOffsetY
-                    {
-                        handledByStateMachine = true
-                        if abs(collectionView.contentOffset.y - CGFloat(targetY)) > 0.25 {
-                            collectionView.contentOffset = CGPoint(x: collectionView.contentOffset.x, y: CGFloat(targetY))
-                        }
-                        lastScrollOffsetY = collectionView.contentOffset.y
-                        if isPinnedToBottom {
-                            scrollArbiter.userScrolledAwayFromBottom()
-                            pinnedTopJustActivated = true
-                        }
-                    }
-                }
+            if !wasProgrammatic {
+                let topLock = evaluateStreamingTopLockInsideTransaction()
+                handledByStateMachine = topLock.handled
+                pinnedTopJustActivated = topLock.pinnedTopJustActivated
             }
 
             if !wasProgrammatic && !handledByStateMachine {
@@ -3248,6 +3282,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     func setFollowingFromHost(_ following: Bool) {
         isPinnedToBottom = following
         if !following {
+            if case .pinningReplyTop = scrollStateMachine.mode {
+                return
+            }
             scrollStateMachine.detachForUserNavigation()
             return
         }
@@ -3348,10 +3385,17 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let path = IndexPath(item: 0, section: section)
         let lineBottom: CGFloat
         if let cell = collectionView.cellForItem(at: path) as? ChatAssistantCell {
-            guard let visible = cell.revealedLineBottom(in: collectionView) else { return bottom }
-            let localOffset = max(0, visible - cell.frame.minY)
-            lastKnownRevealLimit = (ownerID: item.ownerID, localOffsetY: localOffset)
-            lineBottom = visible
+            if let visible = cell.revealedLineBottom(in: collectionView) {
+                let localOffset = max(0, visible - cell.frame.minY)
+                lastKnownRevealLimit = (ownerID: item.ownerID, localOffsetY: localOffset)
+                lineBottom = visible
+            } else if cell.hasActiveReveal,
+                      let cached = lastKnownRevealLimit,
+                      cached.ownerID == item.ownerID {
+                lineBottom = cell.frame.minY + min(cell.frame.height, cached.localOffsetY)
+            } else {
+                return bottom
+            }
         } else {
             // CX-08: Never run synchronous CoreText layout measurement for offscreen cells during scroll ticks.
             guard let attrs = collectionView.layoutAttributesForItem(at: path) else { return bottom }
@@ -3383,7 +3427,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         let insets = collectionView.adjustedContentInset
         let visibleHeight = collectionView.bounds.height - insets.bottom
-        let headroom = max(Ink.Space.s, currentStyle.fonts.reading.regular.lineHeight)
+        let headroom = max(
+            ChatCellMetrics.bottomSpacerHeight + ChatCellMetrics.rowSpacing,
+            currentStyle.fonts.reading.regular.lineHeight * 2.2
+        )
         return max(-insets.top, min(bottom, lineBottom + headroom - visibleHeight))
     }
 
@@ -3393,8 +3440,27 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             settlingRevealID = nil
             lastKnownRevealLimit = nil
         }
-        guard hasPerformedInitialScroll, canAutoPinToBottom, !isProgrammaticScroll,
+        guard hasPerformedInitialScroll, !isProgrammaticScroll,
               !isInHostUpdate, !isDismantled, isViewVisible else { return }
+        if !completed, currentState?.hasStreaming == true {
+            var pinnedTopJustActivated = false
+            var handled = false
+            let wasProgrammatic = isProgrammaticScroll
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            isProgrammaticScroll = true
+            let topLock = evaluateStreamingTopLockInsideTransaction()
+            handled = topLock.handled
+            pinnedTopJustActivated = topLock.pinnedTopJustActivated
+            isProgrammaticScroll = wasProgrammatic
+            CATransaction.commit()
+            if pinnedTopJustActivated {
+                actions.onFollowingChanged(false)
+                publishVisibleAndFooterMetrics()
+            }
+            if handled { return }
+        }
+        guard canAutoPinToBottom else { return }
         let epoch = scrollArbiter.interactionEpoch
         if completed {
             _ = commitContentOffset(

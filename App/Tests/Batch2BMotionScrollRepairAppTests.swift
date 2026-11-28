@@ -110,4 +110,100 @@ final class Batch2BMotionScrollRepairAppTests: XCTestCase {
         XCTAssertEqual(widths.count, 3)
         XCTAssertLessThanOrEqual(widths.reduce(0, +), 301.0)
     }
+
+    func testRevealUnitsNewlyRevealedSpawnsEachGlyphStrictlyOnce() {
+        let attr = NSAttributedString(
+            string: "雨伞，下午三点后有雨",
+            attributes: [.font: UIFont.systemFont(ofSize: 17)]
+        )
+        let snap = ChatRevealLayoutSnapshot.build(
+            attributed: attr,
+            width: 320,
+            height: 60,
+            topInset: 0,
+            bottomInset: 0,
+            sourceRenderToken: 1
+        )
+        let allUnits = snap.lines.flatMap(\.units)
+        XCTAssertFalse(allUnits.isEmpty)
+
+        var spawnedLocations: [Int] = []
+        var cursor: Double = 0
+        while cursor < Double(snap.totalPoints) {
+            let next = min(Double(snap.totalPoints), cursor + 5.0)
+            let groups = snap.unitsNewlyRevealed(from: cursor, to: next)
+            for group in groups {
+                spawnedLocations.append(contentsOf: group.units.map(\.utf16Location))
+            }
+            cursor = next
+        }
+        XCTAssertEqual(spawnedLocations, allUnits.map(\.utf16Location))
+    }
+
+    func testMessageRevealCoordinatorPreservesActiveLocalOffsetWhenPrefixWeightUpgrades() {
+        let coord = MessageRevealCoordinator(
+            slices: [
+                .init(id: "rt0", kind: .richText, weightPoints: 200),
+                .init(id: "rt1", kind: .richText, weightPoints: 300),
+            ],
+            initialCursorPoints: 240,
+            finalizeImmediately: false,
+            pace: .balanced,
+            now: 1.0
+        )
+        // Before upgrade: active slice is rt1 at localPoints = 40.
+        if case .revealing(let localBefore, _) = coord.sliceState(at: 1) {
+            XCTAssertEqual(localBefore, 40.0, accuracy: 0.001)
+        } else {
+            XCTFail("Expected rt1 revealing before prefix weight upgrade")
+        }
+
+        // Prefix slice rt0 upgrades from estimated 200 -> exact CoreText 340 (+140).
+        coord.update(
+            slices: [
+                .init(id: "rt0", kind: .richText, weightPoints: 340),
+                .init(id: "rt1", kind: .richText, weightPoints: 300),
+            ],
+            isLive: true,
+            pace: .balanced,
+            now: 1.02
+        )
+        if case .revealing(let localAfter, _) = coord.sliceState(at: 1) {
+            XCTAssertEqual(localAfter, 40.0, accuracy: 0.001)
+        } else {
+            XCTFail("Expected rt1 to remain at localPoints=40 without jumping backward")
+        }
+    }
+
+    func testStreamingResizeDuringActiveRevealIsMonotonicAndDamped() {
+        var arbiter = ChatScrollArbiterCore(isPinnedToBottom: true)
+        let epoch = arbiter.interactionEpoch
+
+        // Backward target (target 420 < current 450, within maxY 600) MUST NOT bounce downward.
+        let backwardMetrics = ChatScrollArbiterCore.FrameMetrics(
+            currentOffsetY: 450,
+            contentHeight: 1300,
+            boundsHeight: 800,
+            topInset: 100,
+            bottomInset: 100,
+            revealedBottomOffsetY: 420,
+            anchorTargetOffsetY: nil
+        )
+        let backDecision = arbiter.resolveWrite(source: .streamingResize(epoch: epoch), metrics: backwardMetrics)
+        XCTAssertFalse(backDecision.wroteOffset)
+
+        // Forward jump (target 550 > current 450) MUST glide with 0.24 damping instead of hard-snapping +100pt in 1 frame.
+        let forwardMetrics = ChatScrollArbiterCore.FrameMetrics(
+            currentOffsetY: 450,
+            contentHeight: 1300,
+            boundsHeight: 800,
+            topInset: 100,
+            bottomInset: 100,
+            revealedBottomOffsetY: 550,
+            anchorTargetOffsetY: nil
+        )
+        let fwdDecision = arbiter.resolveWrite(source: .streamingResize(epoch: epoch), metrics: forwardMetrics)
+        XCTAssertTrue(fwdDecision.wroteOffset)
+        XCTAssertEqual(fwdDecision.targetOffsetY ?? 0, 474.0, accuracy: 0.5)
+    }
 }

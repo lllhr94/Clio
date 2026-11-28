@@ -883,7 +883,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                     maskState: preLockState,
                     bounds: bounds,
                     tileRoot: tileRoot,
-                    overlayHost: layer
+                    overlayHost: layer,
+                    useFeather: revealMaskCoordinator.snippetHost.activeCount == 0
                 )
             }
         }

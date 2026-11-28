@@ -155,4 +155,27 @@ final class ProseStreamRepairTests: XCTestCase {
         )
         XCTAssertEqual(tbl3, [110.0, 95.0, 105.0])
     }
+
+    func testTableHoldWithholdsIncompleteBodyRowWithFewerCellsThanHeader() {
+        // Header followed by a single trailing newline MUST still be withheld so raw `| 东西 | 谁带 |` never flashes.
+        let headerWithNewline = "前言\n\n| 东西 | 谁带 |\n"
+        let repairedHeaderNL = ProseStreamRepairCore.repair(headerWithNewline)
+        XCTAssertEqual(repairedHeaderNL.repaired, "前言\n")
+        XCTAssertEqual(repairedHeaderNL.withheldSuffix, "\n| 东西 | 谁带 |\n")
+
+        let headerAndDelimWithNewline = "前言\n\n| 东西 | 谁带 |\n| :-- | :-- |\n"
+        let repairedDelimNL = ProseStreamRepairCore.repair(headerAndDelimWithNewline)
+        XCTAssertEqual(repairedDelimNL.repaired, "前言\n")
+        XCTAssertEqual(repairedDelimNL.withheldSuffix, "\n| 东西 | 谁带 |\n| :-- | :-- |\n")
+
+        let partialRow = "| 东西 | 谁带 |\n| :-- | :-- |\n| 雨伞 | 你 |\n| 零食 |"
+        let repairedPartial = ProseStreamRepairCore.repair(partialRow)
+        XCTAssertEqual(repairedPartial.repaired, "| 东西 | 谁带 |\n| :-- | :-- |\n| 雨伞 | 你 |")
+        XCTAssertEqual(repairedPartial.withheldSuffix, "\n| 零食 |")
+
+        let fullRow = partialRow + " 朋友 |"
+        let repairedFull = ProseStreamRepairCore.repair(fullRow)
+        XCTAssertEqual(repairedFull.repaired, fullRow)
+        XCTAssertEqual(repairedFull.withheldSuffix, "")
+    }
 }

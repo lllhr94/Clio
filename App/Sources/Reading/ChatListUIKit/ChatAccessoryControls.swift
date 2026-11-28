@@ -815,7 +815,7 @@ final class ChatBotFooterView: UIView {
     private var lastColorSignature = ""
 
     func configure(row: ChatListRowItem, showsSelectText: Bool = true) {
-        let newest = row.isLatestBot
+        let newest = row.isLatestBot && row.isLastLine
         let signature = "\(row.line.id)|\(newest)|\(row.showStats)|\(row.isRoom)|\(row.isSpeakingThisLine)|\(row.line.seconds ?? -1)|\(row.line.tokens ?? -1)|\(showsSelectText)|\(UIScale.factor)"
         if signature != lastConfigSignature {
             lastConfigSignature = signature

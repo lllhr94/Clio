@@ -712,7 +712,8 @@ struct AssistantMeasureInput: Sendable {
         self.hasTimeGap = row.faces && row.opens && row.timeGap != nil
         self.hasSources = !isFresh && (row.lineMeta?.urls.isEmpty == false)
         self.hasContinue = !isFresh && row.hitStepLimit
-        self.hasFooter = !isFresh && (row.isLatestBot ? !row.working : row.endsTurn)
+        let isPendingLatestBot = row.isLatestBot && row.isLastLine
+        self.hasFooter = !isFresh && (isPendingLatestBot ? !row.working : row.endsTurn)
         self.isFresh = isFresh
         self.freshShown = isFresh ? shown : nil
         self.expandedThinking = expandedThinking

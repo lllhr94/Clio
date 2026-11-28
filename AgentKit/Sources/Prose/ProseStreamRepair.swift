@@ -401,8 +401,21 @@ public enum ProseStreamRepairCore {
 
     private static func findUnfinishedTableHold(lines: [String]) -> (prefix: String, withheld: String)? {
         guard !lines.isEmpty else { return nil }
+        // Ignore a single trailing empty line produced by a lone `\n` after a table header or separator
+        // (`"| A | B |\n"` -> `["| A | B |", ""]`), while preserving a blank-line paragraph break (`\n\n`).
+        var endIdx = lines.count - 1
+        let hasSingleTrailingNewline: Bool
+        if lines.count >= 2,
+           lines[endIdx].trimmingCharacters(in: .whitespaces).isEmpty,
+           lines[endIdx - 1].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
+            endIdx -= 1
+            hasSingleTrailingNewline = true
+        } else {
+            hasSingleTrailingNewline = false
+        }
+
         var firstTableIdx: Int?
-        for idx in stride(from: lines.count - 1, through: 0, by: -1) {
+        for idx in stride(from: endIdx, through: 0, by: -1) {
             let trimmed = lines[idx].trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("|") {
                 firstTableIdx = idx
@@ -411,54 +424,76 @@ public enum ProseStreamRepairCore {
             }
         }
         guard let startIdx = firstTableIdx else { return nil }
-        let runCount = lines.count - startIdx
+        let runCount = endIdx - startIdx + 1
 
-        // Case 1: Only the header line has started (`| Col A | Col B` or `| Col A | Col B |`),
+        // Case 1: Only the header line has started (`| Col A | Col B`, `| Col A | Col B |`, or `| Col A | Col B |\n`),
         // separator row hasn't arrived yet -> hold back the header row so raw pipe text never flashes.
         if runCount == 1 {
-            let prefix = lines[..<startIdx].joined(separator: "\n")
-            let held = (startIdx > 0 ? "\n" : "") + lines[startIdx]
-            return (prefix, held)
-        }
-
-        // Case 2: Header + second line, where second line is still the very last line (un-newlined separator
-        // like `| :--- | :`) or not yet a valid complete GFM delimiter row -> hold back header + partial separator.
-        let delimiterTrimmed = lines[startIdx + 1].trimmingCharacters(in: .whitespaces)
-        if runCount == 2 || !isValidTableDelimiterRow(delimiterTrimmed) {
             let prefix = lines[..<startIdx].joined(separator: "\n")
             let heldRun = lines[startIdx...].joined(separator: "\n")
             let held = (startIdx > 0 ? "\n" : "") + heldRun
             return (prefix, held)
         }
 
-        // Case 3: Header + valid delimiter row committed; if trailing body row isn't terminated with `|`,
-        // hold back only that half-written body row while letting completed rows render cleanly.
-        let lastTrimmed = lines[lines.count - 1].trimmingCharacters(in: .whitespaces)
-        if !lastTrimmed.hasSuffix("|") || lastTrimmed.count < 2 {
-            let prefix = lines.dropLast().joined(separator: "\n")
-            let held = "\n" + lines[lines.count - 1]
+        // Case 2: Header + second line (with or without trailing `\n`), where delimiter isn't followed by a body row yet
+        // or is not yet a valid complete GFM delimiter row -> hold back header + partial separator.
+        let delimiterTrimmed = lines[startIdx + 1].trimmingCharacters(in: .whitespaces)
+        guard runCount > 2, let expectedCols = validTableDelimiterColumnCount(delimiterTrimmed) else {
+            let prefix = lines[..<startIdx].joined(separator: "\n")
+            let heldRun = lines[startIdx...].joined(separator: "\n")
+            let held = (startIdx > 0 ? "\n" : "") + heldRun
             return (prefix, held)
         }
 
+        // Case 3: Header + valid delimiter row committed; if trailing body row isn't terminated with `|` or
+        // hasn't finished all expected columns yet (e.g. `| 零食 |` in a 2-column table), hold back only that
+        // half-written body row while letting completed rows render cleanly.
+        let lastTrimmed = lines[endIdx].trimmingCharacters(in: .whitespaces)
+        if !lastTrimmed.hasSuffix("|") || lastTrimmed.count < 2 || tableRowCellCount(lastTrimmed) < expectedCols {
+            let prefix = lines[..<endIdx].joined(separator: "\n")
+            let held = "\n" + lines[endIdx...].joined(separator: "\n")
+            return (prefix, held)
+        }
+
+        // Complete row with optional single trailing newline renders cleanly as a table.
+        _ = hasSingleTrailingNewline
         return nil
     }
 
-    private static func isValidTableDelimiterRow(_ trimmedLine: String) -> Bool {
+    private static func validTableDelimiterColumnCount(_ trimmedLine: String) -> Int? {
         let inner = trimmedLine.trimmingCharacters(in: CharacterSet(charactersIn: "| "))
-        guard !inner.isEmpty else { return false }
+        guard !inner.isEmpty else { return nil }
         let cells = inner.split(separator: "|", omittingEmptySubsequences: false)
-        guard !cells.isEmpty else { return false }
+        guard !cells.isEmpty else { return nil }
         for rawCell in cells {
             let cell = rawCell.trimmingCharacters(in: .whitespaces)
-            guard !cell.isEmpty else { return false }
+            guard !cell.isEmpty else { return nil }
             var slice = cell[...]
             if slice.first == ":" { slice = slice.dropFirst() }
             if slice.last == ":" { slice = slice.dropLast() }
             if slice.isEmpty || !slice.allSatisfy({ $0 == "-" }) {
-                return false
+                return nil
             }
         }
-        return true
+        return cells.count
+    }
+
+    private static func tableRowCellCount(_ trimmedLine: String) -> Int {
+        guard trimmedLine.hasPrefix("|"), trimmedLine.hasSuffix("|"), trimmedLine.count >= 2 else { return 0 }
+        let chars = Array(trimmedLine)
+        var unescapedPipes = 0
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "\\" && i + 1 < chars.count {
+                i += 2
+                continue
+            }
+            if chars[i] == "|" {
+                unescapedPipes += 1
+            }
+            i += 1
+        }
+        return max(0, unescapedPipes - 1)
     }
 
     private static func isDanglingBareBlockMarker(_ trimmed: String) -> Bool {

@@ -406,6 +406,13 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         richTextViews.contains { !$0.isHidden && $0.hasPaintedLiveTail }
     }
 
+    var hasActiveReveal: Bool {
+        if let coord = messageRevealCoordinator, !coord.isComplete {
+            return true
+        }
+        return richTextViews.contains { !$0.isHidden && $0.hasActiveFlyingSnippets }
+    }
+
     func revealedLineBottom(in view: UIView) -> CGFloat? {
         if let coord = messageRevealCoordinator, !coord.isComplete,
            let activeIndex = coord.timeline.activeSliceIndex(forCursor: coord.cursorPoints),

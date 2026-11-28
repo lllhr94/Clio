@@ -689,18 +689,18 @@ final class ChatRevealLayoutSnapshot: @unchecked Sendable {
     }
 
     func unitsNewlyRevealed(from prevPoints: Double, to nextPoints: Double) -> [(lineHasRTL: Bool, units: [ChatRevealAtomicUnit])] {
-        guard nextPoints > prevPoints, !lines.isEmpty else { return [] }
+        let lower = max(0.0, prevPoints)
+        guard nextPoints > lower, !lines.isEmpty else { return [] }
         var groups: [(lineHasRTL: Bool, units: [ChatRevealAtomicUnit])] = []
         for line in lines {
-            if Double(line.endPoints) <= prevPoints { continue }
+            if Double(line.endPoints) <= lower { continue }
             if Double(line.startPoints) >= nextPoints { break }
             var lineUnits: [ChatRevealAtomicUnit] = []
             for unit in line.units {
-                if Double(unit.endPoints) <= prevPoints { continue }
+                // Disjoint half-open partition [lower, nextPoints): every atomic glyph spawns strictly ONCE.
+                if Double(unit.startPoints) < lower { continue }
                 if Double(unit.startPoints) >= nextPoints { break }
-                if Double(unit.startPoints) >= prevPoints || Double(unit.endPoints) <= nextPoints {
-                    lineUnits.append(unit)
-                }
+                lineUnits.append(unit)
             }
             if !lineUnits.isEmpty {
                 groups.append((lineHasRTL: line.hasRTL, units: lineUnits))
@@ -868,11 +868,10 @@ enum ChatRevealSnippetPlanner {
         let batchSize: Int
         if eligible.count > remainingSlots {
             batchSize = max(2, Int(ceil(Double(eligible.count) / Double(remainingSlots))))
-        } else if eligible.count >= 4 || activeCount >= maxPoolSize - 10 {
-            batchSize = 3
-        } else if eligible.count >= 2 {
+        } else if eligible.count >= 6 || activeCount >= maxPoolSize - 8 {
             batchSize = 2
         } else {
+            // Normal streaming pace: animate each glyph around its own center so adjacent CJK chars never drift sideways.
             batchSize = 1
         }
 
@@ -1286,9 +1285,16 @@ final class ChatRevealMaskCoordinator {
         maskState: ChatRevealLayoutSnapshot.MaskState,
         bounds: CGRect,
         tileRoot: CALayer,
-        overlayHost: CALayer
+        overlayHost: CALayer,
+        useFeather: Bool = true
     ) {
-        applyStaticMask(maskState: maskState, bounds: bounds, tileRoot: tileRoot, overlayHost: overlayHost)
+        applyStaticMask(
+            maskState: maskState,
+            bounds: bounds,
+            tileRoot: tileRoot,
+            overlayHost: overlayHost,
+            useFeather: useFeather
+        )
     }
 
     func updateTiles(_ rendered: ChatRenderedTiles, scale: CGFloat) {
@@ -1319,14 +1325,23 @@ final class ChatRevealMaskCoordinator {
             lowestAnimatingStartPoints: stepResult.lowestAnimatingStartPoints
         )
         let maskState = snapshot.maskState(forPoints: clampedPoints)
-        applyStaticMask(maskState: maskState, bounds: bounds, tileRoot: tileRoot, overlayHost: overlayHost)
+        // When flying snippets own the leading edge, characters strictly before lowestAnimatingStartPoints
+        // have ALREADY landed at full opacity — never fade them backward with a trailing feather gradient.
+        applyStaticMask(
+            maskState: maskState,
+            bounds: bounds,
+            tileRoot: tileRoot,
+            overlayHost: overlayHost,
+            useFeather: !stepResult.anyActive
+        )
     }
 
     private func applyStaticMask(
         maskState: ChatRevealLayoutSnapshot.MaskState,
         bounds: CGRect,
         tileRoot: CALayer,
-        overlayHost: CALayer
+        overlayHost: CALayer,
+        useFeather: Bool
     ) {
         switch maskState {
         case .complete:
@@ -1373,7 +1388,7 @@ final class ChatRevealMaskCoordinator {
             }
 
             let clampedFrontier = max(0, min(bounds.width, frontierX))
-            let feather = ChatRevealPolicy.featherWidth(forLineHeight: lineHeight)
+            let feather = useFeather ? ChatRevealPolicy.featherWidth(forLineHeight: lineHeight) : 0
             let solidWidth = max(0, clampedFrontier - feather)
 
             if solidWidth > 0.5 {
@@ -1385,7 +1400,7 @@ final class ChatRevealMaskCoordinator {
 
             let featherStartX = solidWidth
             let featherActualW = max(0, clampedFrontier - featherStartX)
-            if featherActualW > 0.5 {
+            if useFeather && featherActualW > 0.5 {
                 featherLayer.isHidden = false
                 featherLayer.frame = CGRect(x: featherStartX, y: bandY, width: featherActualW, height: bandHeight)
             } else {
@@ -1606,11 +1621,32 @@ final class MessageRevealCoordinator {
         lastClock = clock
         let nextTimeline = MessageRevealTimeline(slices: slices)
         let prevTotal = timeline.totalPoints
+        var prefixShift = 0
+        if let activeIdx = timeline.activeSliceIndex(forCursor: cursorPoints),
+           activeIdx < timeline.intervals.count {
+            let activeInterval = timeline.intervals[activeIdx]
+            if let matchingNext = nextTimeline.intervals.first(where: { $0.spec.id == activeInterval.spec.id }) {
+                prefixShift = matchingNext.startPoints - activeInterval.startPoints
+            }
+        }
         timeline = nextTimeline
 
         if pace != nextPace {
             pace = nextPace
             controller.durationMultiplier = ChatRevealPacer.profile(for: nextPace).durationMultiplier
+        }
+
+        if prefixShift != 0 {
+            cursorPoints = min(Double(nextTimeline.totalPoints), max(0, cursorPoints + Double(prefixShift)))
+            let wasFinalizing = controller.isFinalizing
+            controller = TextRevealController(
+                initialRevealedCount: Int(cursorPoints),
+                initialLength: nextTimeline.totalPoints,
+                durationMultiplier: ChatRevealPacer.profile(for: pace).durationMultiplier
+            )
+            if wasFinalizing || !isLive {
+                controller.finalize(finalLength: nextTimeline.totalPoints)
+            }
         }
 
         if nextTimeline.totalPoints > prevTotal {
