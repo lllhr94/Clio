@@ -15,6 +15,7 @@
   },
   "artifacts": {
     "tab": {
+      "directory": "目录",
       "library": "资料库"
     },
     "kind": {
@@ -788,7 +789,9 @@
     "page3": {
       "title": "挑一种顺眼的称谓",
       "subtitle": "随时能在设置里换，不影响任何记录。",
+      "dailyOptionTitle": "日常",
       "dailyOptionDesc": "直白清楚，用熟悉的叫法",
+      "literaryOptionTitle": "书卷",
       "literaryOptionDesc": "纸墨尺牍，手机里的随身书斋",
       "cta": "就这样"
     },

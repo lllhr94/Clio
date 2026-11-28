@@ -15,6 +15,7 @@
   },
   "artifacts": {
     "tab": {
+      "directory": "目录",
       "library": "资料库"
     },
     "kind": {
@@ -788,7 +789,9 @@
     "page3": {
       "title": "择一称心称谓",
       "subtitle": "日后随时可在调弦里切换，不损分毫旧录。",
+      "dailyOptionTitle": "日常",
       "dailyOptionDesc": "直白明快，所见即所得",
+      "literaryOptionTitle": "书卷",
       "literaryOptionDesc": "纸墨尺牍，一室清雅相伴",
       "cta": "就这样"
     },

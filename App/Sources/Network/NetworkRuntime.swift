@@ -25,6 +25,7 @@ final class NetworkRuntime: ObservableObject, @unchecked Sendable {
     private var generation: UInt64 = 0
     private var started = false
     private weak var registeredBrowserStore: WKWebsiteDataStore?
+    private var applyTask: Task<Void, Never>?
 
     private final class SessionCacheBox: @unchecked Sendable {
         private let lock = NSLock()
@@ -138,9 +139,7 @@ final class NetworkRuntime: ObservableObject, @unchecked Sendable {
             }
         )
 
-        Task {
-            await applyCurrentSettings()
-        }
+        scheduleApply()
     }
 
     // MARK: Persistence & Mutations
@@ -179,9 +178,7 @@ final class NetworkRuntime: ObservableObject, @unchecked Sendable {
         settings = copy
         persist(copy)
         refreshPasswordSnapshot(for: copy)
-        Task {
-            await applyCurrentSettings()
-        }
+        scheduleApply()
     }
 
     @MainActor
@@ -202,9 +199,7 @@ final class NetworkRuntime: ObservableObject, @unchecked Sendable {
         settings = copy
         persist(copy)
         refreshPasswordSnapshot(for: copy)
-        Task {
-            await applyCurrentSettings()
-        }
+        scheduleApply()
     }
 
     @MainActor
@@ -216,9 +211,21 @@ final class NetworkRuntime: ObservableObject, @unchecked Sendable {
         settings = updated
         persist(updated)
         refreshPasswordSnapshot(for: updated)
-        Task {
+        scheduleApply()
+    }
+
+    @MainActor
+    private func scheduleApply() {
+        let previous = applyTask
+        applyTask = Task { @MainActor in
+            await previous?.value
             await applyCurrentSettings()
         }
+    }
+
+    @MainActor
+    func waitUntilApplied() async {
+        await applyTask?.value
     }
 
     func hasStoredPassword(for proxyID: String) -> Bool {
@@ -400,6 +407,7 @@ final class NetworkRuntime: ObservableObject, @unchecked Sendable {
 
     @MainActor
     func runDiagnostics() async -> [ClioNetHub.DiagnosticItem] {
+        await applyTask?.value
         let current = settings
         let sysProxy = Self.systemProxySummary()
         let dnsServers = Den.shared.appliedDNSServers
