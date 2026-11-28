@@ -198,8 +198,10 @@ final class MemorySafetyTests: XCTestCase {
             .init(id: "a3", at: 10, role: .assistant, text: "周末爬山记得看天气。"),
         ]
 
+        // Once an untrusted external read (`t1`) enters the conversation, later assistant replies (`a3`) stay
+        // excluded even if unmarked (e.g. after cold restart), while genuine untainted user turns (`u2`) remain.
         let filtered = MemorySafety.filterExtractableEntries(entries)
-        XCTAssertEqual(filtered.map(\.id), ["u1", "a1", "u2", "a3"])
+        XCTAssertEqual(filtered.map(\.id), ["u1", "a1", "u2"])
     }
 
     func testFilterExtractableEntriesCatchesLegacyAssistantAfterUntaggedWebTool() {

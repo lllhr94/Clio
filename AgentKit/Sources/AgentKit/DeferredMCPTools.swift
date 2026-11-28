@@ -175,7 +175,8 @@ public enum DeferredMCPTools {
         }
 
         func label(for arguments: JSONValue) -> String {
-            "查看工具说明：\(arguments["tool"]?.string ?? "")"
+            let name = arguments["tool"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return "查看工具说明：\(name)"
         }
 
         func run(_ arguments: JSONValue) async throws -> ToolOutput {
@@ -215,21 +216,29 @@ public enum DeferredMCPTools {
             )
         }
 
+        private func resolveEntry(_ arguments: JSONValue) -> Entry? {
+            guard let name = arguments["tool"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty else {
+                return nil
+            }
+            return indexed[name]
+        }
+
         func label(for arguments: JSONValue) -> String {
-            if let name = arguments["tool"]?.string, let entry = indexed[name] {
+            if let entry = resolveEntry(arguments) {
                 return entry.tool.label(for: arguments["arguments"] ?? .object([:]))
             }
-            return "调用扩展工具：\(arguments["tool"]?.string ?? "")"
+            let name = arguments["tool"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return "调用扩展工具：\(name)"
         }
 
         func approval(for arguments: JSONValue) -> ApprovalAsk? {
-            guard let name = arguments["tool"]?.string, let entry = indexed[name] else { return nil }
+            guard let entry = resolveEntry(arguments) else { return nil }
             return entry.tool.approval(for: arguments["arguments"] ?? .object([:]))
         }
 
         func run(_ arguments: JSONValue) async throws -> ToolOutput {
-            guard let name = arguments["tool"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let entry = indexed[name] else {
+            guard let entry = resolveEntry(arguments) else {
                 return ToolOutput("未找到该扩展工具，请先用 tool_search 确认名称。", isError: true)
             }
             // Live permission + generation re-check at execution time!

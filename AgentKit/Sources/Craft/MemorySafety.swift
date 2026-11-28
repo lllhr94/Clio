@@ -860,12 +860,11 @@ public enum MemorySafety {
     /// Filters entries eligible for automatic memory extraction.
     /// Excludes notes, compression folds, tool outputs, tool-call preambles, empty entries,
     /// companion-delegated prompts/replies (including legacy delegation text), explicitly tainted entries,
-    /// and legacy assistant replies in any conversation where a legacy untagged external-read tool occurred
-    /// (sticky across later turns).
+    /// and any subsequent assistant replies once a conversation has seen an explicitly tainted entry or
+    /// an external-read tool output (sticky across later turns, including after cold restart).
     public static func filterExtractableEntries<E: MemoryExtractable>(_ entries: [E]) -> [E] {
         var result: [E] = []
-        var turnHasExplicitTaint = false
-        var legacySawUntrusted = false
+        var conversationSawUntrusted = false
         var inDelegatedTurn = false
         for entry in entries {
             if entry.isNote || entry.isFold { continue }
@@ -873,33 +872,29 @@ public enum MemorySafety {
             case .user:
                 if entry.isDelegated || isLegacyDelegationText(entry.text) {
                     inDelegatedTurn = true
-                    if entry.isTainted { turnHasExplicitTaint = true }
+                    if entry.isTainted { conversationSawUntrusted = true }
                     continue
                 }
                 if entry.isTainted {
-                    turnHasExplicitTaint = true
+                    conversationSawUntrusted = true
                     inDelegatedTurn = false
                     continue
                 }
-                turnHasExplicitTaint = false
                 inDelegatedTurn = false
                 if !entry.hasToolCalls && !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     result.append(entry)
                 }
             case .tool:
-                if !entry.isTainted && Taint.reads(entry.toolName ?? "") {
-                    legacySawUntrusted = true
-                } else if entry.isTainted {
-                    turnHasExplicitTaint = true
+                if entry.isTainted || Taint.reads(entry.toolName ?? "") {
+                    conversationSawUntrusted = true
                 }
                 continue
             case .assistant:
                 if entry.isTainted {
-                    turnHasExplicitTaint = true
+                    conversationSawUntrusted = true
                     continue
                 }
-                guard !turnHasExplicitTaint,
-                      !legacySawUntrusted,
+                guard !conversationSawUntrusted,
                       !inDelegatedTurn,
                       !entry.hasToolCalls,
                       !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

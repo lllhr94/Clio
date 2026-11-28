@@ -84,6 +84,11 @@ struct ClioRoot: View {
         .onOpenURL { url in
             handleIncomingURL(url)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .clioAppDidUnlock)) { _ in
+            for url in AppLock.drainDeferredIncomingURLs() {
+                handleIncomingURL(url)
+            }
+        }
         .onChange(of: scenePhase) { _, now in
             if now == .active {
                 KeepAwake.stop()
@@ -119,6 +124,7 @@ struct ClioRoot: View {
     }
 
     private func handleIncomingURL(_ url: URL) {
+        if AppLock.deferIncomingURLIfLocked(url) { return }
         if url.isFileURL {
             // Acquire security-scoped access synchronously during the UI callback, then move
             // File Provider download, copy, and PDF text extraction off the main thread.
@@ -472,6 +478,7 @@ struct Desk: View {
     private func withDeskRouteHandlers<Content: View>(_ content: Content) -> some View {
         content
             .onReceive(NotificationCenter.default.publisher(for: .clioOpenChat)) { note in
+                guard AppLock.isCurrentlyUnlocked else { return }
                 if let chat = ShortcutDoor.pendingChat ?? (note.object as? String) {
                     ShortcutDoor.pendingChat = nil
                     openChat(chat)
@@ -482,6 +489,15 @@ struct Desk: View {
                 takePendingRoutes()
             }
             .onReceive(NotificationCenter.default.publisher(for: .clioShortcut)) { _ in answerShortcut() }
+            .onReceive(NotificationCenter.default.publisher(for: .clioAppDidUnlock)) { _ in
+                takeNotifications()
+                takePendingRoutes()
+                answerShortcut()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .clioAppLockPreferenceChanged)) { _ in
+                WidgetFeed.publish(team, immediate: true)
+                LiveTurns.enforcePrivacyRedactionIfNeeded()
+            }
             .task {
                 takeNotifications()
                 takePendingRoutes()
@@ -565,6 +581,7 @@ struct Desk: View {
     }
 
     private func takePendingRoutes() {
+        guard AppLock.isCurrentlyUnlocked else { return }
         if let chat = ShortcutDoor.pendingChat {
             ShortcutDoor.pendingChat = nil
             openChat(chat)
@@ -577,6 +594,7 @@ struct Desk: View {
     }
 
     private func takeNotifications() {
+        guard AppLock.isCurrentlyUnlocked else { return }
         for action in ChatNotificationRoute.take() {
             switch action {
             case .open(let chat): openChat(chat)
@@ -593,6 +611,7 @@ struct Desk: View {
 
     /// Siri or a shortcut: the newest conversation, or a fresh leaf with the newest companion. Nothing is sent.
     private func answerShortcut() {
+        guard AppLock.isCurrentlyUnlocked else { return }
         guard let ask = ShortcutDoor.pending else { return }
         ShortcutDoor.pending = nil
         let recent = DeskThreadHelpers.recent(team: team)

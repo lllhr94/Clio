@@ -129,13 +129,19 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     /// Notes what a conversation just read, so a later click or typing can tell the page has changed.
-    func noteRead(_ page: WKWebView, by chat: String) { readAt[chat] = page.url }
+    func noteRead(_ page: WKWebView, by chat: String) {
+        readAt[chat] = page.url
+        Self.recordOriginSnapshot(page.url, for: chat)
+    }
 
     static func pageChangedMessage(currentURL: URL?) -> String {
         "页面已经换成了 \(currentURL?.absoluteString ?? "别的页面")，和刚才核对权限时的不一样：先 browser_read 再操作。"
     }
 
-    func clearRead(for chat: String) { readAt[chat] = nil }
+    func clearRead(for chat: String) {
+        readAt[chat] = nil
+        Self.recordOriginSnapshot(nil, for: chat)
+    }
 
     func verifiedReadURL(for page: WKWebView, chat: String) -> URL? {
         guard let read = readAt[chat], page.url == read else { return nil }
@@ -166,6 +172,7 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
     func release(_ chat: String) {
         for (id, owner) in owners where owner == chat { owners[id] = nil }
         readAt[chat] = nil
+        Self.recordOriginSnapshot(nil, for: chat)
     }
 
     func switchTab(_ index: Int) {
@@ -186,6 +193,7 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         finishWaiting(closing)
         if let formerOwner = owners[ObjectIdentifier(closing)] {
             readAt[formerOwner] = nil
+            Self.recordOriginSnapshot(nil, for: formerOwner)
         }
         owners[ObjectIdentifier(closing)] = nil
         closing.stopLoading()
@@ -515,13 +523,8 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         if let problem = verifyUnchanged(tab, expectedURL: expectedURL, for: chat) {
             throw ProviderError(problem)
         }
-        guard let host = expectedURL.host()?.lowercased() else { throw ProviderError("这一页没有网址，不填。") }
-        let wanted = Self.host(of: site)
-        guard !wanted.isEmpty else {
-            throw ProviderError("信匣里「\(entry)」没写用在哪个网站。请用户在信匣里给它补上网址，再来填。")
-        }
-        guard host == wanted || host.hasSuffix("." + wanted) else {
-            throw ProviderError("这一页是 \(host)，信匣里「\(entry)」是给 \(wanted) 用的，不填。")
+        if let mismatch = Self.secretFillMismatchReason(expectedURL: expectedURL, site: site, entry: entry) {
+            throw ProviderError(mismatch)
         }
         let result = try await tab.callAsyncJavaScript(Self.secretScript, arguments: ["ref": ref, "text": text, "submit": submit, "password": password],
                                                         in: nil, contentWorld: .defaultClient)
@@ -532,12 +535,112 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         return (result as? String) ?? "填好了"
     }
 
-    /// 「https://accounts.example.com/login」「example.com」 → the host, lower case.
-    private static func host(of site: String) -> String {
-        let text = site.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let host = URL(string: text)?.host(), !host.isEmpty { return host }
-        if let host = URL(string: "https://" + text)?.host(), !host.isEmpty { return host }
-        return ""
+    private static let originSnapshotLock = NSLock()
+    nonisolated(unsafe) private static var latestOriginByChat: [String: String] = [:]
+
+    nonisolated static func originDescription(of url: URL) -> String {
+        let scheme = url.scheme?.lowercased() ?? ""
+        let host = url.host?.lowercased() ?? ""
+        guard !scheme.isEmpty, !host.isEmpty else { return url.absoluteString }
+        let defaultPort = scheme == "https" ? 443 : (scheme == "http" ? 80 : nil)
+        if let port = url.port, port != defaultPort {
+            return "\(scheme)://\(host):\(port)"
+        }
+        return "\(scheme)://\(host)"
+    }
+
+    nonisolated static func currentOriginDescription(for chat: String) -> String? {
+        originSnapshotLock.lock()
+        defer { originSnapshotLock.unlock() }
+        return latestOriginByChat[chat]
+    }
+
+    nonisolated static func recordOriginSnapshot(_ url: URL?, for chat: String) {
+        originSnapshotLock.lock()
+        defer { originSnapshotLock.unlock() }
+        if let url, let scheme = url.scheme?.lowercased(), (scheme == "http" || scheme == "https"), url.host != nil {
+            latestOriginByChat[chat] = originDescription(of: url)
+        } else {
+            latestOriginByChat.removeValue(forKey: chat)
+        }
+    }
+
+    /// Multi-label public suffixes and shared-hosting domains where wildcard subdomain matching would leak secrets across tenants.
+    private static let nonWildcardSiteSuffixes: Set<String> = [
+        "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
+        "co.uk", "org.uk", "ac.uk", "gov.uk",
+        "co.jp", "ne.jp", "or.jp", "go.jp", "ac.jp",
+        "com.au", "net.au", "org.au", "com.hk", "com.tw", "com.sg",
+        "co.kr", "co.in", "com.br", "com.mx", "co.nz", "co.za",
+        "com.my", "com.tr", "com.vn", "com.ar", "com.ua",
+        "github.io", "gitlab.io", "bitbucket.io", "pages.dev", "workers.dev",
+        "netlify.app", "vercel.app", "herokuapp.com", "onrender.com", "fly.dev",
+        "railway.app", "appspot.com", "web.app", "firebaseapp.com", "amazonaws.com",
+        "cloudfront.net", "azurewebsites.net", "blogspot.com", "wordpress.com",
+        "tumblr.com", "substack.com", "notion.site", "replit.app", "glitch.me",
+        "pythonanywhere.com", "surge.sh", "codeberg.page", "deno.dev", "r2.dev",
+        "storage.googleapis.com", "s3.amazonaws.com",
+    ]
+
+    /// Validates scheme, port, host, and public-suffix boundaries before filling a Vault secret into a web page.
+    /// Returns `nil` when allowed, or a Chinese refusal reason when blocked.
+    nonisolated static func secretFillMismatchReason(expectedURL: URL, site: String, entry: String) -> String? {
+        guard let currentScheme = expectedURL.scheme?.lowercased(),
+              currentScheme == "https" || currentScheme == "http",
+              var currentHost = expectedURL.host?.lowercased(), !currentHost.isEmpty else {
+            return "这一页没有可用网址，不填。"
+        }
+        while currentHost.hasSuffix(".") { currentHost.removeLast() }
+        let currentPort = expectedURL.port ?? (currentScheme == "https" ? 443 : 80)
+
+        let trimmed = site.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else {
+            return "信匣里「\(entry)」没写用在哪个网站。请用户在信匣里给它补上网址，再来填。"
+        }
+
+        let explicitHTTP: Bool
+        let parsedSite: URL?
+        if trimmed.contains("://") {
+            let candidate = URL(string: trimmed)
+            let siteScheme = candidate?.scheme?.lowercased()
+            guard siteScheme == "https" || siteScheme == "http" else {
+                return "信匣里「\(entry)」的网站地址格式不对，请先检查后再填。"
+            }
+            explicitHTTP = (siteScheme == "http")
+            parsedSite = candidate
+        } else {
+            explicitHTTP = false
+            parsedSite = URL(string: "https://" + trimmed)
+        }
+
+        guard var wantedHost = parsedSite?.host?.lowercased(), !wantedHost.isEmpty else {
+            return "信匣里「\(entry)」没写用在哪个网站。请用户在信匣里给它补上网址，再来填。"
+        }
+        while wantedHost.hasSuffix(".") { wantedHost.removeLast() }
+        let expectedPort = parsedSite?.port ?? (explicitHTTP ? 80 : 443)
+
+        if currentScheme != "https" && !explicitHTTP {
+            return "这一页是明文 HTTP（\(currentHost)），信匣里「\(entry)」默认只在 HTTPS 网站填入。如确认是受信任的内网服务，请在信匣里把网址明确写为 http:// 开头。"
+        }
+        if currentPort != expectedPort {
+            return "这一页的端口是 \(currentPort)，信匣里「\(entry)」限定用于端口 \(expectedPort)，不填。"
+        }
+
+        if currentHost == wantedHost {
+            return nil
+        }
+
+        if currentHost.hasSuffix("." + wantedHost) {
+            let labels = wantedHost.split(separator: ".")
+            if LocalAddress.isLiteralIP(wantedHost)
+                || labels.count < 2
+                || nonWildcardSiteSuffixes.contains(wantedHost) {
+                return "信匣里「\(entry)」的网址「\(wantedHost)」范围过宽，请填写完整主机名后再填。"
+            }
+            return nil
+        }
+
+        return "这一页是 \(currentHost)，信匣里「\(entry)」是给 \(wantedHost) 用的，不填。"
     }
 
     func scroll(down: Bool, on page: WKWebView? = nil) async throws {

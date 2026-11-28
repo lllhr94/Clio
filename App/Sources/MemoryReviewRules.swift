@@ -45,6 +45,8 @@ struct MemoryBook: Codable, Sendable {
     var diaryRequests: Int = 0
     /// In-memory bridge epoch stamp (not persisted to JSON) preventing stale pre-restore books from overwriting restored state.
     var storeEpoch: UInt64? = nil
+    /// Monotonic in-memory commit sequence within an epoch (not persisted to JSON) preventing out-of-order async UI rollbacks.
+    var storeSequence: UInt64? = nil
 
     private enum CodingKeys: String, CodingKey {
         case memories, reviews, processed, reviewFromDay, budgetDay, requests, diaryRequests

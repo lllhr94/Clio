@@ -13,6 +13,17 @@ enum WidgetFeed {
 
     private static let toldKey = "widget.toldNoKeychain"
 
+    static func sanitizedPreviewLine(
+        _ raw: String?,
+        faceIDLocked: Bool = UserDefaults.standard.bool(forKey: "lock.faceid")
+    ) -> String {
+        if faceIDLocked { return "" }
+        let cleanedLine = (raw ?? "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(cleanedLine.prefix(120))
+    }
+
     static func publish(_ team: TeamModel, immediate: Bool = false) {
         guard let id = team.mainBotId, let bot = team.bots.first(where: { $0.id == id }) else { return }
         let key = TeamModel.key(bot: id)
@@ -28,13 +39,10 @@ enum WidgetFeed {
             kind = .idle
             status = L.t("chat.idle")
         }
-        let cleanedLine = (bot.preview ?? "")
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
         let snapshot = WidgetSnapshot(
             name: bot.name,
             status: status,
-            line: String(cleanedLine.prefix(120)),
+            line: sanitizedPreviewLine(bot.preview),
             at: (bot.lastAt ?? 0) / 1000,
             chat: key,
             kind: kind,

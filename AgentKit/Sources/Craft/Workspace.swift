@@ -251,13 +251,18 @@ public enum WorkspacePath {
     /// Whether `path` stays inside `root`: relative paths that never climb out, or absolute ones under it.
     /// `home` is how the root may also be written (`~`).
     public static func isInside(_ path: String, root: String, home: [String] = []) -> Bool {
+        guard !path.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else {
+            return false
+        }
         let trimmed = path.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
         var parts: [Substring]
         if trimmed.hasPrefix("/") {
             let prefixes = ([root] + home).filter { $0.hasPrefix("/") }.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
             guard let prefix = prefixes.first(where: { trimmed == String($0.dropLast()) || trimmed.hasPrefix($0) }) else { return false }
             parts = trimmed.dropFirst(prefix.count).split(separator: "/")
-        } else if trimmed == "~" || trimmed.hasPrefix("~/") {
+        } else if trimmed.hasPrefix("~") {
+            guard trimmed == "~" || trimmed.hasPrefix("~/") else { return false }
             guard home.contains("~") || root == "~" else { return false }
             parts = trimmed.dropFirst(1).split(separator: "/")
         } else {

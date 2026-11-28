@@ -461,9 +461,127 @@ def perf_checks():
     return perf_errors
 
 
+L_KEY_CALL = re.compile(r'\bL\s*\.\s*(?:t|format|hint)\s*\(\s*"([^"\\\n]+)"\s*(?:,|\))')
+
+
+def _strip_comments_keeping_code_and_l_calls(text):
+    """Strip Swift line/nested-block comments while preserving L.t/format/hint calls inside string interpolations."""
+    out = []
+    n = len(text)
+    i = 0
+
+    def scan_code(pos, stop_at_rparen=False):
+        paren_depth = 0
+        while pos < n:
+            ch = text[pos]
+            if stop_at_rparen:
+                if ch == "(":
+                    paren_depth += 1
+                elif ch == ")":
+                    if paren_depth == 0:
+                        out.append(")")
+                        return pos + 1
+                    paren_depth -= 1
+            if ch == "/" and pos + 1 < n:
+                nxt = text[pos + 1]
+                if nxt == "/":
+                    while pos < n and text[pos] != "\n":
+                        out.append(" ")
+                        pos += 1
+                    continue
+                if nxt == "*":
+                    depth = 1
+                    out.append("  ")
+                    pos += 2
+                    while pos < n and depth > 0:
+                        if text.startswith("/*", pos):
+                            depth += 1
+                            out.append("  ")
+                            pos += 2
+                        elif text.startswith("*/", pos):
+                            depth -= 1
+                            out.append("  ")
+                            pos += 2
+                        else:
+                            out.append("\n" if text[pos] == "\n" else " ")
+                            pos += 1
+                    continue
+            if ch == "#" or ch == '"':
+                hashes = 0
+                j = pos
+                while j < n and text[j] == "#":
+                    hashes += 1
+                    j += 1
+                if j < n and text[j] == '"':
+                    # Keep literal string arguments of L.t/format/hint intact, while descending into interpolations.
+                    multiline = text.startswith('"""', j)
+                    qlen = 3 if multiline else 1
+                    closing = ('"""' if multiline else '"') + ("#" * hashes)
+                    escape = "\\" + ("#" * hashes)
+                    out.append(text[pos:j + qlen])
+                    pos = j + qlen
+                    while pos < n:
+                        if text.startswith(closing, pos):
+                            out.append(closing)
+                            pos += len(closing)
+                            break
+                        if text.startswith(escape, pos):
+                            after = pos + len(escape)
+                            if after < n and text[after] == "(":
+                                out.append(escape + "(")
+                                pos = scan_code(after + 1, stop_at_rparen=True)
+                                continue
+                            out.append(text[pos:min(n, after + 1)])
+                            pos = min(n, after + 1)
+                            continue
+                        out.append(text[pos])
+                        pos += 1
+                    continue
+            out.append(ch)
+            pos += 1
+        return pos
+
+    scan_code(0)
+    return "".join(out)
+
+
+def _string_leaf_keys(node, prefix=()):
+    for key, value in node.items():
+        path = (*prefix, key)
+        if isinstance(value, dict):
+            yield from _string_leaf_keys(value, path)
+        elif isinstance(value, str):
+            yield path
+
+
+def used_dictionary_keys():
+    valid_keys = None
+    for style in ("daily", "literary"):
+        path = ROOT / TONE / f"zh-CN.{style}.json"
+        try:
+            content = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(content, dict):
+            return
+        keys = {".".join(parts) for parts in _string_leaf_keys(content)}
+        valid_keys = keys if valid_keys is None else (valid_keys & keys)
+    if not valid_keys:
+        return
+    for full_path in sorted((ROOT / "App/Sources").rglob("*.swift")):
+        path = full_path.relative_to(ROOT)
+        text = full_path.read_text(encoding="utf-8")
+        cleaned = _strip_comments_keeping_code_and_l_calls(text)
+        for match in L_KEY_CALL.finditer(cleaned):
+            key = match.group(1)
+            if key not in valid_keys:
+                lineno = cleaned.count("\n", 0, match.start()) + 1
+                yield path, lineno, f"Missing localization key {key!r} in Tone dictionaries"
+
+
 def main():
     perf_errors = perf_checks()
-    errors = [*dictionaries(), *swift_sources(), *perf_errors]
+    errors = [*dictionaries(), *used_dictionary_keys(), *swift_sources(), *perf_errors]
     warnings = list(literary_warnings())
     for path, line, message in warnings:
         print(f"warning: {path}:{line}: {message}", file=sys.stderr)

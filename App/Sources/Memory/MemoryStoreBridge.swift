@@ -331,6 +331,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
             )
             var stampedBook = appBook
             stampedBook.storeEpoch = stampedEpoch
+            stampedBook.storeSequence = stateLock.withLock { syncSequence }
 
             let currentBots = stateLock.withLock { botSummaries }
             if !Disk.frozen {
@@ -546,8 +547,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
         guard !Disk.frozen else {
             throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。")
         }
-        let (loadBlocked, currentEpoch) = stateLock.withLock {
-            (canonicalLoadFailed, canonicalStateEpoch)
+        let (loadBlocked, currentEpoch, currentSeq) = stateLock.withLock {
+            (canonicalLoadFailed, canonicalStateEpoch, syncSequence)
         }
         guard !loadBlocked else {
             throw TeamError(message: "记忆文件暂不可读，已跳过覆盖写入以防丢失原有记忆。")
@@ -556,6 +557,9 @@ final class MemoryStoreBridge: @unchecked Sendable {
             throw TeamError(message: "记忆档案或检索投影正在等待修复，已跳过覆盖写入以防覆盖最新恢复内容。")
         }
         if let expectedEpoch, currentEpoch != expectedEpoch {
+            throw TeamError(message: "记忆档案版本已更新，已跳过过期覆盖写入。")
+        }
+        if case .none = mutation, let expectedSeq = book.storeSequence, currentSeq != expectedSeq {
             throw TeamError(message: "记忆档案版本已更新，已跳过过期覆盖写入。")
         }
 
@@ -615,6 +619,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
 
         var stampedAppBook = prepared.sanitizedAppBook
         stampedAppBook.storeEpoch = currentEpoch
+        stampedAppBook.storeSequence = prepared.shadowUpdate.seq
         return CommitPromptPayload(
             sanitizedAppBook: stampedAppBook,
             retractItems: prepared.retractItems,
@@ -663,7 +668,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 expectedEpoch: capturedEpoch
             )
         }
-        applyPromptState(payload, to: promptState)
+        let liveEpoch = stateLock.withLock { canonicalStateEpoch }
+        if payload.sanitizedAppBook.storeEpoch == liveEpoch {
+            applyPromptState(payload, to: promptState)
+        }
         return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
     }
 
@@ -704,7 +712,10 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 }
             }
         }
-        applyPromptState(payload, to: promptState)
+        let liveEpoch = stateLock.withLock { canonicalStateEpoch }
+        if payload.sanitizedAppBook.storeEpoch == liveEpoch {
+            applyPromptState(payload, to: promptState)
+        }
         return (payload.sanitizedAppBook, payload.clearRetractions.map(\.text))
     }
 
@@ -858,7 +869,7 @@ final class MemoryStoreBridge: @unchecked Sendable {
         case .none:
             break
 
-        case .remember(let memory, let explicitUserAction, _):
+        case .remember(let memory, let explicitUserAction, let rememberNow):
             let safeText = Self.redact(memory.text, orderedSecrets: secrets)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let hash = MemorySafety.retractionHash(safeText)
@@ -868,6 +879,45 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 clearRetractions.append((id: memory.id, text: safeText))
             } else if !explicitUserAction {
                 shouldInvalidatePromptCache = true
+            }
+            if !safeText.isEmpty, !hash.isEmpty {
+                let blockedByTombstone = !explicitUserAction
+                    && (workingTombstones[hash] != nil || effectiveSuppressedHashes.contains(hash))
+                if !blockedByTombstone {
+                    if var existing = workingRecordsByID[memory.id] {
+                        // Refresh layer/timestamps only; never let a stale `.remember` overwrite newer `.edit` text.
+                        existing.layer = existing.pinned ? .pinned : .surface
+                        existing.usedAtMs = max(existing.usedAtMs ?? 0, rememberNow)
+                        existing.updatedAtMs = max(existing.updatedAtMs, rememberNow)
+                        if explicitUserAction { existing.editedByUser = true }
+                        workingRecordsByID[memory.id] = existing
+                    } else if let duplicate = workingRecordsByID.values.first(where: { $0.text == safeText }) {
+                        var existing = duplicate
+                        existing.layer = existing.pinned ? .pinned : .surface
+                        existing.usedAtMs = max(existing.usedAtMs ?? 0, rememberNow)
+                        existing.updatedAtMs = max(existing.updatedAtMs, rememberNow)
+                        if explicitUserAction { existing.editedByUser = true }
+                        workingRecordsByID[existing.id] = existing
+                    } else {
+                        let created = MemoryRecord(
+                            id: memory.id,
+                            text: safeText,
+                            textSHA256: hash,
+                            layer: memory.deep == true ? .deep : .surface,
+                            pinned: false,
+                            kind: "fact",
+                            topic: "",
+                            createdAtMs: memory.at,
+                            updatedAtMs: max(memory.at, rememberNow),
+                            usedAtMs: memory.used ?? rememberNow,
+                            byBot: memory.by,
+                            automatic: memory.automatic == true,
+                            editedByUser: explicitUserAction || memory.editedByUser == true,
+                            deletedAtMs: nil
+                        )
+                        workingRecordsByID[created.id] = created
+                    }
+                }
             }
 
         case .recall(let ids, let recallNow):
@@ -1152,6 +1202,8 @@ final class MemoryStoreBridge: @unchecked Sendable {
                 sqliteActions.editEvents.append((id: id, text: safeText, editedByUser: editedByUser))
                 clearRetractions.append((id: id, text: safeText))
                 if var existing = workingRecordsByID[id] {
+                    existing.text = safeText
+                    existing.textSHA256 = newHash
                     existing.updatedAtMs = max(existing.updatedAtMs, editNow)
                     if editedByUser { existing.editedByUser = true }
                     workingRecordsByID[id] = existing
@@ -1186,6 +1238,11 @@ final class MemoryStoreBridge: @unchecked Sendable {
         var skippedBatchIDs: Set<String> = []
         var shouldInvalidatePromptCache = false
 
+        let hadLiveShadow = !workingRecordsByID.isEmpty
+            || !workingArchived.isEmpty
+            || !workingTombstones.isEmpty
+            || syncSequence > 0
+
         applyPreLoopMutation(
             mutation,
             workingRecordsByID: &workingRecordsByID,
@@ -1205,12 +1262,19 @@ final class MemoryStoreBridge: @unchecked Sendable {
         var nextPinnedIDs: Set<String> = []
         var canonicalItems: [CanonicalMemoryItem] = []
 
-        // When `.recall` arrives from an asynchronous task, `book.memories` may predate concurrent `.remember`/`.edit`
-        // commits that landed on `commitQueue` inside the same `canonicalStateEpoch`. Rebuild active memories from live
-        // `workingRecordsByID` (already updated by `applyPreLoopMutation`), only falling back to `book.memories` if
-        // `workingRecordsByID` is empty on an unbootstrapped bridge.
+        // Any structured delta mutation (`.remember`, `.recall`, `.edit`, `.pin`, `.setDeep`, `.softDelete`,
+        // `.layerAndMetadata`, `.importBatch`, `.restore`) arriving from a concurrent sync or async caller
+        // may carry a stale `book.memories` snapshot from earlier in the same `canonicalStateEpoch`.
+        // Rebuild active memories from the authoritative live `workingRecordsByID` (already updated by
+        // `applyPreLoopMutation`) so concurrent writes never clobber sibling commits.
+        let isStructuredMutation: Bool
+        if case .none = mutation {
+            isStructuredMutation = false
+        } else {
+            isStructuredMutation = true
+        }
         let sourceMemories: [Memory]
-        if case .recall = mutation, !workingRecordsByID.isEmpty {
+        if isStructuredMutation && hadLiveShadow {
             var remainingByID = workingRecordsByID
             var merged: [Memory] = []
             merged.reserveCapacity(remainingByID.count)
