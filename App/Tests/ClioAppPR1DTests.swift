@@ -1,3 +1,4 @@
+import CoreText
 import XCTest
 import UIKit
 @testable import Clio
@@ -147,6 +148,82 @@ final class ClioAppPR1DTests: XCTestCase {
             ChatRevealSnippetPlanner.clampedStaticMaskPoints(cursorPoints: 180, lowestAnimatingStartPoints: nil),
             180
         )
+    }
+
+    func testItalicOverhangExtendsTheRevealMaskWithoutChangingPointCost() throws {
+        let font = try XCTUnwrap(UIFont(name: "TimesNewRomanPS-ItalicMT", size: 36))
+        let text = NSAttributedString(string: "  fx\nnext", attributes: [.font: font])
+        let snapshot = ChatRevealLayoutSnapshot.build(
+            attributed: text, width: 260, height: 160,
+            topInset: 4, bottomInset: 4, sourceRenderToken: 1
+        )
+        let line = try XCTUnwrap(snapshot.lines.first)
+        let glyph = try XCTUnwrap(line.units.first { $0.utf16Location == 2 })
+        XCTAssertGreaterThan(glyph.inkRect.maxX, glyph.maxX)
+        XCTAssertGreaterThan(glyph.inkRect.minY, line.rawTop)
+        XCTAssertEqual(glyph.costPoints, ChatRevealPacer.pointCost(forAdvance: glyph.maxX - glyph.minX, isWhitespace: false))
+
+        guard case let .partial(_, bandTop, bandHeight, _, frontier, _) = snapshot.maskState(forPoints: Double(glyph.endPoints)) else {
+            return XCTFail("The first line should still be revealing")
+        }
+        XCTAssertGreaterThanOrEqual(frontier, glyph.inkRect.maxX)
+        XCTAssertLessThanOrEqual(bandTop, glyph.inkRect.minY)
+        XCTAssertGreaterThanOrEqual(bandTop + bandHeight, glyph.inkRect.maxY)
+        let nextFrontier = line.frontierX(forPoints: Double(glyph.endPoints) + 0.1, fallbackWidth: 260)
+        XCTAssertGreaterThanOrEqual(nextFrontier, frontier)
+    }
+
+    func testObjectReplacementCharacterKeepsItsRevealPointsAndSeparatesSnippetBatches() throws {
+        let text = NSAttributedString(string: "a\u{FFFC}bcdefgh", attributes: [.font: UIFont.systemFont(ofSize: 20)])
+        let snapshot = ChatRevealLayoutSnapshot.build(
+            attributed: text, width: 240, height: 60,
+            topInset: 0, bottomInset: 0, sourceRenderToken: 1
+        )
+        let line = try XCTUnwrap(snapshot.lines.first)
+        let placeholder = try XCTUnwrap(line.units.first { $0.hasInlineAttachment })
+        XCTAssertEqual(placeholder.utf16Location, 1)
+        XCTAssertEqual(placeholder.utf16Length, 1)
+        XCTAssertGreaterThan(placeholder.costPoints, 0)
+        XCTAssertEqual(snapshot.pointsBefore(utf16Offset: 1), placeholder.startPoints)
+        XCTAssertEqual(snapshot.pointsBefore(utf16Offset: 2), placeholder.endPoints)
+        let batches = ChatRevealSnippetPlanner.planBatches(
+            for: line.units, lineHasRTL: line.hasRTL,
+            tiles: [.init(y: 0, height: 60, pixelWidth: 480, pixelHeight: 120)],
+            scale: 2, activeCount: 0
+        )
+        XCTAssertTrue(batches.contains { $0.endPoints == placeholder.startPoints })
+        XCTAssertTrue(batches.contains { $0.startPoints == placeholder.endPoints })
+        XCTAssertTrue(batches.allSatisfy {
+            $0.endPoints <= placeholder.startPoints || $0.startPoints >= placeholder.endPoints
+        })
+    }
+
+    func testRunDelegateMetricsFitTheRevealBandForATallAttachment() throws {
+        var callbacks = CTRunDelegateCallbacks(
+            version: kCTRunDelegateVersion1,
+            dealloc: { _ in },
+            getAscent: { _ in 34 },
+            getDescent: { _ in 15 },
+            getWidth: { _ in 38 }
+        )
+        let delegate = try XCTUnwrap(CTRunDelegateCreate(&callbacks, nil))
+        let text = NSMutableAttributedString(
+            string: "above\na\u{FFFC}b\nbelow", attributes: [.font: UIFont.systemFont(ofSize: 18)]
+        )
+        text.addAttribute(
+            NSAttributedString.Key(rawValue: kCTRunDelegateAttributeName as String),
+            value: delegate, range: NSRange(location: 7, length: 1)
+        )
+        let snapshot = ChatRevealLayoutSnapshot.build(
+            attributed: text, width: 240, height: 160,
+            topInset: 4, bottomInset: 4, sourceRenderToken: 1
+        )
+        let line = try XCTUnwrap(snapshot.lines.first { $0.units.contains { $0.hasInlineAttachment } })
+        let attachment = try XCTUnwrap(line.units.first { $0.hasInlineAttachment })
+        XCTAssertEqual(attachment.inkRect.height, 49, accuracy: 0.5)
+        XCTAssertEqual(attachment.inkRect.width, 38, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(line.bandTop, attachment.inkRect.minY + 0.5)
+        XCTAssertGreaterThanOrEqual(line.bandBottom, attachment.inkRect.maxY - 0.5)
     }
 
     func testMessageRevealCoordinatorUnifiedCrossBlockTimelineAndRevealAll() {

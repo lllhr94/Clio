@@ -99,6 +99,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
 
     private let tileRoot = CALayer()
     private var tileLayers: [CALayer] = []
+    private var lastFrozenTiles: ChatRenderedTiles?
 
     private var selectionTextView: UITextView?
     private var isActivatingSelection = false
@@ -790,8 +791,9 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             return
         }
 
+        let previousFrozenTiles = currentRendered.frozenPrefixLength > 0 ? lastFrozenTiles : nil
         if !wantsRevealTiles {
-            clearTileLayers()
+            clearTileLayers(keepingFrozenPrefix: previousFrozenTiles != nil)
         }
         let requestedToken = currentRendered.renderToken
         let requestWidth = bounds.width
@@ -807,7 +809,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             scale: scale,
             palette: ChatTextRenderPalette.make(style: style),
             includeRevealSnapshot: wantsRevealTiles,
-            sourceRenderToken: requestedToken
+            sourceRenderToken: requestedToken,
+            frozenPrefixLength: currentRendered.frozenPrefixLength,
+            frozenStyleKey: style.styleKey,
+            previousFrozenTiles: previousFrozenTiles
         )
 
         let canRenderSync = currentRendered.attributed.length <= 80 && !currentRendered.decorations.hasAny
@@ -869,6 +874,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             }
         }
         isAwaitingFinalizedTiles = false
+        lastFrozenTiles = rendered.frozenPrefix == nil ? nil : rendered
         activeTileCount = rendered.tiles.count
         appliedRevealSnapshot = rendered.revealSnapshot
         appliedRenderToken = token
@@ -968,7 +974,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         updateAccessibility()
     }
 
-    private func clearTileLayers() {
+    private func clearTileLayers(keepingFrozenPrefix: Bool = false) {
+        if !keepingFrozenPrefix { lastFrozenTiles = nil }
         appliedRenderKey = ""
         appliedRevealSnapshot = nil
         appliedRenderToken = 0
@@ -1156,6 +1163,46 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             && revealMaskCoordinator.snippetHost.activeCount == 0 {
             ChatRevealDisplayDriver.shared.unregister(self)
         }
+    }
+
+    /// Live code has already been laid out. Update only foreground attributes in TextKit.
+    func updateLiveCodeColors(_ attributed: NSAttributedString, animated: Bool) {
+        guard currentIsLive, let textView = selectionTextView,
+              attributed.length == currentRendered.attributed.length,
+              attributed != currentRendered.attributed else { return }
+        let storage = textView.textStorage
+        guard storage.length == attributed.length else { return }
+        if animated, window != nil, !bounds.isEmpty, textView.selectedRange.length == 0 {
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = 0.1
+            layer.add(fade, forKey: "liveCodeColor")
+        }
+        storage.beginEditing()
+        attributed.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: attributed.length)) { color, range, _ in
+            guard let color = color as? UIColor else { return }
+            var existingRange = NSRange()
+            let existingColor = storage.attribute(.foregroundColor, at: range.location, effectiveRange: &existingRange) as? UIColor
+            if existingColor != color || NSMaxRange(existingRange) < NSMaxRange(range) {
+                storage.addAttribute(.foregroundColor, value: color, range: range)
+            }
+        }
+        storage.endEditing()
+        currentRendered = ChatRenderedProse(
+            attributed: attributed,
+            decorations: currentRendered.decorations,
+            topInset: currentRendered.topInset,
+            bottomInset: currentRendered.bottomInset,
+            renderToken: currentRendered.renderToken,
+            hasLinks: currentRendered.hasLinks,
+            liveTailIndex: currentRendered.liveTailIndex,
+            spacingAfter: currentRendered.spacingAfter,
+            frozenPrefixLength: currentRendered.frozenPrefixLength
+        )
+    }
+
+    func cancelLiveCodeColorTransition() {
+        layer.removeAnimation(forKey: "liveCodeColor")
     }
 
     // MARK: - Lazy TextKit 2 Selection TextView

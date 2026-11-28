@@ -93,7 +93,7 @@ public struct IncrementalCodeTokenizer: Equatable, Sendable {
     /// Returns flattened, coalesced segments ready for rendering.
     @discardableResult
     public mutating func update(source: String) -> [CodeTokenSegment] {
-        if revision > 0 && source == lastSource {
+        if revision > 0 && source.utf8.elementsEqual(lastSource.utf8) {
             lastRecomputedLineCount = 0
             return cachedSegments
         }
@@ -127,7 +127,7 @@ public struct IncrementalCodeTokenizer: Equatable, Sendable {
         // Reuse unchanged prefix lines whose raw text matches exactly.
         var prefixCount = 0
         let minCount = min(lines.count, rawLines.count)
-        while prefixCount < minCount && lines[prefixCount].rawLine == rawLines[prefixCount] {
+        while prefixCount < minCount && lines[prefixCount].rawLine.utf8.elementsEqual(rawLines[prefixCount].utf8) {
             prefixCount += 1
         }
 
@@ -145,7 +145,7 @@ public struct IncrementalCodeTokenizer: Equatable, Sendable {
             // If an existing line at the same index has identical text AND identical entry state,
             // we can reuse it directly even after an earlier middle-line edit.
             if idx < lines.count,
-               lines[idx].rawLine == rawLine,
+               lines[idx].rawLine.utf8.elementsEqual(rawLine.utf8),
                lines[idx].entryState == state {
                 let reused = lines[idx]
                 nextLines.append(reused)
@@ -312,7 +312,8 @@ public struct IncrementalCodeTokenizer: Equatable, Sendable {
         return result
     }
 
-    private static func plainSegments(for text: String) -> (segments: [CodeTokenSegment], hasWide: Bool) {
+    /// Partitions plain text by display width without performing a lexical scan.
+    public static func plainSegments(for text: String) -> (segments: [CodeTokenSegment], hasWide: Bool) {
         var segments: [CodeTokenSegment] = []
         var anyWide = false
         appendUTF8Span(text, from: text.startIndex, to: text.endIndex, kind: .plain, into: &segments, anyWide: &anyWide)

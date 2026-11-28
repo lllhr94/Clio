@@ -32,8 +32,18 @@ final class ChatCodeBlockView: UIView {
     private let foldButton = UIButton(type: .system)
     private let foldHairline = UIView()
 
+    private struct LiveCodeHighlight: @unchecked Sendable {
+        let tokenizer: IncrementalCodeTokenizer
+        let attributed: NSAttributedString
+    }
+
+    private var ownerID: String?
     private var currentSlice: ChatCodeSlice?
     private var currentStyle: ChatListStyle?
+    private var highlightTask: Task<Void, Never>?
+    private var liveTokenizer: IncrementalCodeTokenizer?
+    private var lastHighlightedCode: NSAttributedString?
+    private var hasHighlightedLiveCode = false
     private var isUnfolded = false
     private var copiedWork: DispatchWorkItem?
     private var isCopied = false
@@ -102,12 +112,27 @@ final class ChatCodeBlockView: UIView {
         refreshThemeColors()
     }
 
-    func configure(slice: ChatCodeSlice, unfolded: Bool, style: ChatListStyle) {
-        let sameCode = currentSlice?.rawText == slice.rawText
+    func configure(ownerID: String, slice: ChatCodeSlice, unfolded: Bool, style: ChatListStyle) {
+        let sameBlock = self.ownerID == ownerID
             && currentSlice?.isLive == slice.isLive
             && currentSlice?.language == slice.language
+            && currentSlice?.isOutput == slice.isOutput
+            && currentStyle?.styleKey == style.styleKey
+        let sameCode = sameBlock
+            && currentSlice?.rawText.utf16.elementsEqual(slice.rawText.utf16) == true
             && isUnfolded == unfolded
             && currentStyle == style
+        if self.ownerID != ownerID {
+            copiedWork?.cancel()
+            copiedWork = nil
+            isCopied = false
+        }
+        if !sameBlock {
+            resetLiveHighlight()
+        } else if style.reduceMotion || UIAccessibility.isReduceMotionEnabled {
+            codeTextView.cancelLiveCodeColorTransition()
+        }
+        self.ownerID = ownerID
         currentSlice = slice
         currentStyle = style
         isUnfolded = unfolded
@@ -139,7 +164,7 @@ final class ChatCodeBlockView: UIView {
 
             let resolved = slice.resolved(unfolded: unfolded)
             let rendered = ChatRenderedProse(
-                attributed: resolved.attributed,
+                attributed: preservingLiveColors(in: resolved.attributed),
                 decorations: .empty,
                 topInset: 0,
                 bottomInset: 0,
@@ -147,7 +172,7 @@ final class ChatCodeBlockView: UIView {
                 hasLinks: false
             )
             codeTextView.apply(
-                ownerID: selectionOwnerID.uuidString,
+                ownerID: ownerID,
                 rendered: rendered,
                 style: style,
                 isLive: slice.isLive
@@ -158,10 +183,68 @@ final class ChatCodeBlockView: UIView {
                 updateFoldButtonTitle(lineCount: slice.lineCount, unfolded: unfolded)
             }
             updateCopyButtonAppearance()
+            scheduleLiveHighlight()
         }
 
         refreshThemeColors()
         setNeedsLayout()
+    }
+
+    private func scheduleLiveHighlight() {
+        guard highlightTask == nil, let slice = currentSlice, slice.isLive, !slice.isOutput,
+              let style = currentStyle,
+              lastHighlightedCode?.string.utf16.elementsEqual(slice.trimmedText.utf16) != true else { return }
+        let initial = liveTokenizer ?? IncrementalCodeTokenizer(language: slice.language)
+        highlightTask = Task { [weak self] in
+            let work = Task.detached(priority: .userInitiated) { () -> LiveCodeHighlight? in
+                guard !Task.isCancelled else { return nil }
+                var tokenizer = initial
+                let segments = tokenizer.update(source: slice.trimmedText)
+                guard !Task.isCancelled else { return nil }
+                let attributed = ChatCodeHighlighter.liveColors(slice.foldedAttributed, segments: segments, style: style)
+                return LiveCodeHighlight(tokenizer: tokenizer, attributed: attributed)
+            }
+            let result = await withTaskCancellationHandler {
+                await work.value
+            } onCancel: {
+                work.cancel()
+            }
+            guard !Task.isCancelled, let self, let result else { return }
+            self.highlightTask = nil
+            self.liveTokenizer = result.tokenizer
+            guard self.currentSlice?.trimmedText.utf16.elementsEqual(slice.trimmedText.utf16) == true else {
+                // Work on the latest source, skipping any intervening stream snapshots.
+                self.scheduleLiveHighlight()
+                return
+            }
+            self.lastHighlightedCode = result.attributed
+            let hasColors = result.attributed != slice.foldedAttributed
+            let reduced = self.currentStyle?.reduceMotion == true || UIAccessibility.isReduceMotionEnabled
+            self.codeTextView.updateLiveCodeColors(result.attributed, animated: hasColors && !self.hasHighlightedLiveCode && !reduced)
+            self.hasHighlightedLiveCode = self.hasHighlightedLiveCode || hasColors
+        }
+    }
+
+    private func preservingLiveColors(in plain: NSAttributedString) -> NSAttributedString {
+        guard let last = lastHighlightedCode,
+              plain.string.utf16.prefix(last.length).elementsEqual(last.string.utf16) else { return plain }
+        if plain.length == last.length { return last }
+        let attributed = NSMutableAttributedString(attributedString: plain)
+        attributed.beginEditing()
+        last.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: last.length)) { color, range, _ in
+            if let color { attributed.addAttribute(.foregroundColor, value: color, range: range) }
+        }
+        attributed.endEditing()
+        return attributed
+    }
+
+    private func resetLiveHighlight() {
+        highlightTask?.cancel()
+        highlightTask = nil
+        liveTokenizer = nil
+        lastHighlightedCode = nil
+        hasHighlightedLiveCode = false
+        codeTextView.cancelLiveCodeColorTransition()
     }
 
     var hasSelectableText: Bool { codeTextView.hasSelectableText }
@@ -179,6 +262,8 @@ final class ChatCodeBlockView: UIView {
         copiedWork?.cancel()
         copiedWork = nil
         isCopied = false
+        resetLiveHighlight()
+        ownerID = nil
         currentSlice = nil
         lastCopySignature = ""
         lastFoldSignature = ""

@@ -32,6 +32,7 @@ struct ChatRenderedProse: @unchecked Sendable {
     let hasLinks: Bool
     let liveTailIndex: Int?
     let spacingAfter: CGFloat?
+    let frozenPrefixLength: Int
 
     init(
         attributed: NSAttributedString,
@@ -41,7 +42,8 @@ struct ChatRenderedProse: @unchecked Sendable {
         renderToken: UInt64,
         hasLinks: Bool,
         liveTailIndex: Int? = nil,
-        spacingAfter: CGFloat? = nil
+        spacingAfter: CGFloat? = nil,
+        frozenPrefixLength: Int = 0
     ) {
         self.attributed = attributed
         self.decorations = decorations
@@ -51,6 +53,7 @@ struct ChatRenderedProse: @unchecked Sendable {
         self.hasLinks = hasLinks
         self.liveTailIndex = liveTailIndex
         self.spacingAfter = spacingAfter
+        self.frozenPrefixLength = frozenPrefixLength
     }
 
     var isEmpty: Bool { attributed.length == 0 }
@@ -115,6 +118,45 @@ private extension NSAttributedString.Key {
 
 /// Renders tokenized code into an aligned UIKit `NSAttributedString` matching `ProseView`'s colors and CJK alignment.
 enum ChatCodeHighlighter {
+    static func plain(_ text: String, isOutput: Bool, style: ChatListStyle) -> NSAttributedString {
+        let model = IncrementalCodeTokenizer.plainSegments(for: text)
+        return highlight(segments: model.segments, hasWide: model.hasWide, isOutput: isOutput, style: style)
+    }
+
+    /// Keep the exact font and paragraph runs used to measure the live block.
+    static func liveColors(
+        _ plain: NSAttributedString,
+        segments: [CodeTokenSegment],
+        style: ChatListStyle
+    ) -> NSAttributedString {
+        guard segments.contains(where: { $0.kind != .plain }) else { return plain }
+        let colored = NSMutableAttributedString(attributedString: plain)
+        var location = 0
+        colored.beginEditing()
+        for segment in segments {
+            let length = segment.text.utf16.count
+            if segment.kind != .plain {
+                colored.addAttribute(.foregroundColor, value: color(for: segment.kind, style: style),
+                                     range: NSRange(location: location, length: length))
+            }
+            location += length
+        }
+        colored.endEditing()
+        return NSAttributedString(attributedString: colored)
+    }
+
+    private static func color(for kind: CodeTokenKind, style: ChatListStyle) -> UIColor {
+        let colors = style.colors
+        switch kind {
+        case .plain: return colors.ink
+        case .keyword: return colors.codeKeyword
+        case .function: return colors.codeFunction
+        case .number: return colors.codeNumber
+        case .string: return colors.codeString
+        case .comment: return colors.inkFaint
+        }
+    }
+
     static func highlight(
         _ text: String,
         language: String,
@@ -133,23 +175,9 @@ enum ChatCodeHighlighter {
     ) -> NSAttributedString {
         let immutableParagraphStyle = style.metrics.codeBox.makeParagraphStyle()
 
-        let colors = style.colors
-        let outputColor = isOutput ? colors.codeOutput : nil
-        let plainColor = outputColor ?? colors.ink
-        let keywordColor = outputColor ?? colors.codeKeyword
-        let functionColor = outputColor ?? colors.codeFunction
-        let numberColor = outputColor ?? colors.codeNumber
-        let stringColor = outputColor ?? colors.codeString
-        let commentColor = outputColor ?? colors.inkFaint
-        func color(for kind: CodeTokenKind) -> UIColor {
-            switch kind {
-            case .plain: return plainColor
-            case .keyword: return keywordColor
-            case .function: return functionColor
-            case .number: return numberColor
-            case .string: return stringColor
-            case .comment: return commentColor
-            }
+        let outputColor = isOutput ? style.colors.codeOutput : nil
+        func foreground(for kind: CodeTokenKind) -> UIColor {
+            outputColor ?? color(for: kind, style: style)
         }
 
         let fonts = style.fonts
@@ -165,7 +193,7 @@ enum ChatCodeHighlighter {
                 }
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
-                    .foregroundColor: color(for: seg.kind),
+                    .foregroundColor: foreground(for: seg.kind),
                     .paragraphStyle: immutableParagraphStyle,
                 ]))
             }
@@ -174,7 +202,7 @@ enum ChatCodeHighlighter {
                 let font = seg.kind == .comment ? fonts.codePlainItalic : fonts.codePlainRegular
                 out.append(NSAttributedString(string: seg.text, attributes: [
                     .font: font,
-                    .foregroundColor: color(for: seg.kind),
+                    .foregroundColor: foreground(for: seg.kind),
                     .paragraphStyle: immutableParagraphStyle,
                 ]))
             }
@@ -232,13 +260,22 @@ final class ChatProseBuilder: @unchecked Sendable {
         }
     }
 
+    private struct FrozenProseRun {
+        var count = 0
+        var attributed = NSAttributedString()
+        var decorations = ChatBlockDecorations.empty
+        var finishedSlice: ChatRenderedProse?
+    }
+
     private struct StreamScannerEntry: @unchecked Sendable {
+        let identity = UUID()
+        var receivedText = ""
+        var frozenProseRuns: [Int: FrozenProseRun] = [:]
         var scanner: StreamBlocks
         var sealedBlocks: [Prose.Block]
         var sealedStyleKey: String
         var sealedCodeSlices: [Int: ChatCodeSlice] = [:]
         var sealedTableSlices: [Int: ChatTableSlice] = [:]
-        var liveCodeTokenizers: [Int: IncrementalCodeTokenizer] = [:]
     }
 
     private struct RichTextSliceKey: Hashable, Sendable {
@@ -437,7 +474,7 @@ final class ChatProseBuilder: @unchecked Sendable {
         }
 
         enum PendingSegment {
-            case proseRun(blocks: [Prose.Block], isMessageTop: Bool, containsLiveTail: Bool)
+            case proseRun(blocks: [Prose.Block], start: Int, containsLiveTail: Bool)
             case block(Prose.Block, sealedIndex: Int?, isMessageTop: Bool)
         }
 
@@ -446,7 +483,7 @@ final class ChatProseBuilder: @unchecked Sendable {
         var runStartIndex = 0
         func flushRun(containsLiveTail: Bool) {
             if !run.isEmpty {
-                segments.append(.proseRun(blocks: run, isMessageTop: runStartIndex == 0, containsLiveTail: containsLiveTail))
+                segments.append(.proseRun(blocks: run, start: runStartIndex, containsLiveTail: containsLiveTail))
                 run = []
             }
         }
@@ -474,15 +511,22 @@ final class ChatProseBuilder: @unchecked Sendable {
             let isLastSegment = segIndex == segments.count - 1
             let isFollowedBySegment = !isLastSegment
             switch segments[segIndex] {
-            case .proseRun(let runBlocks, let isMessageTop, let containsLiveTail):
+            case .proseRun(let runBlocks, let start, let containsLiveTail):
                 let hasLiveTail = isStreaming && containsLiveTail && isLastSegment
+                let frozenRun: (key: String, identity: UUID, start: Int)?
+                if let streamKey, let identity = parsed.identity, start + runBlocks.count <= sealedCount {
+                    frozenRun = (streamKey, identity, start)
+                } else {
+                    frozenRun = nil
+                }
                 let rendered = buildRichTextSlice(
                     blocks: runBlocks,
                     style: style,
                     isStreaming: hasLiveTail,
-                    isMessageTop: isMessageTop,
+                    isMessageTop: start == 0,
                     isFollowedBySegment: isFollowedBySegment,
-                    liveTailIndex: hasLiveTail ? sealedCount : nil
+                    liveTailIndex: hasLiveTail ? sealedCount : nil,
+                    frozenRun: frozenRun
                 )
                 slices.append(.richText(rendered))
                 sliceIdx += 1
@@ -505,14 +549,11 @@ final class ChatProseBuilder: @unchecked Sendable {
                             language: lang,
                             rawText: codeText,
                             isLive: liveCode,
-                            style: style,
-                            streamKey: streamKey,
-                            sliceIndex: sliceIdx
+                            style: style
                         )
                         if !liveCode, let streamKey, let sealedIndex {
                             scannerLock.lock()
                             streamScanners[streamKey]?.sealedCodeSlices[sealedIndex] = built
-                            streamScanners[streamKey]?.liveCodeTokenizers.removeValue(forKey: sliceIdx)
                             scannerLock.unlock()
                         }
                         slice = built
@@ -608,17 +649,17 @@ final class ChatProseBuilder: @unchecked Sendable {
         isStreaming: Bool,
         streamKey: String?,
         styleKey: String
-    ) -> (blocks: [Prose.Block], sealedCount: Int) {
+    ) -> (blocks: [Prose.Block], sealedCount: Int, identity: UUID?) {
         guard isStreaming else {
             if let streamKey {
                 scannerLock.lock()
                 streamScanners.removeValue(forKey: streamKey)
                 scannerLock.unlock()
             }
-            return (ParsedCache.blocks(rawText), 0)
+            return (ParsedCache.blocks(rawText), 0, nil)
         }
         guard let streamKey else {
-            return (Prose.parse(ProseStreamRepairCore.repair(rawText).repaired), 0)
+            return (Prose.parse(ProseStreamRepairCore.repair(rawText).repaired), 0, nil)
         }
         scannerLock.lock()
         defer { scannerLock.unlock() }
@@ -632,7 +673,7 @@ final class ChatProseBuilder: @unchecked Sendable {
             sealedBlocks: [],
             sealedStyleKey: styleKey
         )
-        if rawText.utf8.count < entry.scanner.receivedBytes {
+        if !rawText.utf8.starts(with: entry.receivedText.utf8) {
             entry = StreamScannerEntry(
                 scanner: StreamBlocks(),
                 sealedBlocks: [],
@@ -641,6 +682,7 @@ final class ChatProseBuilder: @unchecked Sendable {
         }
         if entry.sealedStyleKey != styleKey {
             entry.sealedStyleKey = styleKey
+            entry.frozenProseRuns.removeAll(keepingCapacity: true)
             entry.sealedCodeSlices.removeAll(keepingCapacity: true)
             entry.sealedTableSlices.removeAll(keepingCapacity: true)
         }
@@ -652,13 +694,14 @@ final class ChatProseBuilder: @unchecked Sendable {
                 entry.sealedBlocks.append(contentsOf: ParsedCache.blocks(source))
             }
         }
+        entry.receivedText = rawText
         streamScanners[streamKey] = entry
         if entry.scanner.receivedBytes == 0 {
-            return (Prose.parse(ProseStreamRepairCore.repair(rawText).repaired), 0)
+            return (Prose.parse(ProseStreamRepairCore.repair(rawText).repaired), 0, nil)
         }
         let repairedTail = ProseStreamRepairCore.repair(entry.scanner.tail).repaired
         let tailBlocks = repairedTail.isEmpty ? [] : Prose.parse(repairedTail)
-        return (entry.sealedBlocks + tailBlocks, entry.sealedBlocks.count)
+        return (entry.sealedBlocks + tailBlocks, entry.sealedBlocks.count, entry.identity)
     }
 
     private func isProseRunBlock(_ block: Prose.Block) -> Bool {
@@ -692,9 +735,7 @@ final class ChatProseBuilder: @unchecked Sendable {
         language: String,
         rawText: String,
         isLive: Bool,
-        style: ChatListStyle,
-        streamKey: String? = nil,
-        sliceIndex: Int = 0
+        style: ChatListStyle
     ) -> ChatCodeSlice {
         let cacheKey: CodeSliceKey?
         if !isLive {
@@ -729,33 +770,15 @@ final class ChatProseBuilder: @unchecked Sendable {
             fullSize = nil
             fullToken = nil
         } else {
-            let highlighted: NSAttributedString
-            if isLive, let streamKey {
-                let canonical = IncrementalCodeTokenizer.canonicalLanguage(language)
-                scannerLock.lock()
-                var tokenizer = streamScanners[streamKey]?.liveCodeTokenizers[sliceIndex]
-                if tokenizer == nil || tokenizer?.language != canonical || tokenizer?.isOutput != isOutput {
-                    tokenizer = IncrementalCodeTokenizer(language: canonical, isOutput: isOutput)
-                }
-                let segments = tokenizer!.update(source: body)
-                let hasWide = tokenizer!.hasWide
-                streamScanners[streamKey]?.liveCodeTokenizers[sliceIndex] = tokenizer
-                scannerLock.unlock()
-                highlighted = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(
-                    segments: segments,
-                    hasWide: hasWide,
-                    isOutput: isOutput,
-                    style: style
-                ))
-            } else {
-                highlighted = NSAttributedString(attributedString: ChatCodeHighlighter.highlight(body, language: language, isOutput: isOutput, style: style))
-            }
-            let measuredSize = measureCodeUnwrappedSize(highlighted, knownLineCount: count)
+            let displayed = isLive
+                ? ChatCodeHighlighter.plain(body, isOutput: isOutput, style: style)
+                : ChatCodeHighlighter.highlight(body, language: language, isOutput: isOutput, style: style)
+            let measuredSize = measureCodeUnwrappedSize(displayed, knownLineCount: count)
             let token = allocateRenderToken()
-            foldedAttr = highlighted
+            foldedAttr = displayed
             foldedSize = measuredSize
             foldedToken = token
-            fullAttr = highlighted
+            fullAttr = displayed
             fullSize = measuredSize
             fullToken = token
         }
@@ -1029,10 +1052,11 @@ final class ChatProseBuilder: @unchecked Sendable {
         isStreaming: Bool,
         isMessageTop: Bool = true,
         isFollowedBySegment: Bool = false,
-        liveTailIndex: Int? = nil
+        liveTailIndex: Int? = nil,
+        frozenRun: (key: String, identity: UUID, start: Int)? = nil
     ) -> ChatRenderedProse {
         let sliceCacheKey: RichTextSliceKey?
-        if !isStreaming && liveTailIndex == nil {
+        if frozenRun == nil && !isStreaming && liveTailIndex == nil {
             var keys = blocks.map { cacheKeyString(for: $0) }
             keys.append("meta:\(isMessageTop ? 1 : 0)|\(isFollowedBySegment ? 1 : 0)")
             var hasher = Hasher()
@@ -1046,17 +1070,40 @@ final class ChatProseBuilder: @unchecked Sendable {
             sliceCacheKey = nil
         }
 
-        let out = NSMutableAttributedString()
+        var frozenPrefix = FrozenProseRun()
+        if let frozenRun {
+            scannerLock.lock()
+            if let entry = streamScanners[frozenRun.key], entry.identity == frozenRun.identity,
+               entry.sealedStyleKey == style.styleKey,
+               let cached = entry.frozenProseRuns[frozenRun.start], cached.count < blocks.count {
+                frozenPrefix = cached
+            }
+            scannerLock.unlock()
+        }
+        if let cached = frozenPrefix.finishedSlice, frozenPrefix.count + 1 == blocks.count,
+           (cached.spacingAfter != nil) == isFollowedBySegment {
+            return cached
+        }
+        let out = NSMutableAttributedString(attributedString: frozenPrefix.attributed)
         out.beginEditing()
-        var inlineCodeRanges: [NSRange] = []
-        var quoteBlocks: [NSRange] = []
-        var ruleRanges: [NSRange] = []
+        var inlineCodeRanges = frozenPrefix.decorations.inlineCodeRanges
+        var quoteBlocks = frozenPrefix.decorations.quoteBlocks
+        var ruleRanges = frozenPrefix.decorations.ruleRanges
         let separatorFont = style.fonts.reading.regular
 
-        for index in blocks.indices {
+        for index in frozenPrefix.count..<blocks.count {
             let block = blocks[index]
             let isFirst = isMessageTop && index == 0
             let isLast = index == blocks.count - 1
+            // The last block can change paragraph spacing when it becomes an interior block.
+            if isLast, frozenRun != nil, index > frozenPrefix.count {
+                frozenPrefix = FrozenProseRun(
+                    count: index,
+                    attributed: NSAttributedString(attributedString: out),
+                    decorations: ChatBlockDecorations(inlineCodeRanges: inlineCodeRanges,
+                                                      quoteBlocks: quoteBlocks, ruleRanges: ruleRanges)
+                )
+            }
             let entry = renderedBlock(
                 block,
                 style: style,
@@ -1131,8 +1178,19 @@ final class ChatProseBuilder: @unchecked Sendable {
             renderToken: token,
             hasLinks: Self.containsLinks(immutable),
             liveTailIndex: liveTailIndex,
-            spacingAfter: spacingAfter
+            spacingAfter: spacingAfter,
+            frozenPrefixLength: frozenPrefix.attributed.length
         )
+        if let frozenRun {
+            frozenPrefix.finishedSlice = rendered
+            scannerLock.lock()
+            if let entry = streamScanners[frozenRun.key], entry.identity == frozenRun.identity,
+               entry.sealedStyleKey == style.styleKey,
+               (entry.frozenProseRuns[frozenRun.start]?.count ?? 0) <= frozenPrefix.count {
+                streamScanners[frozenRun.key]?.frozenProseRuns[frozenRun.start] = frozenPrefix
+            }
+            scannerLock.unlock()
+        }
         if let sliceCacheKey {
             richTextSliceCache.set(rendered, for: sliceCacheKey)
         }

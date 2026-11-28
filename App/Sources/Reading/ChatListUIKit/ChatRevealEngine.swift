@@ -186,13 +186,15 @@ struct ChatRevealLineLayout: Equatable, Sendable {
     let utf16Start: Int
     let utf16End: Int
     let units: [ChatRevealAtomicUnit]
+    let frontierEnds: [CGFloat]
 
     var bandHeight: CGFloat { max(0, bandBottom - bandTop) }
     var rawHeight: CGFloat { max(1, rawBottom - rawTop) }
 
     func frontierX(forPoints points: Double, fallbackWidth: CGFloat) -> CGFloat {
         guard !units.isEmpty else { return fallbackWidth }
-        if points <= Double(startPoints) { return max(0, units[0].minX) }
+        let firstInkX = max(0, min(units[0].minX, units[0].inkRect.minX))
+        if points <= Double(startPoints) { return firstInkX }
         if points >= Double(endPoints) { return fallbackWidth }
 
         var low = 0
@@ -206,14 +208,9 @@ struct ChatRevealLineLayout: Equatable, Sendable {
             }
         }
         let unit = units[low]
-        let span = Double(unit.costPoints)
-        let progress: CGFloat
-        if span > 0 {
-            progress = min(1, max(0, CGFloat((points - Double(unit.startPoints)) / span)))
-        } else {
-            progress = 1
-        }
-        return max(0, unit.minX + (unit.maxX - unit.minX) * progress)
+        let progress = min(1, max(0, CGFloat((points - Double(unit.startPoints)) / Double(max(1, unit.costPoints)))))
+        let startX = low == 0 ? firstInkX : frontierEnds[low - 1]
+        return startX + (frontierEnds[low] - startX) * progress
     }
 
     func utf16Offset(forPoints points: Int) -> Int {
@@ -364,16 +361,21 @@ final class ChatRevealLayoutSnapshot: @unchecked Sendable {
         CTFrameGetLineOrigins(ctFrame, CFRange(location: 0, length: 0), &origins)
 
         struct RawLineInfo {
-            let ctLine: CTLine
-            let originX: CGFloat
-            let baselineY: CGFloat
             let rawTop: CGFloat
             let rawBottom: CGFloat
+            let inkTop: CGFloat
+            let inkBottom: CGFloat
+            let startPoints: Int
+            let endPoints: Int
             let utf16Start: Int
             let utf16End: Int
             let hasRTL: Bool
+            let units: [ChatRevealAtomicUnit]
         }
 
+        let nsText = fullText as NSString
+        let layoutBounds = CGRect(x: 0, y: 0, width: safeWidth, height: safeHeight)
+        var cumulativePoints = 0
         var rawLines: [RawLineInfo] = []
         rawLines.reserveCapacity(lineCount)
         for index in 0..<lineCount {
@@ -403,15 +405,35 @@ final class ChatRevealLayoutSnapshot: @unchecked Sendable {
                 }
             }
 
-            rawLines.append(RawLineInfo(
-                ctLine: line,
+            let lineStartPoints = cumulativePoints
+            let units = buildAtomicUnits(
+                line: line,
                 originX: origins[index].x,
                 baselineY: baselineY,
                 rawTop: rawTop,
                 rawBottom: rawBottom,
+                layoutBounds: layoutBounds,
+                nsText: nsText,
+                fullText: fullText,
                 utf16Start: clampedStart,
                 utf16End: clampedEnd,
-                hasRTL: hasRTL
+                startingPoints: &cumulativePoints
+            )
+            var lineInk: CGRect = .null
+            for unit in units where !unit.isWhitespace {
+                lineInk = lineInk.union(unit.inkRect)
+            }
+            rawLines.append(RawLineInfo(
+                rawTop: rawTop,
+                rawBottom: rawBottom,
+                inkTop: lineInk.isNull ? rawTop : max(0, lineInk.minY),
+                inkBottom: lineInk.isNull ? rawBottom : min(safeHeight, lineInk.maxY),
+                startPoints: lineStartPoints,
+                endPoints: cumulativePoints,
+                utf16Start: clampedStart,
+                utf16End: clampedEnd,
+                hasRTL: hasRTL,
+                units: units
             ))
         }
 
@@ -426,58 +448,42 @@ final class ChatRevealLayoutSnapshot: @unchecked Sendable {
             )
         }
 
-        let nsText = fullText as NSString
-        let layoutBounds = CGRect(x: 0, y: 0, width: safeWidth, height: safeHeight)
         var builtLines: [ChatRevealLineLayout] = []
         builtLines.reserveCapacity(rawLines.count)
-        var cumulativePoints = 0
-
         for lineIndex in rawLines.indices {
             let info = rawLines[lineIndex]
-            let bandTop: CGFloat
-            if lineIndex == 0 {
-                bandTop = 0
-            } else {
-                let prevBottom = rawLines[lineIndex - 1].rawBottom
-                let mid = (prevBottom + info.rawTop) * 0.5
-                bandTop = max(builtLines[lineIndex - 1].bandTop + 1, mid)
-            }
-
+            let bandTop = builtLines.last?.bandBottom ?? 0
             let bandBottom: CGFloat
             if lineIndex == rawLines.count - 1 {
                 bandBottom = max(safeHeight, info.rawBottom + bottomInset + 2)
             } else {
-                let nextTop = rawLines[lineIndex + 1].rawTop
-                let mid = (info.rawBottom + nextTop) * 0.5
-                bandBottom = max(bandTop + 1, mid)
+                let next = rawLines[lineIndex + 1]
+                let layoutMidpoint = (info.rawBottom + next.rawTop) * 0.5
+                // Keep the nominal boundary in the gap between visible lines whenever their ink fits.
+                let separator = info.inkBottom <= next.inkTop
+                    ? min(next.inkTop, max(info.inkBottom, layoutMidpoint))
+                    : (info.inkBottom + next.inkTop) * 0.5
+                bandBottom = max(bandTop + 1, separator)
             }
 
-            let lineStartPoints = cumulativePoints
-            let units = buildAtomicUnits(
-                line: info.ctLine,
-                originX: info.originX,
-                baselineY: info.baselineY,
-                rawTop: info.rawTop,
-                rawBottom: info.rawBottom,
-                layoutBounds: layoutBounds,
-                nsText: nsText,
-                fullText: fullText,
-                utf16Start: info.utf16Start,
-                utf16End: info.utf16End,
-                startingPoints: &cumulativePoints
-            )
-
+            // Keep the frontier monotonic when an italic glyph reaches past the next glyph's advance.
+            var rightEdge: CGFloat = 0
+            let frontierEnds = info.units.map { unit in
+                rightEdge = max(rightEdge, unit.maxX, unit.inkRect.maxX)
+                return rightEdge
+            }
             builtLines.append(ChatRevealLineLayout(
                 bandTop: bandTop,
                 bandBottom: bandBottom,
                 rawTop: info.rawTop,
                 rawBottom: info.rawBottom,
                 hasRTL: info.hasRTL,
-                startPoints: lineStartPoints,
-                endPoints: cumulativePoints,
+                startPoints: info.startPoints,
+                endPoints: info.endPoints,
                 utf16Start: info.utf16Start,
                 utf16End: info.utf16End,
-                units: units
+                units: info.units,
+                frontierEnds: frontierEnds
             ))
         }
 
@@ -535,11 +541,6 @@ final class ChatRevealLayoutSnapshot: @unchecked Sendable {
             CTRunGetPositions(run, CFRangeMake(0, 0), &positions)
             CTRunGetAdvances(run, CFRangeMake(0, 0), &advances)
 
-            var runAscent: CGFloat = 0
-            var runDescent: CGFloat = 0
-            var runLeading: CGFloat = 0
-            _ = CTRunGetTypographicBounds(run, CFRangeMake(0, 0), &runAscent, &runDescent, &runLeading)
-
             let runRange = CTRunGetStringRange(run)
             let runEnd = min(utf16End, max(utf16Start, runRange.location + runRange.length))
 
@@ -559,33 +560,32 @@ final class ChatRevealLayoutSnapshot: @unchecked Sendable {
                     }
                 }
 
-                let imgBounds = CTRunGetImageBounds(run, nil, CFRangeMake(g, 1))
+                let glyphRange = CFRangeMake(g, 1)
+                let imageBounds: CGRect = hasAttachment ? .null : CTRunGetImageBounds(run, nil, glyphRange)
                 let adv = max(0, advances[g].width)
-                let typoMinX = originX + positions[g].x
-                let typoMaxX = typoMinX + adv
-                let typoMinY = max(0, baselineY - max(runAscent, baselineY - rawTop))
-                let typoMaxY = max(typoMinY + 1, baselineY + max(runDescent, rawBottom - baselineY))
-
                 let glyphRect: CGRect
-                if !imgBounds.isNull && !imgBounds.isEmpty && imgBounds.width.isFinite && imgBounds.height.isFinite {
-                    // CTRunGetImageBounds is in CoreText Y-up line coordinates; convert to view Y-down coordinates.
-                    let inkMinX = min(typoMinX, originX + imgBounds.minX)
-                    let inkMaxX = max(typoMaxX, originX + imgBounds.maxX)
-                    let inkMinY = min(typoMinY, baselineY - imgBounds.maxY)
-                    let inkMaxY = max(typoMaxY, baselineY - imgBounds.minY)
+                if !imageBounds.isNull, !imageBounds.isEmpty,
+                   imageBounds.minX.isFinite, imageBounds.minY.isFinite,
+                   imageBounds.maxX.isFinite, imageBounds.maxY.isFinite {
+                    // The run's image bounds use the line origin and Core Text's Y-up coordinates.
                     glyphRect = CGRect(
-                        x: max(0, inkMinX),
-                        y: max(0, inkMinY),
-                        width: max(1, inkMaxX - max(0, inkMinX)),
-                        height: max(1, inkMaxY - max(0, inkMinY))
+                        x: originX + imageBounds.minX,
+                        y: baselineY - imageBounds.maxY,
+                        width: imageBounds.width,
+                        height: imageBounds.height
+                    )
+                } else if hasAttachment {
+                    var ascent: CGFloat = 0
+                    var descent: CGFloat = 0
+                    _ = CTRunGetTypographicBounds(run, glyphRange, &ascent, &descent, nil)
+                    glyphRect = CGRect(
+                        x: originX + positions[g].x,
+                        y: baselineY - positions[g].y - ascent,
+                        width: max(1, adv),
+                        height: max(1, ascent + descent)
                     )
                 } else {
-                    glyphRect = CGRect(
-                        x: max(0, typoMinX),
-                        y: typoMinY,
-                        width: max(1, typoMaxX - max(0, typoMinX)),
-                        height: max(1, typoMaxY - typoMinY)
-                    )
+                    glyphRect = .null
                 }
 
                 let spanLen = max(1, nextLoc - startLoc)
@@ -624,13 +624,14 @@ final class ChatRevealLayoutSnapshot: @unchecked Sendable {
             var advance = maxX - minX
 
             var combinedInk: CGRect = .null
-            var hasAttachment = false
+            // A plain object replacement character can survive even when attribute metadata is missing.
+            var hasAttachment = (atomicRange.location..<rangeEnd).contains { nsText.character(at: $0) == 0xFFFC }
             var matchedAdvance: CGFloat = 0
             for metric in glyphMetrics {
                 let mStart = metric.stringRange.location
                 let mEnd = mStart + metric.stringRange.length
                 if mStart < rangeEnd && mEnd > atomicRange.location {
-                    combinedInk = combinedInk.isNull ? metric.inkRect : combinedInk.union(metric.inkRect)
+                    combinedInk = combinedInk.union(metric.inkRect)
                     matchedAdvance += metric.advance
                     if metric.hasAttachment { hasAttachment = true }
                 }
@@ -650,10 +651,7 @@ final class ChatRevealLayoutSnapshot: @unchecked Sendable {
                     height: max(1, rawBottom - rawTop)
                 )
             }
-            let clampedBleed = resolvedInk
-                .insetBy(dx: -bleed, dy: -bleed)
-                .intersection(layoutBounds)
-            let finalBleed = clampedBleed.isEmpty ? resolvedInk.intersection(layoutBounds) : clampedBleed
+            let finalBleed = resolvedInk.insetBy(dx: -bleed, dy: -bleed).intersection(layoutBounds)
 
             let isWhitespace: Bool
             if let swiftRange = Range(atomicRange, in: fullText) {
@@ -857,7 +855,15 @@ enum ChatRevealSnippetPlanner {
         let remainingSlots = max(0, maxPoolSize - activeCount)
         guard remainingSlots > 0 else { return [] }
 
-        let eligible = units.filter { !$0.isWhitespace && !$0.hasInlineAttachment && $0.bleedRect.width > 0.5 && $0.bleedRect.height > 0.5 }
+        var segment = 0
+        let eligible = units.compactMap { unit -> (unit: ChatRevealAtomicUnit, segment: Int)? in
+            if unit.hasInlineAttachment {
+                segment += 1
+                return nil
+            }
+            guard !unit.isWhitespace, unit.bleedRect.width > 0.5, unit.bleedRect.height > 0.5 else { return nil }
+            return (unit, segment)
+        }
         guard !eligible.isEmpty else { return [] }
 
         let batchSize: Int
@@ -876,18 +882,20 @@ enum ChatRevealSnippetPlanner {
         var cursor = 0
         while cursor < eligible.count && batches.count < remainingSlots {
             let groupEnd = min(eligible.count, cursor + batchSize)
-            var mergedRect = eligible[cursor].bleedRect
-            var startPts = eligible[cursor].startPoints
-            var endPts = eligible[cursor].endPoints
+            let first = eligible[cursor]
+            var mergedRect = first.unit.bleedRect
+            let startPts = first.unit.startPoints
+            var endPts = first.unit.endPoints
             var lastValidIdx = cursor
 
             if groupEnd > cursor + 1 {
                 for nextIdx in (cursor + 1)..<groupEnd {
-                    let candidateRect = mergedRect.union(eligible[nextIdx].bleedRect)
+                    let next = eligible[nextIdx]
+                    guard next.segment == first.segment else { break }
+                    let candidateRect = mergedRect.union(next.unit.bleedRect)
                     if tileSlice(for: candidateRect, tiles: tiles, scale: scale) != nil {
                         mergedRect = candidateRect
-                        startPts = min(startPts, eligible[nextIdx].startPoints)
-                        endPts = max(endPts, eligible[nextIdx].endPoints)
+                        endPts = next.unit.endPoints
                         lastValidIdx = nextIdx
                     } else {
                         break

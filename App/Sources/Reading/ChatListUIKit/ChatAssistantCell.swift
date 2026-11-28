@@ -1072,9 +1072,10 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
                 cb.onSelectionActiveChanged = { [weak self] uuid, active in
                     self?.callbacks.onSelectionChanged(uuid, active)
                 }
-                cb.configure(slice: codeSlice, unfolded: unfoldedSlices.contains(sliceIndex), style: style)
+                let codeOwnerID = "\(lineID)#code\(sliceIndex)"
+                cb.configure(ownerID: codeOwnerID, slice: codeSlice, unfolded: unfoldedSlices.contains(sliceIndex), style: style)
                 nextRevealBindings.append(RevealSliceBinding(
-                    id: "\(lineID)#code\(sliceIndex)",
+                    id: codeOwnerID,
                     kind: .code,
                     view: cb,
                     richTextView: nil,

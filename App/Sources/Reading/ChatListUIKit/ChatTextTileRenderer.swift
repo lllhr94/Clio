@@ -52,6 +52,47 @@ struct ChatTextRenderRequest: @unchecked Sendable {
     let palette: ChatTextRenderPalette
     var includeRevealSnapshot: Bool = false
     var sourceRenderToken: UInt64 = 0
+    var frozenPrefixLength = 0
+    var frozenStyleKey: String? = nil
+    var previousFrozenTiles: ChatRenderedTiles? = nil
+}
+
+/// Geometry checked alongside source equality before retaining any old bitmap.
+struct ChatFrozenTilePrefix: @unchecked Sendable {
+    struct Line: Equatable {
+        let range: NSRange
+        let origin: CGPoint
+        let ascent: CGFloat
+        let descent: CGFloat
+        let inkTop: CGFloat
+    }
+
+    let text: NSAttributedString
+    let decorations: ChatBlockDecorations
+    let lines: [Line]
+    let boundaryY: CGFloat
+    let styleKey: String
+    let width: CGFloat
+    let scale: CGFloat
+
+    func reusableBottom(comparedWith previous: ChatFrozenTilePrefix, padding: CGFloat) -> CGFloat {
+        guard styleKey == previous.styleKey, width == previous.width, scale == previous.scale,
+              previous.text.length <= text.length,
+              text.attributedSubstring(from: NSRange(location: 0, length: previous.text.length)).isEqual(to: previous.text),
+              decorations.prefix(through: previous.text.length) == previous.decorations,
+              lines.starts(with: previous.lines) else { return 0 }
+        // New ink and quote fill may start above the next line's baseline.
+        let nextTop = lines.dropFirst(previous.lines.count).first?.inkTop ?? boundaryY
+        return max(0, min(previous.boundaryY, nextTop) - padding)
+    }
+}
+
+private extension ChatBlockDecorations {
+    func prefix(through end: Int) -> ChatBlockDecorations {
+        ChatBlockDecorations(inlineCodeRanges: inlineCodeRanges.filter { NSMaxRange($0) <= end },
+                             quoteBlocks: quoteBlocks.filter { NSMaxRange($0) <= end },
+                             ruleRanges: ruleRanges.filter { NSMaxRange($0) <= end })
+    }
 }
 
 /// Rasterized vertical tile strip backed by premultiplied BGRA8888 `CGImage` slices.
@@ -59,15 +100,18 @@ final class ChatRenderedTiles: @unchecked Sendable {
     let tiles: [(y: CGFloat, height: CGFloat, image: CGImage)]
     let totalBytes: Int
     let revealSnapshot: ChatRevealLayoutSnapshot?
+    let frozenPrefix: ChatFrozenTilePrefix?
 
     init(
         tiles: [(y: CGFloat, height: CGFloat, image: CGImage)],
         totalBytes: Int,
-        revealSnapshot: ChatRevealLayoutSnapshot? = nil
+        revealSnapshot: ChatRevealLayoutSnapshot? = nil,
+        frozenPrefix: ChatFrozenTilePrefix? = nil
     ) {
         self.tiles = tiles
         self.totalBytes = totalBytes
         self.revealSnapshot = revealSnapshot
+        self.frozenPrefix = frozenPrefix
     }
 }
 
@@ -522,6 +566,14 @@ final class ChatTextTileRenderer: @unchecked Sendable {
             }
         }
 
+        let frozenPrefix = makeFrozenPrefix(req, frame: ctFrame, textHeight: textHeight, scale: scale)
+        let reusableBottom: CGFloat
+        if let frozenPrefix, let previous = req.previousFrozenTiles?.frozenPrefix {
+            reusableBottom = frozenPrefix.reusableBottom(comparedWith: previous, padding: req.palette.quotePadV + 2)
+        } else {
+            reusableBottom = 0
+        }
+
         let hasDecorations = !quoteDrawItems.isEmpty || !inlineCodeRects.isEmpty || !ruleRects.isEmpty
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
@@ -537,6 +589,16 @@ final class ChatTextTileRenderer: @unchecked Sendable {
             let rawTileH = min(maxTileHeight, remaining)
             let pixelH = max(1, Int((rawTileH * scale).rounded(.up)))
             let tileDisplayH = CGFloat(pixelH) / scale
+            if tileY + tileDisplayH <= reusableBottom, let previous = req.previousFrozenTiles,
+               tiles.count < previous.tiles.count {
+                let old = previous.tiles[tiles.count]
+                if old.y == tileY, old.height == tileDisplayH, old.image.width == pixelW {
+                    tiles.append(old)
+                    totalBytes += old.image.bytesPerRow * old.image.height
+                    tileY += tileDisplayH
+                    continue
+                }
+            }
 
             guard let ctx = CGContext(
                 data: nil,
@@ -639,6 +701,42 @@ final class ChatTextTileRenderer: @unchecked Sendable {
                 sourceRenderToken: req.sourceRenderToken
             )
             : nil
-        return ChatRenderedTiles(tiles: tiles, totalBytes: totalBytes, revealSnapshot: revealSnapshot)
+        return ChatRenderedTiles(tiles: tiles, totalBytes: totalBytes, revealSnapshot: revealSnapshot,
+                                 frozenPrefix: frozenPrefix)
+    }
+
+    private nonisolated static func makeFrozenPrefix(
+        _ req: ChatTextRenderRequest, frame: CTFrame, textHeight: CGFloat, scale: CGFloat
+    ) -> ChatFrozenTilePrefix? {
+        let length = req.frozenPrefixLength
+        guard req.height > maxTileHeight, length > 0, length <= req.attributed.length,
+              let styleKey = req.frozenStyleKey else { return nil }
+        let sourceLines = CTFrameGetLines(frame)
+        let count = CFArrayGetCount(sourceLines)
+        var origins = [CGPoint](repeating: .zero, count: count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+        var lines: [ChatFrozenTilePrefix.Line] = []
+        var boundaryY = req.height
+        for index in 0..<count {
+            let line = unsafeBitCast(CFArrayGetValueAtIndex(sourceLines, index), to: CTLine.self)
+            let range = CTLineGetStringRange(line)
+            guard range.location != kCFNotFound else { return nil }
+            var ascent: CGFloat = 0
+            var descent: CGFloat = 0
+            _ = CTLineGetTypographicBounds(line, &ascent, &descent, nil)
+            let origin = CGPoint(x: origins[index].x, y: req.topInset + textHeight - origins[index].y)
+            let ink = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+            let inkTop = origin.y - max(ascent, ink.maxY.isFinite ? ink.maxY : 0)
+            if range.location + range.length > length {
+                boundaryY = inkTop
+                break
+            }
+            lines.append(.init(range: NSRange(location: range.location, length: range.length), origin: origin,
+                               ascent: ascent, descent: descent, inkTop: inkTop))
+        }
+        guard boundaryY > maxTileHeight, !lines.isEmpty else { return nil }
+        return ChatFrozenTilePrefix(text: req.attributed.attributedSubstring(from: NSRange(location: 0, length: length)),
+                                    decorations: req.decorations.prefix(through: length), lines: lines,
+                                    boundaryY: boundaryY, styleKey: styleKey, width: req.width, scale: scale)
     }
 }

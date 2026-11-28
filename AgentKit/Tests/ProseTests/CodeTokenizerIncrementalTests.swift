@@ -203,6 +203,31 @@ final class CodeTokenizerIncrementalTests: XCTestCase {
         XCTAssertTrue(res.segments.contains { $0.isWide && $0.text == "中文" })
     }
 
+    func testCanonicalEquivalenceDoesNotReuseStaleUTF16Offsets() {
+        let previous = "// caf\u{00E9}\nlet count = 1"
+        let updated = "// cafe\u{0301}\nlet count = 1"
+        XCTAssertEqual(previous, updated)
+        XCTAssertNotEqual(previous.utf16.count, updated.utf16.count)
+
+        var tokenizer = IncrementalCodeTokenizer(language: "swift")
+        _ = tokenizer.update(source: previous)
+        let segments = tokenizer.update(source: updated)
+        XCTAssertEqual(Array(joinedText(segments).utf16), Array(updated.utf16))
+        XCTAssertEqual(tokenizer.lastRecomputedLineCount, 1)
+    }
+
+    func testCoalescedAppendKeepsMultilineStateBeyondCheckpointWindow() {
+        let prefix = "/* open\n" + String(repeating: "inside comment\n", count: 64)
+        let suffix = String(repeating: "still inside\n", count: 36) + "*/\nlet answer = 42"
+        var tokenizer = IncrementalCodeTokenizer(language: "swift")
+        _ = tokenizer.update(source: prefix)
+        let segments = tokenizer.update(source: prefix + suffix)
+
+        let fresh = IncrementalCodeTokenizer.tokenize(prefix + suffix, language: "swift", isOutput: false)
+        XCTAssertEqual(segments, fresh.segments)
+        XCTAssertEqual(tokenizer.lastRecomputedLineCount, 38)
+    }
+
     func testIncrementalStreamingPerformanceSanity() {
         var tok = IncrementalCodeTokenizer(language: "swift")
         var buf = ""
