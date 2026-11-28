@@ -1557,6 +1557,25 @@ struct MessageRevealTimeline: Equatable, Sendable {
     static func estimatedTextWeight(attributedLength: Int, fontSize: CGFloat) -> Int {
         max(1, Int((Double(max(1, attributedLength)) * Double(max(10, fontSize)) * 0.72).rounded()))
     }
+
+    /// Script-aware glyph-width point estimator matching CoreText CJK (~1.0em) vs Latin (~0.56em) advances closely
+    /// so freshly merged sealed slices never severely underestimate total points before their async tile returns.
+    static func estimatedTextWeight(text: String, fontSize: CGFloat) -> Int {
+        guard !text.isEmpty else { return 1 }
+        let em = Double(max(10, fontSize))
+        var total: Double = 0
+        for scalar in text.unicodeScalars {
+            let v = scalar.value
+            if scalar.properties.isWhitespace {
+                total += min(4.0, em * 0.22)
+            } else if (0x2E80...0x9FFF).contains(v) || (0xAC00...0xD7AF).contains(v) || (0xFF00...0xFFEF).contains(v) || (0x3000...0x303F).contains(v) {
+                total += em
+            } else {
+                total += em * 0.56
+            }
+        }
+        return max(1, Int(total.rounded()))
+    }
 }
 
 /// Message-level reveal coordinator driving one global monotonic cursor across every slice in a reply.
@@ -1652,7 +1671,9 @@ final class MessageRevealCoordinator {
         if nextTimeline.totalPoints > prevTotal {
             updateCount += 1
         }
-        if cursorPoints > Double(nextTimeline.totalPoints) {
+        // Never rewind cursorPoints backward during live streaming when a freshly merged slice temporarily
+        // uses an estimated weight before its exact CoreText snapshot arrives; only clamp when finalizing or empty.
+        if (!isLive || nextTimeline.totalPoints == 0) && cursorPoints > Double(nextTimeline.totalPoints) {
             cursorPoints = Double(nextTimeline.totalPoints)
         }
 

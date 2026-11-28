@@ -206,4 +206,36 @@ final class Batch2BMotionScrollRepairAppTests: XCTestCase {
         XCTAssertTrue(fwdDecision.wroteOffset)
         XCTAssertEqual(fwdDecision.targetOffsetY ?? 0, 474.0, accuracy: 0.5)
     }
+
+    func testMessageRevealCoordinatorNeverRewindsWhenTailSliceMergesIntoSealedSlice() {
+        // Before seal: rt0 (102pt) + rt1 (300pt), cursor is mid-way through rt1 at 380pt.
+        let coord = MessageRevealCoordinator(
+            slices: [
+                .init(id: "s#rt0", kind: .richText, weightPoints: 102),
+                .init(id: "s#rt1", kind: .richText, weightPoints: 300),
+            ],
+            initialCursorPoints: 380,
+            finalizeImmediately: false,
+            pace: .balanced,
+            now: 1.0
+        )
+
+        // Seal event: rt1 merges into rt0, tail temporarily withheld, rt0's estimate is momentarily 360pt (< 380pt).
+        coord.update(
+            slices: [.init(id: "s#rt0", kind: .richText, weightPoints: 360)],
+            isLive: true,
+            pace: .balanced,
+            now: 1.02
+        )
+        XCTAssertGreaterThanOrEqual(coord.cursorPoints, 380.0, "Live stream merge must never rewind cursor backward")
+
+        // Exact CoreText tile returns (580pt): reveal continues monotonically from >= 380pt, never re-playing from 102pt!
+        coord.update(
+            slices: [.init(id: "s#rt0", kind: .richText, weightPoints: 580)],
+            isLive: true,
+            pace: .balanced,
+            now: 1.04
+        )
+        XCTAssertGreaterThanOrEqual(coord.cursorPoints, 380.0)
+    }
 }

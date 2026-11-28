@@ -84,6 +84,7 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         let richTextView: ChatRichTextView?
         let expectedHeight: CGFloat
         let attributedLength: Int
+        var textSample: String = ""
     }
 
     private var messageRevealCoordinator: MessageRevealCoordinator?
@@ -495,10 +496,15 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
             let weight: Int
             if let tv = binding.richTextView {
                 weight = tv.revealSnapshotTotalPoints
-                    ?? MessageRevealTimeline.estimatedTextWeight(
-                        attributedLength: binding.attributedLength,
-                        fontSize: style.readingSize
-                    )
+                    ?? (binding.textSample.isEmpty
+                        ? MessageRevealTimeline.estimatedTextWeight(
+                            attributedLength: binding.attributedLength,
+                            fontSize: style.readingSize
+                        )
+                        : MessageRevealTimeline.estimatedTextWeight(
+                            text: binding.textSample,
+                            fontSize: style.readingSize
+                        ))
             } else {
                 weight = MessageRevealTimeline.blockWeight(forHeight: binding.expectedHeight)
             }
@@ -1023,7 +1029,8 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
                     view: tv,
                     richTextView: tv,
                     expectedHeight: measured.height,
-                    attributedLength: rendered.attributed.length
+                    attributedLength: rendered.attributed.length,
+                    textSample: rendered.attributed.string
                 ))
                 rtIndex += 1
 
@@ -1142,7 +1149,8 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
                         view: tv,
                         richTextView: tv,
                         expectedHeight: measured.height,
-                        attributedLength: words.attributed.length
+                        attributedLength: words.attributed.length,
+                        textSample: words.attributed.string
                     ))
                     rtIndex += 1
                 }

@@ -29,7 +29,11 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     var hasPaintedLiveTail: Bool { currentIsLiveTail && appliedRenderToken != 0 }
 
     var revealSnapshotTotalPoints: Int? {
-        appliedRevealSnapshot?.totalPoints
+        guard let snap = appliedRevealSnapshot,
+              snap.sourceRenderToken == currentRendered.renderToken else {
+            return nil
+        }
+        return snap.totalPoints
     }
 
     var hasActiveFlyingSnippets: Bool {
@@ -159,6 +163,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
     private var isExternallyRevealControlled = false
     private var externalRevealState: MessageRevealTimeline.SliceRevealState = .complete
     private var lastExternalLocalPoints: Double = 0
+    private var lastExternalSnapshotToken: UInt64 = 0
     private var hasAppliedExternalRevealBaseline = false
     private var lastAppliedBoundsWidth: CGFloat = 0
 
@@ -523,6 +528,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         isExternallyRevealControlled = false
         externalRevealState = .complete
         lastExternalLocalPoints = 0
+        lastExternalSnapshotToken = 0
         hasAppliedExternalRevealBaseline = false
         teardownReveal()
     }
@@ -543,6 +549,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         switch externalRevealState {
         case .hidden:
             lastExternalLocalPoints = 0
+            lastExternalSnapshotToken = 0
             hasAppliedExternalRevealBaseline = true
             revealMaskCoordinator.clearFlyingSnippets()
             revealMaskCoordinator.lockMaskBeforeTileContents(
@@ -563,12 +570,19 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 return
             }
             let clampedLocal = min(Double(snap.totalPoints), max(0, localPoints))
+            let snapshotChanged = snap.sourceRenderToken != lastExternalSnapshotToken
+            lastExternalSnapshotToken = snap.sourceRenderToken
             let newlyRevealed: [(lineHasRTL: Bool, units: [ChatRevealAtomicUnit])]
             if !hasAppliedExternalRevealBaseline {
                 // First sample after a live->settled handoff seeds the baseline without re-spawning
                 // flying snippets for glyphs that were already visible prior to handoff.
                 hasAppliedExternalRevealBaseline = true
                 lastExternalLocalPoints = clampedLocal
+                newlyRevealed = []
+            } else if snapshotChanged && (clampedLocal - lastExternalLocalPoints) > 36 {
+                // Sealed slice absorbed a previously visible tail slice (e.g. rt1 merged into rt0):
+                // advance baseline silently so already-visible text stays rock-solid with zero re-animation.
+                lastExternalLocalPoints = max(lastExternalLocalPoints, clampedLocal)
                 newlyRevealed = []
             } else {
                 let prev = min(lastExternalLocalPoints, clampedLocal)
@@ -631,6 +645,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         isExternallyRevealControlled = false
         externalRevealState = .complete
         lastExternalLocalPoints = 0
+        lastExternalSnapshotToken = 0
         hasAppliedExternalRevealBaseline = false
         lastAppliedBoundsWidth = 0
         lastRenderToken = 0
