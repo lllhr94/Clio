@@ -246,6 +246,12 @@ final class SubtaskManager: ObservableObject {
             team.ephemeralPlaces.removeValue(forKey: executionKey)
             team.hostBindings.remove(for: executionKey)
             team.approvalReceipts.clear(executionChat: executionKey)
+            team.taint.reset(executionKey)
+            team.resetTurnMemoryTaint(executionKey)
+            team.toolTails.removeValue(forKey: executionKey)
+            team.clearPlan(executionKey)
+            team.browser.release(executionKey)
+            Snapshots.shared.forget(executionKey)
             if runningTasks[threadID]?.attemptID == executionKey {
                 runningTasks.removeValue(forKey: threadID)
             }
@@ -320,11 +326,13 @@ final class SubtaskManager: ObservableObject {
         let planTail = attempt.inheritedPlanMode
             ? "\n当前父对话处于「规划模式 · 只看不动」，你仅限只读调研与方案梳理，禁止写入文件、执行命令、修改记忆或调用外部扩展。"
             : ""
+        let parentUsesMemory = !team.options(parentChat).off.contains(Grant.memory.rawValue) && Grant.memory.policy != .off
         let (refresher, refresherToken) = team.registerLivePromptRefresher(
             for: helper,
+            in: parentChat,
             room: nil,
             workplace: workplace,
-            memory: true,
+            memory: parentUsesMemory,
             extraTail: "这是来自\(asker.name)的异步后台子任务（独立线程 \(threadID)）。请专注完成并将结论整理清楚。" + planTail
         )
         defer { team.unregisterLivePromptRefresher(refresherToken) }

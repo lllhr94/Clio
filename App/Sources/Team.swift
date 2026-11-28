@@ -58,6 +58,8 @@ struct Approval: Identifiable, Equatable {
     var answerable: Bool?
     /// Asked because the turn read the web: no standing permission covers it.
     var forced: Bool?
+    /// True ONLY when `forced` came solely from `TaintGuard` for a non-hard-exit tool (never a tool's own `forced: true`).
+    var forcedByTaintOnly: Bool = false
     /// Verified read-only safe under `PlanModeReadOnlyPolicy` when this approval was created.
     var planReadOnlySafe: Bool? = nil
 
@@ -2051,12 +2053,19 @@ final class TeamModel: ObservableObject {
         }.value
         guard !Task.isCancelled, epochs[key, default: 0] == epoch else { return false }
         guard messages.contains(where: { $0.role == .user }) else { return false }
-        // Web text read in an earlier turn is still in what the model reads now: the turn starts marked.
-        if context.hasUntrustedMediaNotes || messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) {
-            taint.mark(key)
-        }
+        // Web/external text read in an earlier turn (including before an app cold restart) is still in what the model
+        // reads now: restore BOTH `taint` (TaintGuard) and `turnMemoryTaint` conservatively from persisted history & summary.
         let summaryIsTainted = summary(key) != nil && isSummaryTainted(key)
-        if taint.isTainted(key) || context.hasTaintedHistory || summaryIsTainted { markTurnMemoryTainted(key) }
+        let persistedHistoryTainted = restoreTaintFromPersistedHistoryIfNeeded(for: key)
+        if context.hasUntrustedMediaNotes
+            || context.hasTaintedHistory
+            || summaryIsTainted
+            || persistedHistoryTainted
+            || messages.contains(where: { $0.role == .tool && Taint.reads($0.toolName ?? "") }) {
+            taint.mark(key)
+            markTurnMemoryTainted(key)
+        }
+        if taint.isTainted(key) { markTurnMemoryTainted(key) }
         let botId = bot.id
         let speaker = room == nil ? nil : botId
         let usesMemory = !options(key).off.contains(Grant.memory.rawValue)
@@ -2148,7 +2157,15 @@ final class TeamModel: ObservableObject {
             tools: turnTools,
             approve: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: key, workplace: workplace) ?? false }
         )
-        agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
+        if !isPlanModeActive(for: key) {
+            agent.renderReplyImages = { [weak self] images in
+                let blocked = await MainActor.run { self?.isPlanModeActive(for: key) ?? false }
+                if blocked {
+                    throw ProviderError(Words.t("当前处于规划模式（只看不动），已阻止将生成的图片写入书案。"))
+                }
+                return try await WorkspaceImages.reply(images)
+            }
+        }
         agent.prepareToolResult = { [weak self] result in
             await self?.prepareToolImageResult(result, chat: key, epoch: epoch) ?? result
         }
@@ -2845,6 +2862,22 @@ final class TeamModel: ObservableObject {
         )
     }
 
+    /// Restores in-memory `TaintBook` and turn-memory taint after an app cold restart whenever persisted
+    /// history entries or the compressed summary carry untrusted external reads or explicit taint marks.
+    @discardableResult
+    func restoreTaintFromPersistedHistoryIfNeeded(for key: String) -> Bool {
+        let hasPersistedTaint = (summary(key) != nil && isSummaryTainted(key))
+            || live(key).contains(where: { entry in
+                entry.tainted == true
+                    || (entry.message.role == .tool && Taint.reads(entry.message.toolName ?? ""))
+            })
+        if hasPersistedTaint {
+            taint.mark(key)
+            markTurnMemoryTainted(key)
+        }
+        return hasPersistedTaint
+    }
+
     func tools(
         for bot: BotInfo,
         key: String,
@@ -2858,7 +2891,8 @@ final class TeamModel: ObservableObject {
         channelPass: ChannelPassTool? = nil
     ) -> [AgentTool] {
         let botId = bot.id
-        let approvalChat = displayChat ?? key
+        let policyChat = displayChat ?? key
+        let approvalChat = policyChat
         var all: [AgentTool] = [WebSearchTool(), WebReadTool(), WeatherTool()]
         // Asking another companion: from one's own conversation only, and one level deep (a helper does not pass work on).
         let others = bots.filter { $0.id != botId }
@@ -2877,11 +2911,16 @@ final class TeamModel: ObservableObject {
                 return await self.delegate(from: botId, to: name, task: task, chat: key)
             })
         }
-        all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
-        all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
+        if !helping {
+            all.append(RememberTool { [weak self] fact in await self?.remember(fact, by: botId) })
+            all.append(ForgetTool { [weak self] about in await self?.forget(about: about) ?? [] })
+        }
         all.append(RecallTool { [weak self] words in
             guard let self else { return [] }
-            return await self.recall(words, chat: key)
+            if helping {
+                return await self.recallReadOnly(words)
+            }
+            return await self.recall(words, chat: policyChat)
         })
         let effectiveExperienceSource: ExperienceWriteSource = helping ? .subtask : experienceSource
         all.append(RecordExperienceTool(source: effectiveExperienceSource) { title, content, tags, source in
@@ -2908,14 +2947,14 @@ final class TeamModel: ObservableObject {
             }
         })
         all.append(SearchHistoryTool(helping: helping) { [weak self] query, includeAllChats, limit in
-            await self?.searchHistory(query: query, chatKey: key, includeAllChats: includeAllChats, helping: helping, limit: limit)
+            await self?.searchHistory(query: query, chatKey: policyChat, includeAllChats: includeAllChats, helping: helping, limit: limit)
                 ?? "当前无法检索历史记录。"
         })
         all.append(CalendarListTool())
         all.append(CalendarAddTool())
         all.append(RemindersListTool())
         all.append(ReminderAddTool())
-        all.append(LaterTool(botName: bot.name) { [weak self] text, at in await self?.later(text, at: at, bot: botId, chat: key) })
+        all.append(LaterTool(botName: bot.name) { [weak self] text, at in await self?.later(text, at: at, bot: botId, chat: policyChat) })
         all += RoutineTools.all(team: self, botId: botId)
         if !SkillShelf.enabled.isEmpty { all.append(UseSkillTool()) }
         all += RoamTools.all(browser, canSee: canSee, chat: key)
@@ -2972,7 +3011,7 @@ final class TeamModel: ObservableObject {
         var grants: [String: Grant] = [:]
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
         grants["image_note"] = workplace.grant(for: "view_image")
-        let off = Set(options(key).off)
+        let off = Set(options(policyChat).off)
         let taintBook = taint
         let receipts = approvalReceipts
         let queue = approvalQueue
@@ -3106,10 +3145,13 @@ final class TeamModel: ObservableObject {
         let helperPlanTail = inheritedPlanMode
             ? "\n当前父对话处于「规划模式 · 只看不动」，你仅限只读调研与方案梳理，禁止写入文件、执行命令、修改记忆或调用外部扩展。"
             : ""
+        let parentUsesMemory = !options(key).off.contains(Grant.memory.rawValue) && Grant.memory.policy != .off
         let (helperRefresher, helperRefresherToken) = registerLivePromptRefresher(
             for: helper,
+            in: key,
             room: nil,
-            memory: true,
+            workplace: helperPlace,
+            memory: parentUsesMemory,
             extraTail: companionPromptTail(for: helper, room: nil, helping: true,
                                            extra: "这次是\(asker.name)替用户来请你帮忙，你做完后它会转告用户。把结果写完整、写清楚；不必寒暄。" + helperPlanTail)
         )
@@ -3129,7 +3171,17 @@ final class TeamModel: ObservableObject {
             approve: { [weak self] ask, tool in await self?.ask(ask, tool: tool, bot: helperId, chat: key, executionChat: helperKey, workplace: helperPlace) ?? false }
         )
         agent.screen = Self.screen
-        agent.renderReplyImages = { images in try await WorkspaceImages.reply(images) }
+        if !inheritedPlanMode {
+            agent.renderReplyImages = { [weak self] images in
+                let blocked = await MainActor.run {
+                    (self?.isPlanModeActive(for: helperKey) ?? false) || (self?.isPlanModeActive(for: key) ?? false)
+                }
+                if blocked {
+                    throw ProviderError(Words.t("当前处于规划模式（只看不动），已阻止将生成的图片写入书案。"))
+                }
+                return try await WorkspaceImages.reply(images)
+            }
+        }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
         if Pref.maxOutput > 0 { agent.outputLimit = Pref.maxOutput }
         // Helper delegation never blindly forwards parent thinking onto another companion/model contract;
@@ -3252,7 +3304,7 @@ final class TeamModel: ObservableObject {
         let grant = approval.boundGrant ?? effectiveGrant(for: tool, in: approval.authChat)
         if grant?.policy == .off { return .reject }
         if approval.forced == true {
-            let isWebOnly = approval.detail?.text?.hasPrefix(Taint.reason) == true && !Taint.hardExits.contains(tool)
+            let isWebOnly = approval.forcedByTaintOnly && !Taint.hardExits.contains(tool)
             guard isWebOnly else { return .wait }
             let allowedThrough: Bool
             if let chat = approval.chat {
@@ -3332,7 +3384,8 @@ final class TeamModel: ObservableObject {
             hostID: isWorkspaceTool ? boundHostID : nil,
             boundGrant: boundGrant,
             tool: effectiveAsk.title, toolName: tool, reason: effectiveAsk.reason, detail: detail,
-            at: Now.ms, answerable: true, forced: effectiveAsk.forced, planReadOnlySafe: effectiveAsk.planReadOnlySafe
+            at: Now.ms, answerable: true, forced: effectiveAsk.forced,
+            forcedByTaintOnly: effectiveAsk.forcedByTaintOnly, planReadOnlySafe: effectiveAsk.planReadOnlySafe
         )
         let before = doing[chat]
         var announced = false
@@ -3487,7 +3540,7 @@ final class TeamModel: ObservableObject {
                 changed = true
             }
             if throughWeb, allowsChatWideStandingGrant, let chat = approval.chat, let tool = approval.toolName,
-               approval.detail?.text?.hasPrefix(Taint.reason) == true,
+               approval.forcedByTaintOnly,
                !Taint.hardExits.contains(tool) {
                 self.taint.allowThrough(chat)
                 self.trust(chat, true)

@@ -143,6 +143,7 @@ public struct TaintGuard: AgentTool {
                 ask.code = Taint.codePayload(tool: spec.name, arguments: arguments)
             }
             ask.forced = true
+            ask.forcedByTaintOnly = false
             if book.isTainted(key), !(ask.detail?.hasPrefix(Taint.reason) == true) {
                 ask.detail = Taint.reason + (ask.detail.map { "\n\n" + $0 } ?? "")
             }
@@ -160,6 +161,7 @@ public struct TaintGuard: AgentTool {
             ask.code = Taint.codePayload(tool: spec.name, arguments: arguments)
         }
         ask.forced = true
+        ask.forcedByTaintOnly = true
         if !(ask.detail?.hasPrefix(Taint.reason) == true) {
             ask.detail = Taint.reason + (ask.detail.map { "\n\n" + $0 } ?? "")
         }
