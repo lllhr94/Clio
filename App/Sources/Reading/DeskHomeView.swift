@@ -62,14 +62,13 @@ struct DeskHomeView: View {
         .scrollIndicators(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .vertical)
         .animation(Ink.Motion.settle, value: team.approvals.count)
+        .sheet(item: $cardBot) { bot in NameCardSheet(team: team, bot: bot) }
     }
 
     @ViewBuilder
     private var homeThreads: some View {
         header
         companions
-            // 看名帖 from anywhere on the desk; kept here so the long body stays quick to check.
-            .sheet(item: $cardBot) { bot in NameCardSheet(team: team, bot: bot) }
         waitingCard
         if let next = team.nextLetter { letter(next) }
         recentHeader

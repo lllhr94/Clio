@@ -1603,16 +1603,5 @@
     "stickersEmpty": "还没有导入表情包。点击下方从相册导入自定义表情，仅限闲谈使用。",
     "importSticker": "从相册导入表情",
     "defaultStickerPack": "我的表情"
-  },
-  "draftTransfer": {
-    "moveAction": "搬运草稿到…",
-    "pickerTitle": "搬运草稿到",
-    "noOtherChats": "暂时没有其他可搬运的目标对话。",
-    "collisionTitle": "目标对话已有草稿",
-    "collisionMessage": "「%@」里已有未发送草稿，要如何处理？",
-    "collisionAppend": "追加到末尾",
-    "collisionReplace": "替换原草稿",
-    "movedToast": "已将草稿搬运到 %@",
-    "undoConflicted": "草稿在搬运后已被编辑，已跳过撤销。"
   }
 }

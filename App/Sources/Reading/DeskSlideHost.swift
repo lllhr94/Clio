@@ -36,7 +36,7 @@ struct DeskSlideHost<Sidebar: View>: View {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .onChanged { value in
                 let across = value.translation.width
-                guard abs(value.translation.height) < max(60, abs(across)) else { return }
+                guard abs(value.translation.height) < max(48, abs(across) * 0.85) else { return }
                 if sideOpen {
                     pull = min(0, across)
                 } else if value.startLocation.x < 32, across > 0 {
@@ -80,6 +80,7 @@ struct DeskSlideHost<Sidebar: View>: View {
             sidebarLayer(progress: progress)
             openedConversationLayer(for: opened, progress: progress)
         }
+        .simultaneousGesture(sideDragGesture)
         .onChange(of: opened) { _, _ in
             if sideOpen || pull != 0 {
                 sideOpen = false
@@ -142,7 +143,6 @@ struct DeskSlideHost<Sidebar: View>: View {
             }
             .offset(x: shift)
             .zIndex(1)
-            .simultaneousGesture(sideDragGesture)
     }
 
     @ViewBuilder

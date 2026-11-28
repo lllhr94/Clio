@@ -652,4 +652,127 @@ final class ThinkingRuleResolverTests: XCTestCase {
             }
         }
     }
+
+    func testCustomRelayEmitsWireFieldsForOfferedEffortsWhileStillBlockingExplicitOff() throws {
+        let snapshot = try makeFixtureSnapshot()
+        let relayKey = EndpointContractKey(
+            origin: "https://my-relay.example.com",
+            protocolKind: "openai",
+            route: "/v1/chat/completions",
+            modelID: "deepseek-flash"
+        )
+        // Custom relay with nil explicit style still offers non-off hint efforts from catalog match.
+        let relayContract = ThinkingRuleResolver.contract(for: relayKey, style: nil, snapshot: snapshot)
+        XCTAssertFalse(relayContract.isKnownContract)
+        XCTAssertFalse(relayContract.canExplicitlyDisable)
+        XCTAssertEqual(
+            relayContract.offeredSelections,
+            [.inheritDefault, .effort("low"), .effort("high"), .effort("max")]
+        )
+
+        // Selecting an offered effort on the relay MUST compile real wire fields (never an empty dict).
+        let highRes = ThinkingRuleResolver.resolve(selection: .effort("high"), contract: relayContract, style: .deepseek)
+        guard case .fulfilled(let eff, _, _) = highRes.fulfillment else {
+            return XCTFail("Expected fulfilled high effort on relay, got \(highRes.fulfillment)")
+        }
+        XCTAssertEqual(eff, .effort("high"))
+        XCTAssertEqual(highRes.bodyFields["reasoning_effort"], .string("high"))
+        XCTAssertEqual(highRes.bodyFields["thinking"], .object(["type": .string("enabled")]))
+
+        let wireReq = ModelRequest(
+            model: "deepseek-flash",
+            system: "",
+            messages: [.user("hi")],
+            thinking: .high,
+            thinkingBodyFields: highRes.bodyFields
+        )
+        let wireBody = OpenAIProvider.body(wireReq, style: .deepseek)
+        XCTAssertEqual(wireBody["reasoning_effort"] as? String, "high")
+
+        // Explicit OFF on unconfirmed relay MUST remain blocked with empty bodyFields.
+        let offRes = ThinkingRuleResolver.resolve(selection: .explicitOff, contract: relayContract, style: .deepseek)
+        guard case .unfulfilledExplicitOff = offRes.fulfillment else {
+            return XCTFail("Expected unfulfilledExplicitOff on unconfirmed relay")
+        }
+        XCTAssertTrue(offRes.bodyFields.isEmpty)
+
+        // Explicit ThinkingStyle.none ("不设置") on relay MUST NOT offer hint efforts or allow explicitOff even via manual rule.
+        let noneContract = ThinkingRuleResolver.contract(for: relayKey, style: ThinkingStyle.none, snapshot: snapshot)
+        XCTAssertEqual(noneContract.offeredSelections, [.inheritDefault])
+        let bogusManual = ManualThinkingRule(
+            contract: relayKey,
+            canDisable: true,
+            supportedEfforts: ["low", "high"],
+            wireStyle: ThinkingStyle.none
+        )
+        let noneManualContract = ThinkingRuleResolver.contract(
+            for: relayKey,
+            style: ThinkingStyle.none,
+            manualRule: bogusManual,
+            snapshot: snapshot
+        )
+        XCTAssertFalse(noneManualContract.canExplicitlyDisable)
+        XCTAssertEqual(noneManualContract.offeredSelections, [.inheritDefault])
+        let noneOff = ThinkingRuleResolver.resolve(selection: .explicitOff, contract: noneManualContract, style: ThinkingStyle.none)
+        guard case .unfulfilledExplicitOff = noneOff.fulfillment else {
+            return XCTFail("ThinkingStyle.none must never pass explicitOff preflight")
+        }
+        XCTAssertTrue(noneOff.bodyFields.isEmpty)
+    }
+
+    func testIntersectOfferingsIsOrderInvariantAcrossPermutations() throws {
+        let snapshot = try makeFixtureSnapshot()
+        let dsContract = ThinkingRuleResolver.contract(
+            for: EndpointContractKey(
+                origin: "https://api.deepseek.com",
+                protocolKind: "openai",
+                route: "/chat/completions",
+                modelID: "deepseek-flash"
+            ),
+            style: .deepseek,
+            snapshot: snapshot
+        )
+        let gpt5Contract = ThinkingRuleResolver.contract(
+            for: EndpointContractKey(
+                origin: "https://api.openai.com",
+                protocolKind: "openai",
+                route: "/v1/chat/completions",
+                modelID: "gpt-5"
+            ),
+            style: .effort,
+            snapshot: snapshot
+        )
+        let claudeContract = ThinkingRuleResolver.contract(
+            for: EndpointContractKey(
+                origin: "https://api.anthropic.com",
+                protocolKind: "anthropic",
+                route: "/v1/messages",
+                modelID: "claude-opus-4-6"
+            ),
+            style: nil,
+            snapshot: snapshot
+        )
+
+        // Reversing [ds, gpt5] -> [gpt5, ds] MUST produce identical intersection without leaking DeepSeek alias `medium`.
+        let forward = ThinkingRuleResolver.intersectOfferings([dsContract, gpt5Contract])
+        let reverse = ThinkingRuleResolver.intersectOfferings([gpt5Contract, dsContract])
+        XCTAssertEqual(forward, [.inheritDefault, .effort("low"), .effort("high")])
+        XCTAssertEqual(reverse, forward)
+
+        // All 6 permutations of 3 heterogeneous contracts must match identically.
+        let permutations: [[ThinkingRuleResolver.ConfirmedContract]] = [
+            [dsContract, gpt5Contract, claudeContract],
+            [dsContract, claudeContract, gpt5Contract],
+            [gpt5Contract, dsContract, claudeContract],
+            [gpt5Contract, claudeContract, dsContract],
+            [claudeContract, dsContract, gpt5Contract],
+            [claudeContract, gpt5Contract, dsContract],
+        ]
+        for perm in permutations {
+            XCTAssertEqual(
+                ThinkingRuleResolver.intersectOfferings(perm),
+                [.inheritDefault, .effort("low"), .effort("high")]
+            )
+        }
+    }
 }

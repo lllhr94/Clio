@@ -10,47 +10,91 @@ struct PlanCard: View {
     var revision: UInt64 = 0
     var turnID: String = ""
     var onExecutePlan: ((UInt64, String) -> Void)? = nil
+    var onRequestExpandWhenSqueezed: (() -> Void)? = nil
     var close: () -> Void
     @State private var open = false
+    @State private var pendingExpandAfterUnsqueeze = false
+    @State private var showingFullSheet = false
     @State private var detailsHeight: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var done: Int { steps.filter { $0.state == "done" }.count }
     private var current: TeamModel.PlanStep? { steps.first { $0.state == "doing" } ?? steps.first { $0.state != "done" } }
     private var isEffectivelyOpen: Bool { open && !forceCollapsed }
+    private var canToggleOrRequestExpand: Bool { true }
 
     var body: some View {
         PlanReveal(progress: isEffectivelyOpen ? 1 : 0, maxHeight: maxHeight, naturalDetailsHeight: detailsHeight) {
-            Button {
-                guard !forceCollapsed else { return }
-                Haptics.tick(0.4)
-                withAnimation(reduceMotion ? nil : Ink.Motion.unfold) { open.toggle() }
-            } label: {
-                HStack(spacing: Ink.Space.s) {
-                    Image(systemName: "checklist").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
-                    Text(headline)
-                        .font(.system(size: Ink.Size.sub, weight: .medium))
-                        .foregroundStyle(Ink.ink)
-                        .lineLimit(1)
-                    Spacer(minLength: Ink.Space.s)
-                    Capsule().fill(Ink.rule).frame(width: 44, height: 4)
-                        .overlay(alignment: .leading) {
-                            Capsule().fill(Ink.accent).frame(width: 44 * CGFloat(done) / CGFloat(max(1, steps.count)), height: 4)
+            HStack(spacing: Ink.Space.s) {
+                Button {
+                    if forceCollapsed {
+                        Haptics.tick(0.4)
+                        if let onRequestExpandWhenSqueezed {
+                            pendingExpandAfterUnsqueeze = true
+                            onRequestExpandWhenSqueezed()
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(260))
+                                if pendingExpandAfterUnsqueeze && forceCollapsed {
+                                    pendingExpandAfterUnsqueeze = false
+                                    showingFullSheet = true
+                                }
+                            }
+                        } else {
+                            showingFullSheet = true
                         }
-                    if !forceCollapsed {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: Ink.Size.micro, weight: .bold))
-                            .foregroundStyle(Ink.inkFaint)
-                            .rotationEffect(.degrees(isEffectivelyOpen ? 180 : 0))
+                        return
                     }
+                    Haptics.tick(0.4)
+                    withAnimation(reduceMotion ? nil : Ink.Motion.unfold) { open.toggle() }
+                } label: {
+                    HStack(spacing: Ink.Space.s) {
+                        Image(systemName: "checklist").font(.system(size: Ink.Size.sub, weight: .medium)).foregroundStyle(Ink.inkSoft)
+                        Text(headline)
+                            .font(.system(size: Ink.Size.sub, weight: .medium))
+                            .foregroundStyle(Ink.ink)
+                            .lineLimit(1)
+                        Spacer(minLength: Ink.Space.s)
+                        if !(planMode && onExecutePlan != nil && !steps.isEmpty && !isEffectivelyOpen) {
+                            Capsule().fill(Ink.rule).frame(width: 44, height: 4)
+                                .overlay(alignment: .leading) {
+                                    Capsule().fill(Ink.accent).frame(width: 44 * CGFloat(done) / CGFloat(max(1, steps.count)), height: 4)
+                                }
+                        }
+                        if canToggleOrRequestExpand {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: Ink.Size.micro, weight: .bold))
+                                .foregroundStyle(Ink.inkFaint)
+                                .rotationEffect(.degrees(isEffectivelyOpen ? 180 : 0))
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, Ink.Space.l)
-                .padding(.vertical, Ink.Space.s)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel("清单，做完 \(done) 步，共 \(steps.count) 步")
+                .accessibilityValue(L.t(isEffectivelyOpen ? "chat.planExpanded" : "chat.planCollapsed"))
+
+                if planMode, let onExecutePlan, !steps.isEmpty, !isEffectivelyOpen {
+                    Button {
+                        Haptics.thud()
+                        onExecutePlan(revision, turnID)
+                    } label: {
+                        HStack(spacing: Ink.Space.xs) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                            Text(L.t("plan.executeAction"))
+                                .font(.system(size: Ink.Size.micro, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Ink.paper)
+                        .padding(.horizontal, Ink.Space.m)
+                        .padding(.vertical, Ink.Space.xs + 2)
+                        .background(Ink.accent, in: Capsule(style: .continuous))
+                    }
+                    .buttonStyle(PressStyle())
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("清单，做完 \(done) 步，共 \(steps.count) 步")
-            .accessibilityValue(L.t(isEffectivelyOpen ? "chat.planExpanded" : "chat.planCollapsed"))
+            .padding(.horizontal, Ink.Space.l)
+            .padding(.vertical, Ink.Space.s)
 
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: Ink.Space.m) {
@@ -103,9 +147,62 @@ struct PlanCard: View {
         .onChange(of: forceCollapsed) { _, collapsed in
             if collapsed && open {
                 open = false
+            } else if !collapsed && pendingExpandAfterUnsqueeze {
+                pendingExpandAfterUnsqueeze = false
+                withAnimation(reduceMotion ? nil : Ink.Motion.unfold) {
+                    open = true
+                }
             }
         }
         .animation(reduceMotion ? nil : Ink.Motion.settle, value: steps)
+        .sheet(isPresented: $showingFullSheet) {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Ink.Space.m) {
+                        ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
+                            HStack(alignment: .firstTextBaseline, spacing: Ink.Space.m) {
+                                mark(step.state)
+                                Text(step.text)
+                                    .font(.system(size: Ink.Size.body, weight: step.state == "doing" ? .semibold : .regular))
+                                    .foregroundStyle(step.state == "done" ? Ink.inkFaint : Ink.ink)
+                                    .strikethrough(step.state == "done", color: Ink.inkFaint)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        if planMode, let onExecutePlan, !steps.isEmpty {
+                            Button {
+                                Haptics.thud()
+                                showingFullSheet = false
+                                onExecutePlan(revision, turnID)
+                            } label: {
+                                Label(L.t("plan.executeAction"), systemImage: "play.fill")
+                            }
+                            .buttonStyle(WideButtonStyle(filled: true))
+                            .padding(.top, Ink.Space.m)
+                        } else if done == steps.count {
+                            Button("收起清单") {
+                                showingFullSheet = false
+                                close()
+                            }
+                            .buttonStyle(WideButtonStyle(filled: false))
+                            .padding(.top, Ink.Space.m)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Ink.Space.page)
+                    .padding(.vertical, Ink.Space.l)
+                }
+                .background(Ink.paper.ignoresSafeArea())
+                .navigationTitle(headline)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(L.t("actions.done")) { showingFullSheet = false }
+                    }
+                }
+            }
+            .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
+        }
     }
 
     private var headline: String {

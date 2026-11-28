@@ -1315,38 +1315,6 @@ struct ChatPage: View {
                 ApproveView(approval: approval, team: team)
                     .presentationDetents([.large])
             }
-            .sheet(isPresented: $moveDraftOpen) {
-                DraftTransferPickerSheet(team: team, currentChatKey: chat.key) { targetKey, targetTitle in
-                    Task { await performMoveDraft(to: targetKey, title: targetTitle, policy: nil) }
-                }
-                .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
-            }
-            .confirmationDialog(
-                L.t("draftTransfer.collisionTitle"),
-                isPresented: Binding(
-                    get: { moveDraftCollisionTarget != nil },
-                    set: { if !$0 { moveDraftCollisionTarget = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button(L.t("draftTransfer.collisionAppend")) {
-                    if let target = moveDraftCollisionTarget {
-                        moveDraftCollisionTarget = nil
-                        Task { await performMoveDraft(to: target.key, title: target.title, policy: .append) }
-                    }
-                }
-                Button(L.t("draftTransfer.collisionReplace"), role: .destructive) {
-                    if let target = moveDraftCollisionTarget {
-                        moveDraftCollisionTarget = nil
-                        Task { await performMoveDraft(to: target.key, title: target.title, policy: .replace) }
-                    }
-                }
-                Button(L.t("actions.cancel"), role: .cancel) { moveDraftCollisionTarget = nil }
-            } message: {
-                if let target = moveDraftCollisionTarget {
-                    Text(L.format("draftTransfer.collisionMessage", target.title))
-                }
-            }
     }
 
     private func withAlertAndDialogModifiers<Content: View>(_ content: Content) -> some View {
@@ -1427,14 +1395,11 @@ struct ChatPage: View {
 
     private var plusAttachmentSheet: some View {
         let revision = attachmentRevision
-        let hasDraft = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty || !files.isEmpty
         return PlusSheet(team: team, key: chat.key, name: bot.name, isRoom: isRoom, addPhoto: { data in
             await addPhoto(data, revision: revision)
         }, removePhoto: { data in
             if let index = photos.firstIndex(of: data) { _ = withAnimation(Ink.Motion.settle) { photos.remove(at: index) } }
-        }, pick: { attachPicked = $0 }, hasDraftToMove: hasDraft, onMoveDraft: {
-            moveDraftOpen = true
-        })
+        }, pick: { attachPicked = $0 })
         // Half open: photos, camera and files at hand; pull up for the rest.
         .detentPaperBackdrop(initial: .medium, detents: [.medium, .large])
         .presentationBackgroundInteraction(.disabled)
@@ -1445,59 +1410,6 @@ struct ChatPage: View {
         guard !isRoom, CasualTrackDoor.pendingBotID == bot.id else { return }
         CasualTrackDoor.pendingBotID = nil
         trackMode = .casual
-    }
-
-    private func performMoveDraft(to targetKey: String, title targetTitle: String, policy: DraftTransfer.CollisionPolicy?) async {
-        let sourceKey = chat.key
-        let currentSnapshot = DraftTransfer.Snapshot(
-            text: draft,
-            photos: photos,
-            files: files,
-            queuedIds: draftAttachmentQueuedIds
-        )
-        _ = await DraftTransfer.saveSnapshot(currentSnapshot, for: sourceKey)
-
-        let outcome = await DraftTransfer.move(from: sourceKey, to: targetKey, policy: policy)
-        switch outcome {
-        case .needsCollisionChoice:
-            moveDraftCollisionTarget = (key: targetKey, title: targetTitle)
-        case .moved(let receipt):
-            draft = ""
-            isApplyingLoadedAttachments = true
-            photos = []
-            files = []
-            draftAttachmentQueuedIds = []
-            isApplyingLoadedAttachments = false
-            ToastCenter.shared.show(
-                L.format("draftTransfer.movedToast", targetTitle),
-                symbol: "arrow.right.doc.on.clipboard",
-                tint: Ink.accent,
-                actionTitle: L.t("homeThreads.undo"),
-                dedupeKey: "draft-transfer-\(sourceKey)-\(targetKey)",
-                duration: 5
-            ) {
-                Task { @MainActor in
-                    let undoOutcome = await DraftTransfer.undo(receipt)
-                    switch undoOutcome {
-                    case .restored:
-                        if chat.key == sourceKey {
-                            draft = receipt.previousSource.text
-                            isApplyingLoadedAttachments = true
-                            photos = receipt.previousSource.photos
-                            files = receipt.previousSource.files
-                            draftAttachmentQueuedIds = receipt.previousSource.queuedIds
-                            isApplyingLoadedAttachments = false
-                        }
-                    case .conflicted:
-                        say(L.t("draftTransfer.undoConflicted"))
-                    case .expired, .failed:
-                        break
-                    }
-                }
-            }
-        case .emptySource, .sameConversation, .cancelled, .failed:
-            break
-        }
     }
 
     private var takePhotoCover: some View {
@@ -1713,8 +1625,6 @@ struct ChatPage: View {
     @State var careOpen = false
     @State var petSettingsOpen = false
     @State var trackMode: ChatTrackMode = .formal
-    @State var moveDraftOpen = false
-    @State var moveDraftCollisionTarget: (key: String, title: String)? = nil
 }
 
 private struct ChatRoamThumbHost: View {

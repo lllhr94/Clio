@@ -1004,7 +1004,11 @@ private struct ChatDockAreaView: View {
                     turnID: record?.turnID ?? "",
                     onExecutePlan: canExecute ? { rev, tid in
                         _ = team.unlockPlanAndExecute(chat: chat.key, revision: rev, turnID: tid)
-                    } : nil
+                    } : nil,
+                    onRequestExpandWhenSqueezed: {
+                        typing.wrappedValue = false
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                    }
                 ) {
                     team.clearPlan(chat.key)
                 }

@@ -178,6 +178,7 @@ private struct SecretEditor: View {
     @State private var showing = false
     @State private var hasStoredSecret: Bool?
     @State private var saving = false
+    @State private var saveError: String?
     @Environment(\.dismiss) private var dismiss
 
     private var isNew: Bool { !Secrets.shared.items.contains { $0.id == item.id } }
@@ -206,6 +207,14 @@ private struct SecretEditor: View {
                     }
                 }
                 Section(L.t("vault.notes")) { TextField("可不填", text: $item.note, axis: .vertical).lineLimit(1...4) }
+                if let saveError {
+                    Section {
+                        Text(saveError)
+                            .font(Ink.footnote)
+                            .foregroundStyle(Ink.stop)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             }
             .paperForm()
@@ -241,13 +250,19 @@ private struct SecretEditor: View {
     private func save() {
         guard !saving else { return }
         saving = true
+        saveError = nil
         let itemToSave = item
         let secretToSave = secret.isEmpty ? nil : secret
         Task {
             if let secretToSave {
-                await Task.detached(priority: .userInitiated) {
-                    Vault.save(secretToSave, as: "secret.\(itemToSave.id)")
+                let result = await Task.detached(priority: .userInitiated) {
+                    Vault.saveResult(secretToSave, as: "secret.\(itemToSave.id)")
                 }.value
+                if case .failure(let error) = result {
+                    saving = false
+                    saveError = "密码未能存入系统钥匙串（\(error.localizedDescription)），请重试。"
+                    return
+                }
             }
             Secrets.shared.save(itemToSave, secret: nil)
             Haptics.thud()

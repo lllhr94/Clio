@@ -424,6 +424,21 @@ extension TeamModel {
         saveSettings()
     }
 
+    /// Saves or clears a validated per-model `ManualThinkingRule` bound to `(origin, protocol, route, model)`.
+    func setManualThinkingRule(_ rule: ManualThinkingRule?, for model: String, in endpointID: String) {
+        guard let index = settings.endpoints.firstIndex(where: { $0.id == endpointID }) else { return }
+        var rules = settings.endpoints[index].manualThinkingRules ?? [:]
+        if let rule {
+            rules[model] = rule
+        } else {
+            rules.removeValue(forKey: model)
+        }
+        let updated: [String: ManualThinkingRule]? = rules.isEmpty ? nil : rules
+        guard settings.endpoints[index].manualThinkingRules != updated else { return }
+        settings.endpoints[index].manualThinkingRules = updated
+        saveSettings()
+    }
+
     /// Enables or disables Anthropic prompt caching (`cache_control`) for one endpoint.
     func setPromptCache(_ id: String, enabled: Bool) {
         guard let index = settings.endpoints.firstIndex(where: { $0.id == id }) else { return }
