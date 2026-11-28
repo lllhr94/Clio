@@ -447,30 +447,44 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         refreshThemeColors()
     }
 
-    nonisolated static func spreadWidths(_ natural: [CGFloat], availableRoom: CGFloat, padH: CGFloat) -> [CGFloat] {
+    nonisolated static func spreadWidths(
+        _ natural: [CGFloat],
+        minTokenWidths: [CGFloat] = [],
+        availableRoom: CGFloat,
+        padH: CGFloat
+    ) -> [CGFloat] {
         guard !natural.isEmpty, availableRoom > 0 else { return natural }
         let count = CGFloat(natural.count)
         let available = availableRoom - colGap * (count - 1) - padH * 2
         guard available > 0 else { return natural }
-        let floor = min(80, available / count)
-        let total = natural.reduce(0, +)
-        if total <= available {
+        let minFloor = Double(min(60, available / count))
+        let metrics: [ColumnWidthMetric] = natural.enumerated().map { idx, nat in
+            let tokenW = idx < minTokenWidths.count ? minTokenWidths[idx] : min(nat, 60)
+            return ColumnWidthMetric(minTokenWidth: Double(min(nat, tokenW)), naturalWidth: Double(nat))
+        }
+        let solved = TableWaterfillSolver.allocate(
+            availableWidth: Double(available),
+            minFloor: minFloor,
+            maxShare: 0.55,
+            columns: metrics
+        )
+        guard solved.count == natural.count else { return natural }
+        let widths = solved.map { ceil(CGFloat($0)) }
+        let total = widths.reduce(0, +)
+        if total < available {
             let extra = available - total
-            return natural.map { $0 + extra * $0 / max(1, total) }
+            return widths.map { $0 + extra * $0 / max(1, total) }
         }
-        let comfortable = natural.map { max(floor, min($0, available * 0.35)) }
-        let snug = comfortable.reduce(0, +)
-        if snug <= available {
-            let wants = zip(natural, comfortable).map { max(0, $0 - $1) }
-            let wanted = wants.reduce(0, +)
-            let extra = available - snug
-            return zip(comfortable, wants).map { $0 + (wanted > 0 ? extra * $1 / wanted : extra / count) }
-        }
-        return natural.map { max(floor, min($0, available * 0.7)) }
+        return widths
     }
 
     nonisolated static func measureHeight(slice: ChatTableSlice, maxWidth: CGFloat, style: ChatListStyle) -> CGFloat {
-        let widths = spreadWidths(slice.naturalWidths, availableRoom: maxWidth, padH: style.metrics.spaceL)
+        let widths = spreadWidths(
+            slice.naturalWidths,
+            minTokenWidths: slice.minTokenWidths,
+            availableRoom: maxWidth,
+            padH: style.metrics.spaceL
+        )
         let cellSize = style.tableCellSize
         let padV = cellSize * 0.62
         let minRowTextH = ceil(cellSize * 1.2)
@@ -621,7 +635,12 @@ final class ChatTableBlockView: UIView, UIContextMenuInteractionDelegate {
         scrollView.frame = bounds
 
         let padH = style.metrics.spaceL
-        let widths = Self.spreadWidths(slice.naturalWidths, availableRoom: width, padH: padH)
+        let widths = Self.spreadWidths(
+            slice.naturalWidths,
+            minTokenWidths: slice.minTokenWidths,
+            availableRoom: width,
+            padH: padH
+        )
         let cellSize = style.tableCellSize
         let padV = cellSize * 0.62
         let totalContentW = widths.reduce(0, +) + Self.colGap * CGFloat(max(0, widths.count - 1)) + padH * 2

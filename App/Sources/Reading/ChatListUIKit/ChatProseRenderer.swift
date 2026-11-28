@@ -97,6 +97,7 @@ struct ChatTableSlice: Equatable, @unchecked Sendable {
     let headerHasLinks: [Bool]
     let rowHasLinks: [[Bool]]
     let naturalWidths: [CGFloat]
+    let minTokenWidths: [CGFloat]
 }
 
 enum ChatProseSlice: @unchecked Sendable {
@@ -617,7 +618,7 @@ final class ChatProseBuilder: @unchecked Sendable {
             return (ParsedCache.blocks(rawText), 0)
         }
         guard let streamKey else {
-            return (Prose.parse(Prose.mend(rawText)), 0)
+            return (Prose.parse(ProseStreamRepairCore.repair(rawText).repaired), 0)
         }
         scannerLock.lock()
         defer { scannerLock.unlock() }
@@ -653,9 +654,10 @@ final class ChatProseBuilder: @unchecked Sendable {
         }
         streamScanners[streamKey] = entry
         if entry.scanner.receivedBytes == 0 {
-            return (Prose.parse(Prose.mend(rawText)), 0)
+            return (Prose.parse(ProseStreamRepairCore.repair(rawText).repaired), 0)
         }
-        let tailBlocks = Prose.parse(Prose.mend(entry.scanner.tail))
+        let repairedTail = ProseStreamRepairCore.repair(entry.scanner.tail).repaired
+        let tailBlocks = repairedTail.isEmpty ? [] : Prose.parse(repairedTail)
         return (entry.sealedBlocks + tailBlocks, entry.sealedBlocks.count)
     }
 
@@ -881,6 +883,13 @@ final class ChatProseBuilder: @unchecked Sendable {
             }
             return max(28, natural + 4)
         }
+        let minTokenWidths: [CGFloat] = (0..<columns).map { column in
+            var widestToken: CGFloat = column < headerCells.count ? Self.maxUnbreakableTokenWidth(headerCells[column]) : 0
+            for row in rowCells where column < row.count {
+                widestToken = max(widestToken, Self.maxUnbreakableTokenWidth(row[column]))
+            }
+            return max(28, widestToken + 4)
+        }
         let built = ChatTableSlice(
             sliceID: allocateRenderToken(),
             table: table,
@@ -889,12 +898,28 @@ final class ChatProseBuilder: @unchecked Sendable {
             rowCells: rowCells,
             headerHasLinks: headerHasLinks,
             rowHasLinks: rowHasLinks,
-            naturalWidths: widths
+            naturalWidths: widths,
+            minTokenWidths: minTokenWidths
         )
         if let cacheKey {
             tableSliceCache.set(built, for: cacheKey)
         }
         return built
+    }
+
+    private static func maxUnbreakableTokenWidth(_ attributed: NSAttributedString) -> CGFloat {
+        let str = attributed.string
+        guard !str.isEmpty else { return 0 }
+        let ranges = TableWaterfillSolver.unbreakableTokenRanges(in: str)
+        guard !ranges.isEmpty else { return naturalSingleLineWidth(attributed) }
+        var widest: CGFloat = 0
+        for range in ranges {
+            let nsRange = NSRange(range, in: str)
+            guard nsRange.length > 0, NSMaxRange(nsRange) <= attributed.length else { continue }
+            let sub = attributed.attributedSubstring(from: nsRange)
+            widest = max(widest, naturalSingleLineWidth(sub))
+        }
+        return widest
     }
 
     private static func naturalSingleLineWidth(_ attributed: NSAttributedString) -> CGFloat {

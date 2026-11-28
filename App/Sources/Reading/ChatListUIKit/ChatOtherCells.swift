@@ -81,6 +81,7 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
         currentEntry = nil
         actions = nil
         richTextView.resetForReuse()
+        bubbleView.alpha = 1
         meAvatar.resetBounce()
         photoViews.forEach { $0.resetForReuse(); $0.isHidden = true }
         onQuoteExcerpt = nil
@@ -108,6 +109,17 @@ final class ChatUserCell: UICollectionViewCell, UIContextMenuInteractionDelegate
 
     func containsAttachment(_ attachmentID: String) -> Bool {
         currentRow?.line.refs.contains(attachmentID) == true
+    }
+
+    /// Returns the rendered user bubble rect in `targetView` coordinates for overlay send-flight targeting.
+    func bubbleFrame(in targetView: UIView) -> CGRect? {
+        guard !bubbleView.isHidden, !bubbleView.bounds.isEmpty else { return nil }
+        return bubbleView.convert(bubbleView.bounds, to: targetView)
+    }
+
+    /// Hides or reveals the seated user bubble while an independent send-flight overlay travels to it.
+    func setBubbleHiddenForSendFlight(_ hidden: Bool) {
+        bubbleView.alpha = hidden ? 0 : 1
     }
 
     func configure(
