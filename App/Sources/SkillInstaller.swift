@@ -608,6 +608,7 @@ enum SkillInstaller {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 20
         config.timeoutIntervalForResource = 60
+        NetworkRuntime.shared.configure(config, for: .default)
         return URLSession(configuration: config, delegate: PublicRedirectGuard(), delegateQueue: nil)
     }
 

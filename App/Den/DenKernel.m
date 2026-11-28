@@ -7,6 +7,9 @@
 #include <netdb.h>
 #include <fcntl.h>
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/un.h>
 #include <unistd.h>
 #import <mach/mach.h>
 #import <os/proc.h>
@@ -32,6 +35,7 @@ void fakefs_set_rootfs_data_path(const char *abs_host_path);
 static NSString *const DenExited = @"DenProcessExited";
 static BOOL denBooted = NO;
 static NSString *denDNSFallbackError = nil;
+static NSString *denKernelNetStatus = @"not-booted";
 
 // MARK: Exit and death
 
@@ -263,8 +267,91 @@ static dispatch_queue_t readers;
     return denBooted;
 }
 
+static NSString *den_posix_timezone(void) {
+    NSInteger offsetSeconds = [[NSTimeZone localTimeZone] secondsFromGMT];
+    if (offsetSeconds == 0)
+        return @"UTC0";
+    // POSIX TZ sign is inverted relative to ISO-8601 (UTC+8 => UTC-8).
+    NSInteger posixSeconds = -offsetSeconds;
+    NSString *sign = posixSeconds < 0 ? @"-" : @"+";
+    NSInteger absSeconds = labs(posixSeconds);
+    NSInteger hours = absSeconds / 3600;
+    NSInteger minutes = (absSeconds % 3600) / 60;
+    if (minutes > 0)
+        return [NSString stringWithFormat:@"UTC%@%ld:%02ld", sign, (long)hours, (long)minutes];
+    return [NSString stringWithFormat:@"UTC%@%ld", sign, (long)hours];
+}
+
+static NSMutableData *den_build_envp(NSDictionary<NSString *, NSString *> * _Nullable customEnv, BOOL interactive) {
+    NSMutableDictionary<NSString *, NSString *> *env = [@{
+        @"HOME": @"/root",
+        @"TERM": @"xterm-256color",
+        @"LANG": @"C.UTF-8",
+        @"CHARSET": @"UTF-8",
+        @"PATH": @"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin",
+        @"ENV": @"/etc/profile",
+        @"OPENSSL_armcap": @"0",
+        @"GODEBUG": @"asyncpreemptoff=1",
+        @"GOMAXPROCS": @"2",
+        @"PYTHONMALLOC": @"malloc",
+        @"PYTHONDONTWRITEBYTECODE": @"1",
+        @"TZ": den_posix_timezone(),
+    } mutableCopy];
+    if (!interactive)
+        env[@"NO_COLOR"] = @"1";
+    if (customEnv) {
+        for (NSString *key in customEnv) {
+            NSString *val = customEnv[key];
+            if (key.length == 0 || [key containsString:@"="] || val == nil)
+                continue;
+            env[key] = val;
+        }
+    }
+    NSMutableData *envp = [NSMutableData data];
+    for (NSString *key in env) {
+        NSString *pair = [NSString stringWithFormat:@"%@=%@", key, env[key]];
+        const char *utf8 = pair.UTF8String;
+        if (utf8 != NULL)
+            [envp appendBytes:utf8 length:strlen(utf8) + 1];
+    }
+    [envp appendBytes:"\0" length:1];
+    return envp;
+}
+
+static NSString *den_configure_unix_socket_prefix(void) {
+#if TARGET_OS_SIMULATOR
+    return [NSString stringWithFormat:@"unix=sim(%s)", sock_tmp_prefix];
+#else
+    NSString *tempDir = NSTemporaryDirectory();
+    // On real iOS devices NSTemporaryDirectory() starts with /private/var/mobile/...,
+    // which pushes `sock_tmp_prefix + "<pid>.<id>"` to ~108 bytes — exceeding Darwin's
+    // 104-byte sockaddr_un.sun_path limit where fs/sock.c performs an unchecked sprintf.
+    // /var is a symlink to /private/var, trimming 8 bytes so the path fits safely.
+    if ([tempDir hasPrefix:@"/private/"])
+        tempDir = [tempDir substringFromIndex:strlen("/private")];
+    NSString *prefix = [tempDir stringByAppendingString:@"densock"];
+    const char *utf8 = prefix.UTF8String;
+    const size_t maxSunPath = sizeof(((struct sockaddr_un *)0)->sun_path);
+    const size_t suffixBudget = 12; // "<pid>.<id>" + NUL
+    if (utf8 == NULL)
+        return @"unix=invalid-utf8(default)";
+    size_t prefixLen = strlen(utf8);
+    if (prefixLen + suffixBudget >= maxSunPath) {
+        NSLog(@"斗室: AF_UNIX prefix too long (%zu + %zu >= %zu), keeping default to prevent overflow",
+              prefixLen, suffixBudget, maxSunPath);
+        return [NSString stringWithFormat:@"unix=overflow-guard(%zu/%zu)", prefixLen, maxSunPath];
+    }
+    sock_tmp_prefix = strdup(utf8);
+    return [NSString stringWithFormat:@"unix=ok(%zu/%zu)", prefixLen, maxSunPath];
+#endif
+}
+
 + (int)bootRoot:(NSString *)root desk:(NSString *)desk {
-    return [self bootRoot:root desk:desk dnsDir:nil];
+    return [self bootRoot:root desk:desk dnsDir:nil netDir:nil];
+}
+
++ (int)bootRoot:(NSString *)root desk:(NSString *)desk dnsDir:(NSString *)dnsDir {
+    return [self bootRoot:root desk:desk dnsDir:dnsDir netDir:nil];
 }
 
 + (void)setForkRateLimit:(uint32_t)perSecond burst:(uint32_t)burst {
@@ -285,9 +372,16 @@ static dispatch_queue_t readers;
     return denDNSFallbackError;
 }
 
-+ (int)bootRoot:(NSString *)root desk:(NSString *)desk dnsDir:(NSString *)dnsDir {
++ (NSString *)kernelNetworkStatus {
+    return denKernelNetStatus;
+}
+
++ (int)bootRoot:(NSString *)root desk:(NSString *)desk dnsDir:(NSString *)dnsDir netDir:(NSString *)netDir {
     if (denBooted)
         return 0;
+    // Enable iSH's AF_NETLINK stub on the host process before any guest starts
+    // so `ip route` / `ip addr` and Go netmon probes work instead of returning ENOTSUP.
+    setenv("ISH_NETLINK_STUB", "1", 0);
     den_memory_start();
 
     NSString *data = [root stringByAppendingPathComponent:@"data"];
@@ -336,11 +430,24 @@ static dispatch_queue_t readers;
     } else {
         den_configure_dns_fallback(nil);
     }
+
+    if (netDir.length > 0) {
+        generic_mkdirat(AT_PWD, "/etc", 0755);
+        generic_mkdirat(AT_PWD, "/etc/clio-net", 0555);
+        int netBindErr = fakefs_bind_mount("/etc/clio-net", netDir.fileSystemRepresentation, true);
+        if (netBindErr >= 0) {
+            generic_mkdirat(AT_PWD, "/etc/ssh", 0755);
+            generic_mkdirat(AT_PWD, "/etc/ssh/ssh_config.d", 0755);
+            generic_unlinkat(AT_PWD, "/etc/ssh/ssh_config.d/90-clio-net.conf");
+            generic_symlinkat("/etc/clio-net/ssh_config", AT_PWD, "/etc/ssh/ssh_config.d/90-clio-net.conf");
+        }
+    }
     den_write_file("/etc/motd", @"");
 
     exit_hook = den_exit;
     die_handler = den_die;
-    sock_tmp_prefix = strdup([NSTemporaryDirectory() stringByAppendingString:@"densock"].UTF8String);
+    NSString *sockStatus = den_configure_unix_socket_prefix();
+    denKernelNetStatus = [NSString stringWithFormat:@"netlink=%s, %@", getenv("ISH_NETLINK_STUB") ?: "unset", sockStatus];
 
     // init: a shell that only sleeps, so commands have a parent.
     struct task *init = current;
@@ -348,8 +455,8 @@ static dispatch_queue_t readers;
     init->files->files[1] = den_null_fd(O_WRONLY);
     init->files->files[2] = den_null_fd(O_WRONLY);
     const char argv[] = "/bin/sh\0-c\0while :; do sleep 3600; done\0";
-    const char envp[] = "HOME=/root\0PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
-    err = do_execve("/bin/sh", 3, argv, envp);
+    NSMutableData *initEnv = den_build_envp(nil, NO);
+    err = do_execve("/bin/sh", 3, argv, initEnv.bytes);
     if (err < 0)
         return err;
     err = task_start(init);
@@ -375,21 +482,7 @@ static dispatch_queue_t readers;
     if (argv.length > 60000)
         return -7; // E2BIG
 
-    NSMutableDictionary<NSString *, NSString *> *env = [@{
-        @"HOME": @"/root",
-        @"TERM": @"xterm-256color",
-        @"LANG": @"C.UTF-8",
-        @"PATH": @"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        @"PYTHONMALLOC": @"malloc",
-    } mutableCopy];
-    if (environment)
-        [env addEntriesFromDictionary:environment];
-    NSMutableData *envp = [NSMutableData data];
-    for (NSString *key in env) {
-        NSString *pair = [NSString stringWithFormat:@"%@=%@", key, env[key]];
-        [envp appendBytes:pair.UTF8String length:strlen(pair.UTF8String) + 1];
-    }
-    [envp appendBytes:"\0" length:1];
+    NSMutableData *envp = den_build_envp(environment, NO);
 
     int outPipe[2], errPipe[2];
     if (pipe(outPipe) < 0)
@@ -639,6 +732,13 @@ static struct tty_driver den_pty_driver = {.ops = &den_tty_ops};
 @implementation DenTerminal
 
 + (instancetype)openWithOutput:(void (^)(NSData *))output exited:(void (^)(void))exited error:(int *)error {
+    return [self openWithEnvironment:nil output:output exited:exited error:error];
+}
+
++ (instancetype)openWithEnvironment:(NSDictionary<NSString *, NSString *> *)environment
+                             output:(void (^)(NSData *))output
+                             exited:(void (^)(void))exited
+                              error:(int *)error {
     if (!denBooted) {
         if (error) *error = -1;
         return nil;
@@ -677,8 +777,8 @@ static struct tty_driver den_pty_driver = {.ops = &den_tty_ops};
     }
 
     const char argv[] = "/bin/sh\0-c\0cd /root 2>/dev/null; exec /bin/sh -l\0";
-    const char envp[] = "TERM=xterm-256color\0HOME=/root\0LANG=C.UTF-8\0PYTHONMALLOC=malloc\0PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
-    err = do_execve("/bin/sh", 3, argv, envp);
+    NSMutableData *envp = den_build_envp(environment, YES);
+    err = do_execve("/bin/sh", 3, argv, envp.bytes);
     if (err < 0) {
         current = saved;
         den_discard_unstarted_task(task);

@@ -40,7 +40,7 @@ struct SettingsView: View {
     ]
 
     static let hubChildren: [SettingsPage: [SettingsPage]] = [
-        .capabilities: [.grants, .searchEngine, .connectors, .skills, .hosts],
+        .capabilities: [.grants, .searchEngine, .network, .connectors, .skills, .hosts],
         .memoryAndRoutine: [.memory, .timing],
         .appearance: [.theme, .size, .tone, .pet],
         .chatAndVoice: [.display, .context, .voice],
@@ -50,6 +50,7 @@ struct SettingsView: View {
     static let searchAliases: [SettingsPage: SettingsPage] = [
         .grants: .capabilities,
         .searchEngine: .capabilities,
+        .network: .capabilities,
         .connectors: .capabilities,
         .skills: .capabilities,
         .hosts: .capabilities,
@@ -447,6 +448,10 @@ struct SettingsView: View {
             return hills.servers.isEmpty ? nil : L.format("settingsHome.itemsCount", hills.servers.count)
         case .searchEngine:
             return searchSummary
+        case .network:
+            let rt = NetworkRuntime.shared
+            if !rt.settings.routingEnabled { return L.t("settingsHome.disabled") }
+            return rt.activeEndpoints != nil ? L.format("network.proxiesCountShort", rt.settings.proxies.count) : L.t("network.routeDirect")
         case .hosts:
             return L.format("settingsHome.hostsCount", hills.hosts.count)
         case .timing:
@@ -536,6 +541,8 @@ struct SettingsView: View {
             SkillsPage(embedded: true)
         case .searchEngine:
             SearchSettingsPage()
+        case .network:
+            NetworkSettingsPage(endpoints: team.settings.endpoints, embedded: true)
         case .hosts:
             HillsPage(embedded: true)
         case .timing, .morning:
@@ -805,7 +812,7 @@ private struct SettingsRoomsSection: View {
 enum SettingsPage: String, Identifiable {
     case services, models, capabilities, companions, memoryAndRoutine, appearance, chatAndVoice, notifications, privacy, care
     case image, rooms, pet, theme, font, size, tone
-    case display, context, grants, searchEngine, connectors, skills, timing, hosts, morning, lock
+    case display, context, grants, searchEngine, network, connectors, skills, timing, hosts, morning, lock
     case careBackup, careUsage, careStorage, careDiagnostics, about
     case memory, vault, voice, add
 
@@ -815,6 +822,7 @@ enum SettingsPage: String, Identifiable {
         switch link {
         case "model": self = .models
         case "search": self = .searchEngine
+        case "network", "proxy", "dns": self = .network
         case "look": self = .theme
         case "look#font": self = .font
         case "look#size", "look#ui": self = .size
@@ -907,6 +915,7 @@ enum SettingsPage: String, Identifiable {
         case .context: "text.alignleft"
         case .grants: "checkmark.shield"
         case .searchEngine: "magnifyingglass"
+        case .network: "network"
         case .connectors: "powerplug"
         case .skills: "books.vertical"
         case .timing: "alarm"
@@ -941,7 +950,7 @@ enum SettingsPage: String, Identifiable {
         switch self {
         case .services: "添一家 添加模型服务 密钥 key api deepseek kimi claude openai ollama lm studio 本地 中转"
         case .models: "默认 备用 换模型 兜底 出错 失败 记忆整理模型 小模型"
-        case .capabilities: "权限 批准 联网 搜索 连接器 技能 远程主机 ssh mcp"
+        case .capabilities: "权限 批准 联网 搜索 网络 代理 dns socks5 连接器 技能 远程主机 ssh mcp"
         case .memoryAndRoutine: "记忆 拾遗 定时任务 更漏 早报 晨信 日记 手札"
         case .appearance: "外观 主题 设色 字体 字号 行距 称谓 书卷 日常 宠物 伴读"
         case .chatAndVoice: "对话 显示 触感 震动 淡入 思考 压缩 上下文 温度 语音 听写 转写"
@@ -959,6 +968,7 @@ enum SettingsPage: String, Identifiable {
         case .context: "压缩 上下文 温度 输出 长度 步数 最多步数"
         case .grants: "权限 批准 允许 智能审批 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室"
         case .searchEngine: "联网 搜索 引擎 anysearch tavily exa brave bing duckduckgo searxng 查资料 密钥 key"
+        case .network: "网络 代理 分流 路由 socks5 http https bypass 直连 dns 终端 斗室 诊断 proxy"
         case .connectors: "连接 谷歌 google gmail 邮箱 邮件 云盘 云端硬盘 drive 高德 地图 导航 github notion linear jira confluence asana canva figma zapier composio rube mcp"
         case .skills: "skill 本事 技能"
         case .timing: "每天 每周 到点 定时任务"

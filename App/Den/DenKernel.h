@@ -21,6 +21,12 @@ typedef void (^DenDone)(int code, NSString *output, NSString *errorOutput);
 /// and linked from /etc/resolv.conf.
 + (int)bootRoot:(NSString *)root desk:(nullable NSString *)desk dnsDir:(nullable NSString *)dnsDir;
 
+/// Boots the kernel with optional read-only host DNS (/etc/clio-dns) and network helper (/etc/clio-net) directories.
++ (int)bootRoot:(NSString *)root
+           desk:(nullable NSString *)desk
+         dnsDir:(nullable NSString *)dnsDir
+         netDir:(nullable NSString *)netDir;
+
 /// Updates the kernel's per-second and burst fork rate limits (for thermal throttling).
 + (void)setForkRateLimit:(uint32_t)perSecond burst:(uint32_t)burst;
 
@@ -32,6 +38,9 @@ typedef void (^DenDone)(int code, NSString *output, NSString *errorOutput);
 
 /// Non-nil if DNS mount/symlink fallback wrote with an error during boot.
 + (nullable NSString *)lastDNSFallbackError;
+
+/// Human-readable diagnostic summary of AF_UNIX socket prefix and AF_NETLINK stub activation.
++ (NSString *)kernelNetworkStatus;
 
 + (BOOL)booted;
 
@@ -56,6 +65,12 @@ typedef void (^DenDone)(int code, NSString *output, NSString *errorOutput);
 
 /// Starts a login shell. Output arrives on the main queue; `exited` fires once when the shell ends.
 + (nullable instancetype)openWithOutput:(void (^)(NSData *data))output exited:(void (^)(void))exited error:(int *)error NS_SWIFT_NAME(open(output:exited:error:));
+
+/// Starts a login shell with extra environment variables merged on top of Den's runtime defaults.
++ (nullable instancetype)openWithEnvironment:(nullable NSDictionary<NSString *, NSString *> *)environment
+                                      output:(void (^)(NSData *data))output
+                                      exited:(void (^)(void))exited
+                                       error:(int *)error NS_SWIFT_NAME(open(environment:output:exited:error:));
 
 @property (nonatomic, readonly) int pid;
 - (void)send:(NSData *)data NS_SWIFT_NAME(send(_:));

@@ -177,7 +177,7 @@ final class Google: NSObject, ObservableObject {
         allowed.insert(charactersIn: "-._~")
         let encoded = refresh.addingPercentEncoding(withAllowedCharacters: allowed) ?? refresh
         request.httpBody = Data("token=\(encoded)".utf8)
-        Task { _ = try? await URLSession.shared.data(for: request, delegate: OAuthRedirectGuard()) }
+        Task { _ = try? await NetworkRuntime.shared.session(for: .mcp).data(for: request, delegate: OAuthRedirectGuard()) }
     }
 
     private struct Credential: Codable, Equatable, Sendable {
@@ -200,7 +200,7 @@ final class Google: NSObject, ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = MCPAuth.formBody(form)
-        let (data, response) = try await URLSession.shared.data(for: request, delegate: OAuthRedirectGuard())
+        let (data, response) = try await NetworkRuntime.shared.session(for: .mcp).data(for: request, delegate: OAuthRedirectGuard())
         guard let http = response as? HTTPURLResponse else { throw ProviderError("谷歌未返回 HTTP 响应。") }
         guard (200..<300).contains(http.statusCode) else { throw OAuthHTTPError(response: http, data: data) }
         return JSONValue.parse(String(decoding: data, as: UTF8.self)) ?? .null
@@ -320,7 +320,7 @@ final class Google: NSObject, ObservableObject {
             request.httpBody = Data(body.compact.utf8)
         }
         if let maxBytes {
-            let (bytes, response) = try await URLSession.shared.bytes(for: request, delegate: OAuthRedirectGuard())
+            let (bytes, response) = try await NetworkRuntime.shared.session(for: .mcp).bytes(for: request, delegate: OAuthRedirectGuard())
             let http = response as? HTTPURLResponse
             let status = http?.statusCode ?? 0
             if status == 401 {
@@ -352,7 +352,7 @@ final class Google: NSObject, ObservableObject {
             }
             return out
         }
-        let (data, response) = try await URLSession.shared.data(for: request, delegate: OAuthRedirectGuard())
+        let (data, response) = try await NetworkRuntime.shared.session(for: .mcp).data(for: request, delegate: OAuthRedirectGuard())
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401 {
             await GoogleTokenBox.shared.invalidateCached(token: lease.token, epoch: lease.epoch)

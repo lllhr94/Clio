@@ -152,7 +152,7 @@ struct ServiceBalanceLine: View {
     @ObservedObject var team: TeamModel
     let endpoint: Endpoint
     var showsDashboard = false
-    private static let session = URLSession(configuration: .ephemeral)
+    private static var session: URLSession { NetworkRuntime.shared.session(for: .default, ephemeral: true) }
     @State private var reading: Balance.Reading?
     @State private var failed = false
 

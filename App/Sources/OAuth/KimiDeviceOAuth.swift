@@ -158,7 +158,7 @@ enum KimiDeviceOAuth {
         throw Failure.expired
     }
 
-    private static let session = URLSession(configuration: .ephemeral)
+    private static var session: URLSession { NetworkRuntime.shared.session(for: .default, ephemeral: true) }
 
     private static func post(_ fields: [String: String], to url: URL, timeout: TimeInterval = 15) async throws -> (Data, Int) {
         try Task.checkCancellation()

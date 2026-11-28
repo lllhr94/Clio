@@ -17,7 +17,7 @@ final class SettingsLayoutTests: XCTestCase {
         let reachable = home.union(hubChildren)
 
         let expected: [SettingsPage] = [
-            .services, .models, .grants, .searchEngine, .connectors, .skills, .hosts,
+            .services, .models, .grants, .searchEngine, .network, .connectors, .skills, .hosts,
             .companions, .memory, .timing, .theme, .size, .tone, .pet,
             .display, .context, .voice, .notifications, .privacy,
             .careBackup, .careUsage, .careStorage, .careDiagnostics,
@@ -34,6 +34,9 @@ final class SettingsLayoutTests: XCTestCase {
             ("capabilities", .capabilities),
             ("grants", .grants),
             ("search", .searchEngine),
+            ("network", .network),
+            ("proxy", .network),
+            ("dns", .network),
             ("connectors", .connectors),
             ("skills", .skills),
             ("hosts", .hosts),

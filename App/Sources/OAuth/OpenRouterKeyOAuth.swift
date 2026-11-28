@@ -15,7 +15,7 @@ enum OAuthLoopbackAddress {
 enum OpenRouterKeyOAuth {
     enum Failure: Error { case invalidKey, unreachable, timedOut }
 
-    private static let session = URLSession(configuration: .ephemeral)
+    private static var session: URLSession { NetworkRuntime.shared.session(for: .default, ephemeral: true) }
 
     struct Attempt: Sendable {
         let verifier: String

@@ -143,7 +143,7 @@ actor BrandIcons {
     private func fetch(_ url: URL) async -> UIImage? {
         var request = URLRequest(url: url, timeoutInterval: 6)
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await NetworkRuntime.shared.session(for: .default).data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let image = Self.decodedIcon(data), image.size.width >= 32 else { return nil }
         return image
@@ -170,7 +170,7 @@ actor BrandIcons {
         guard let home = URL(string: "https://\(domain)/"), !LocalAddress.isLocal(home) else { return [] }
         var request = URLRequest(url: home, timeoutInterval: 6)
         request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148", forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
+        guard let (data, response) = try? await NetworkRuntime.shared.session(for: .default).data(for: request),
               let html = String(data: data.prefix(200_000), encoding: .utf8) ?? String(data: data.prefix(200_000), encoding: .ascii) else { return [] }
         let base = response.url ?? home
         guard base.scheme?.lowercased() == "https", !LocalAddress.isLocal(base) else { return [] }

@@ -53,6 +53,7 @@ final class BrowserSession: NSObject, ObservableObject, WKNavigationDelegate {
         configuration.websiteDataStore = .default()
         configuration.allowsInlineMediaPlayback = true
         self.configuration = configuration
+        NetworkRuntime.shared.registerBrowserStore(configuration.websiteDataStore)
         view = WKWebView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), configuration: configuration)
         super.init()
         prepare(view)

@@ -465,7 +465,7 @@ final class MCPAuth {
         {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"\(MCPDiscoveryPolicy.protocolVersion)","capabilities":{},"clientInfo":{"name":"Clio","version":"1.0"}}}
         """.utf8)
         // Only the status and header are needed. The server may keep its body open.
-        let (_, response) = try await URLSession.shared.bytes(for: request, delegate: OAuthRedirectGuard())
+        let (_, response) = try await NetworkRuntime.shared.session(for: .mcp).bytes(for: request, delegate: OAuthRedirectGuard())
         guard let http = response as? HTTPURLResponse else { throw ProviderError("服务未返回 HTTP 响应。") }
         if http.statusCode == 401 {
             let challenges = MCPDiscoveryPolicy.challenges(http.value(forHTTPHeaderField: "WWW-Authenticate") ?? "")
@@ -584,7 +584,7 @@ final class MCPAuth {
         var request = input
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(MCPDiscoveryPolicy.protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version")
-        let (data, response) = try await URLSession.shared.data(for: request, delegate: OAuthRedirectGuard())
+        let (data, response) = try await NetworkRuntime.shared.session(for: .mcp).data(for: request, delegate: OAuthRedirectGuard())
         guard let http = response as? HTTPURLResponse else { throw ProviderError("登录服务未返回 HTTP 响应。") }
         guard (200..<300).contains(http.statusCode) else { throw OAuthHTTPError(response: http, data: data) }
         return data

@@ -97,12 +97,13 @@ enum WebDAV {
             throw TeamError(message: "要上传的备份文件名无效。")
         }
         let delegate = WebDAVSameOriginRedirectDelegate(origin: base)
+        let session = NetworkRuntime.shared.session(for: .backup)
         // The folder may already be there (405) — that is fine.
-        let (_, made) = try await URLSession.shared.data(for: request(base, method: "MKCOL"), delegate: delegate)
+        let (_, made) = try await session.data(for: request(base, method: "MKCOL"), delegate: delegate)
         try check(made, allowing: [405, 301])
         var put = request(base.appendingPathComponent(fileName), method: "PUT")
         put.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        let (_, sent) = try await URLSession.shared.upload(for: put, fromFile: file, delegate: delegate)
+        let (_, sent) = try await session.upload(for: put, fromFile: file, delegate: delegate)
         try check(sent)
     }
 
@@ -110,11 +111,12 @@ enum WebDAV {
     static func list() async throws -> [String] {
         guard let base else { throw TeamError(message: addressProblem(address) ?? "还没填网盘地址。") }
         let delegate = WebDAVSameOriginRedirectDelegate(origin: base)
+        let session = NetworkRuntime.shared.session(for: .backup)
         var find = request(base, method: "PROPFIND")
         find.setValue("1", forHTTPHeaderField: "Depth")
         find.setValue("application/xml", forHTTPHeaderField: "Content-Type")
         find.httpBody = Data(#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>"#.utf8)
-        let (data, response) = try await URLSession.shared.data(for: find, delegate: delegate)
+        let (data, response) = try await session.data(for: find, delegate: delegate)
         try check(response, allowing: [207])
         let text = String(decoding: data, as: UTF8.self)
         let hrefs = text.matches(of: /<(?:[A-Za-z]+:)?href>([^<]+)<\/(?:[A-Za-z]+:)?href>/).map { String($0.output.1) }
@@ -224,6 +226,7 @@ private final class WebDAVDownloadDelegate: NSObject, URLSessionDataDelegate, @u
                 continuation = cont
                 let config = URLSessionConfiguration.ephemeral
                 config.timeoutIntervalForRequest = 120
+                NetworkRuntime.shared.configure(config, for: .backup)
                 let createdSession = URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
                 let dataTask = createdSession.dataTask(with: request)
                 session = createdSession
