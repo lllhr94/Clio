@@ -327,12 +327,24 @@ final class SubtaskManager: ObservableObject {
             ? "\n当前父对话处于「规划模式 · 只看不动」，你仅限只读调研与方案梳理，禁止写入文件、执行命令、修改记忆或调用外部扩展。"
             : ""
         let parentUsesMemory = !team.options(parentChat).off.contains(Grant.memory.rawValue) && Grant.memory.policy != .off
+        let initialTarget = team.resolveConversationTarget(
+            slotKey: parentChat,
+            conversationID: thread.parentConversationID,
+            threadCreatedAtMs: thread.createdAtMs
+        )
+        let includeParentSummary: Bool
+        if case .active = initialTarget {
+            includeParentSummary = true
+        } else {
+            includeParentSummary = false
+        }
         let (refresher, refresherToken) = team.registerLivePromptRefresher(
             for: helper,
             in: parentChat,
             room: nil,
             workplace: workplace,
             memory: parentUsesMemory,
+            includeSummary: includeParentSummary,
             extraTail: "这是来自\(asker.name)的异步后台子任务（独立线程 \(threadID)）。请专注完成并将结论整理清楚。" + planTail
         )
         defer { team.unregisterLivePromptRefresher(refresherToken) }
@@ -350,7 +362,9 @@ final class SubtaskManager: ObservableObject {
                 workplace: workplace,
                 imageAPIKey: helperImageAPIKey,
                 experienceSource: .subtask,
-                subtaskSideEffectContext: sideEffectContext
+                subtaskSideEffectContext: sideEffectContext,
+                expectedConversationID: thread.parentConversationID,
+                threadCreatedAtMs: thread.createdAtMs
             )
             : []
 
@@ -394,7 +408,19 @@ final class SubtaskManager: ObservableObject {
         // Outside Plan mode, pre-write a Canonical pending_side_effect BEFORE writing reply images.
         if !attempt.inheritedPlanMode {
             let storeRef = store
-            agent.renderReplyImages = { images in
+            agent.renderReplyImages = { [weak team] images in
+                let checkPlanMode: @Sendable () async throws -> Void = { [weak team] in
+                    let blocked = await MainActor.run {
+                        (team?.isPlanModeActive(for: executionKey) ?? false)
+                            || (team?.isPlanModeActive(for: parentChat) ?? false)
+                    }
+                    if blocked {
+                        throw WorkspaceImages.Failure.blockedByPolicy(
+                            Words.t("当前处于规划模式（只看不动），已阻止将生成的图片写入书案。")
+                        )
+                    }
+                }
+                try await checkPlanMode()
                 let callID = "reply-img-\(UUID().uuidString.lowercased())"
                 try storeRef.recordPendingSideEffect(
                     threadID: threadID,
@@ -403,7 +429,7 @@ final class SubtaskManager: ObservableObject {
                     tool: "render_reply_images",
                     target: "reply-images(\(images.count))"
                 )
-                let rendered = try await WorkspaceImages.reply(images)
+                let rendered = try await WorkspaceImages.reply(images, beforeWrite: checkPlanMode)
                 _ = try? storeRef.settleSideEffect(threadID: threadID, attemptID: executionKey, callID: callID)
                 return rendered
             }

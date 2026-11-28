@@ -395,14 +395,16 @@ extension TeamModel {
     }
 
     /// Zero-write full-scope recall across `.pinned`, `.surface`, and `.deep` (never modifies `deep`, `used`, or disk).
-    func recallReadOnly(_ words: String, limit: Int = 8) async -> [String] {
+    func recallReadOnly(_ words: String, limit: Int = 8, chat: String? = nil) async -> [String] {
         let query = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return [] }
+        let chatUsesMemory = chat.map { !options($0).off.contains(Grant.memory.rawValue) } ?? true
+        guard chatUsesMemory, Grant.memory.policy != .off, !Disk.frozen else { return [] }
         let pins = keeping ? MemoryStoreBridge.shared.pinnedIDsSnapshot() : []
         let fallback = MemoryRecallBridge.makeFallbackRecords(from: memories, pinnedIDs: pins)
         let hits = await MemoryRecallBridge.shared.recallAll(
             query: query,
-            usesMemory: true,
+            usesMemory: chatUsesMemory,
             grantAllowed: Grant.memory.policy != .off,
             diskFrozen: Disk.frozen,
             keeping: keeping,

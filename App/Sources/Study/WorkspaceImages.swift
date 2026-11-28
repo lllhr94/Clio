@@ -4,13 +4,21 @@ import ImageIO
 import UniformTypeIdentifiers
 
 enum WorkspaceImages {
-    enum Failure: Error {
-        case unreadable, writeFailed
+    enum Failure: Error, LocalizedError {
+        case unreadable, writeFailed, blockedByPolicy(String)
 
         var key: String {
             switch self {
             case .unreadable: "errors.imageResponse"
             case .writeFailed: "errors.imageSave"
+            case .blockedByPolicy: "errors.imageSave"
+            }
+        }
+
+        var errorDescription: String? {
+            switch self {
+            case .blockedByPolicy(let reason): return reason
+            default: return nil
             }
         }
     }
@@ -56,7 +64,12 @@ enum WorkspaceImages {
     }
 
     /// Keep only local Markdown in history. CDN requests never use the provider's key and enforce public SSRF + 32 MB limits.
-    static func reply(_ images: [ReplyImage]) async throws -> String {
+    /// `beforeWrite` runs immediately prior to persisting each image on disk (after any remote download finishes)
+    /// so mid-download Plan mode toggles abort cleanly before touching the workspace.
+    static func reply(
+        _ images: [ReplyImage],
+        beforeWrite: (@Sendable () async throws -> Void)? = nil
+    ) async throws -> String {
         var lines: [String] = []
         var failures: [String] = []
         for image in images {
@@ -70,10 +83,14 @@ enum WorkspaceImages {
                 case .remote(let url):
                     data = try await Web.publicBytes(from: url, limit: 32_000_000, timeout: 45)
                 }
+                try await beforeWrite?()
                 lines.append("![](\(try save(data)))")
             } catch {
                 if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
                     throw CancellationError()
+                }
+                if case .blockedByPolicy = error as? Failure {
+                    throw error
                 }
                 let key: String
                 if let failure = error as? Failure { key = failure.key }

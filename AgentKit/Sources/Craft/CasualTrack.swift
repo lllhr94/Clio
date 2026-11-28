@@ -843,9 +843,13 @@ public final class CasualTrackStore: @unchecked Sendable {
     private func loadAllOutboxBatchesLocked() -> [CasualOutboxBatch] {
         guard let files = try? FileManager.default.contentsOfDirectory(at: outboxDir, includingPropertiesForKeys: nil) else { return [] }
         return files.compactMap { url in
-            guard url.pathExtension == "json",
-                  let data = try? Data(contentsOf: url) else { return nil }
-            return try? decoder.decode(CasualOutboxBatch.self, from: data)
+            guard url.pathExtension == "json" else { return nil }
+            let stem = url.deletingPathExtension().lastPathComponent
+            guard Self.isSafePathToken(stem),
+                  let data = try? Data(contentsOf: url),
+                  let batch = try? decoder.decode(CasualOutboxBatch.self, from: data),
+                  batch.batchID == stem else { return nil }
+            return batch
         }
     }
 

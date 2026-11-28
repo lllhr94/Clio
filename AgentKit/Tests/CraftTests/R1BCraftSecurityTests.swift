@@ -191,5 +191,30 @@ final class R1BCraftSecurityTests: XCTestCase {
         )
         try store.saveOutboxBatch(goodBatch)
         XCTAssertEqual(store.loadOutboxBatch(batchID: "batch-safe_01")?.batchID, "batch-safe_01")
+
+        // Outbox directory enumeration must ignore unsafe filenames and filename/batchID mismatches.
+        let outboxDir = dir.appendingPathComponent("casual/outbox", isDirectory: true)
+        let encoder = JSONEncoder()
+        let badNameBatch = CasualOutboxBatch(
+            batchID: "bad id",
+            botID: "chief",
+            casualSessionID: "cs-1",
+            segments: ["legacy"],
+            state: .queuedBeforeSend,
+            trackEpoch: 1
+        )
+        try encoder.encode(badNameBatch).write(to: outboxDir.appendingPathComponent("bad id.json"))
+        let mismatchBatch = CasualOutboxBatch(
+            batchID: "actual-other-id",
+            botID: "chief",
+            casualSessionID: "cs-1",
+            segments: ["spoof"],
+            state: .queuedBeforeSend,
+            trackEpoch: 1
+        )
+        try encoder.encode(mismatchBatch).write(to: outboxDir.appendingPathComponent("safe-filename.json"))
+
+        let recovery = store.reconcileOnColdStart()
+        XCTAssertEqual(recovery.batchesReadyForInitialSend.map(\.batchID), ["batch-safe_01"])
     }
 }

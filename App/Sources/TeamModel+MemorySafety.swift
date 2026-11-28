@@ -23,10 +23,11 @@ extension Memory {
     }
 }
 
-/// Thread-safe per-chat memory toggle ledger queried synchronously by `LivePromptProvider` closures.
+/// Thread-safe per-chat toggle ledger queried synchronously by `LivePromptProvider` and `LiveGatedTool` closures.
 final class LiveChatMemoryGate: @unchecked Sendable {
     private let lock = NSLock()
     private var disabledChats: Set<String> = []
+    private var disabledGrantsByChat: [String: Set<String>] = [:]
 
     func setDisabled(_ disabled: Bool, for key: String) {
         lock.lock()
@@ -38,10 +39,31 @@ final class LiveChatMemoryGate: @unchecked Sendable {
         lock.unlock()
     }
 
+    func setDisabledGrants(_ off: Set<String>, for key: String) {
+        lock.lock()
+        if off.isEmpty {
+            disabledGrantsByChat.removeValue(forKey: key)
+        } else {
+            disabledGrantsByChat[key] = off
+        }
+        if off.contains(Grant.memory.rawValue) {
+            disabledChats.insert(key)
+        } else {
+            disabledChats.remove(key)
+        }
+        lock.unlock()
+    }
+
     func isAllowed(_ key: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         return !disabledChats.contains(key)
+    }
+
+    func isGrantDisabled(_ grantRawValue: String, for key: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return disabledGrantsByChat[key]?.contains(grantRawValue) ?? false
     }
 }
 
@@ -146,6 +168,7 @@ extension TeamModel {
         room: RoomInfo?,
         workplace: WorkPlace? = nil,
         memory: Bool = true,
+        includeSummary: Bool = true,
         recalledHints: [MemoryRecall.Hit] = [],
         extraTail: String? = nil,
         now: Date = Date()
@@ -156,6 +179,7 @@ extension TeamModel {
             room: room,
             workplace: workplace,
             memory: memory,
+            includeSummary: includeSummary,
             extraTail: extraTail,
             now: now
         )
@@ -221,6 +245,7 @@ extension TeamModel {
         room: RoomInfo?,
         workplace: WorkPlace? = nil,
         memory: Bool = true,
+        includeSummary: Bool = true,
         extraTail: String? = nil,
         now: Date = Date()
     ) -> MemorySafety.SystemPromptInput {
@@ -248,7 +273,7 @@ extension TeamModel {
         }
         let timestampLine = "现在是 \(When.show(now))，\(TimeZone.current.identifier)。"
         let diary = room == nil ? diaryLine(bot.id) : nil
-        let summary = key.map { summaryBlock($0) }
+        let summary = includeSummary ? key.map { summaryBlock($0) } : nil
         let off = key.map { offBlock($0) }
         let workplaceLine = workplace?.promptLine
         let pulse = (key != nil && Pulse.on) ? Temper.of(bot).pulsePrompt : nil

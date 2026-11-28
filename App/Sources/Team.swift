@@ -2159,11 +2159,16 @@ final class TeamModel: ObservableObject {
         )
         if !isPlanModeActive(for: key) {
             agent.renderReplyImages = { [weak self] images in
-                let blocked = await MainActor.run { self?.isPlanModeActive(for: key) ?? false }
-                if blocked {
-                    throw ProviderError(Words.t("当前处于规划模式（只看不动），已阻止将生成的图片写入书案。"))
+                let checkPlanMode: @Sendable () async throws -> Void = { [weak self] in
+                    let blocked = await MainActor.run { self?.isPlanModeActive(for: key) ?? false }
+                    if blocked {
+                        throw WorkspaceImages.Failure.blockedByPolicy(
+                            Words.t("当前处于规划模式（只看不动），已阻止将生成的图片写入书案。")
+                        )
+                    }
                 }
-                return try await WorkspaceImages.reply(images)
+                try await checkPlanMode()
+                return try await WorkspaceImages.reply(images, beforeWrite: checkPlanMode)
             }
         }
         agent.prepareToolResult = { [weak self] result in
@@ -2888,7 +2893,9 @@ final class TeamModel: ObservableObject {
         imageAPIKey: String? = nil,
         experienceSource: ExperienceWriteSource = .mainChat,
         subtaskSideEffectContext: (threadID: String, attemptID: String, store: TaskStore)? = nil,
-        channelPass: ChannelPassTool? = nil
+        channelPass: ChannelPassTool? = nil,
+        expectedConversationID: String? = nil,
+        threadCreatedAtMs: Double? = nil
     ) -> [AgentTool] {
         let botId = bot.id
         let policyChat = displayChat ?? key
@@ -2918,7 +2925,7 @@ final class TeamModel: ObservableObject {
         all.append(RecallTool { [weak self] words in
             guard let self else { return [] }
             if helping {
-                return await self.recallReadOnly(words)
+                return await self.recallReadOnly(words, chat: policyChat)
             }
             return await self.recall(words, chat: policyChat)
         })
@@ -2947,8 +2954,20 @@ final class TeamModel: ObservableObject {
             }
         })
         all.append(SearchHistoryTool(helping: helping) { [weak self] query, includeAllChats, limit in
-            await self?.searchHistory(query: query, chatKey: policyChat, includeAllChats: includeAllChats, helping: helping, limit: limit)
-                ?? "当前无法检索历史记录。"
+            guard let self else { return "当前无法检索历史记录。" }
+            if let expectedConversationID {
+                let target = await MainActor.run {
+                    self.resolveConversationTarget(
+                        slotKey: policyChat,
+                        conversationID: expectedConversationID,
+                        threadCreatedAtMs: threadCreatedAtMs
+                    )
+                }
+                guard case .active = target else {
+                    return "原对话已收起或已切换，不能检索当前新对话的历史记录。"
+                }
+            }
+            return await self.searchHistory(query: query, chatKey: policyChat, includeAllChats: includeAllChats, helping: helping, limit: limit)
         })
         all.append(CalendarListTool())
         all.append(CalendarAddTool())
@@ -3012,6 +3031,7 @@ final class TeamModel: ObservableObject {
         for name in WorkspaceTools.names { grants[name] = workplace.grant(for: name) }
         grants["image_note"] = workplace.grant(for: "view_image")
         let off = Set(options(policyChat).off)
+        let chatGrantGate = liveChatMemoryGate
         let taintBook = taint
         let receipts = approvalReceipts
         let queue = approvalQueue
@@ -3019,6 +3039,9 @@ final class TeamModel: ObservableObject {
         let planLedger = livePlanModeLedger
         let planHostKind = code ?? "desk"
         let isPlanActive: @Sendable () -> Bool = { planLedger.isRestricted(key) }
+        let isGrantDisabledForPolicyChat: @Sendable (Grant) -> Bool = { grant in
+            chatGrantGate.isGrantDisabled(grant.rawValue, for: policyChat)
+        }
         // Keep TaintGuard inside Grant.gate so turning a grant off mid-turn immediately blocks execution without prompting.
         func wrap(_ rawTools: [AgentTool]) -> [AgentTool] {
             let instrumented: [AgentTool]
@@ -3049,6 +3072,7 @@ final class TeamModel: ObservableObject {
                 receipts: receipts,
                 policyRevision: { queue.currentRevision },
                 planModeActive: isPlanActive,
+                isGrantDisabledForChat: isGrantDisabledForPolicyChat,
                 reconfirm: { [weak self] ask, name in await self?.ask(ask, tool: name, bot: botId, chat: approvalChat, executionChat: key, workplace: workplace) ?? false }
             ).filter { tool in
                 guard let grant = grants[tool.spec.name] ?? Grant.of(tool: tool.spec.name) else { return true }
@@ -3173,13 +3197,18 @@ final class TeamModel: ObservableObject {
         agent.screen = Self.screen
         if !inheritedPlanMode {
             agent.renderReplyImages = { [weak self] images in
-                let blocked = await MainActor.run {
-                    (self?.isPlanModeActive(for: helperKey) ?? false) || (self?.isPlanModeActive(for: key) ?? false)
+                let checkPlanMode: @Sendable () async throws -> Void = { [weak self] in
+                    let blocked = await MainActor.run {
+                        (self?.isPlanModeActive(for: helperKey) ?? false) || (self?.isPlanModeActive(for: key) ?? false)
+                    }
+                    if blocked {
+                        throw WorkspaceImages.Failure.blockedByPolicy(
+                            Words.t("当前处于规划模式（只看不动），已阻止将生成的图片写入书案。")
+                        )
+                    }
                 }
-                if blocked {
-                    throw ProviderError(Words.t("当前处于规划模式（只看不动），已阻止将生成的图片写入书案。"))
-                }
-                return try await WorkspaceImages.reply(images)
+                try await checkPlanMode()
+                return try await WorkspaceImages.reply(images, beforeWrite: checkPlanMode)
             }
         }
         if Pref.temperature >= 0 { agent.temperature = Pref.temperature }
