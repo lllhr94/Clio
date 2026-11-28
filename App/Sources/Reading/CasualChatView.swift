@@ -370,6 +370,8 @@ struct CasualChatView<TopBar: View>: View {
                                         ForEach(pack.items) { item in
                                             Button {
                                                 if controller.sendSticker(item.id) {
+                                                    pendingUserAutoScroll = true
+                                                    isNearBottom = true
                                                     showingStickers = false
                                                 }
                                             } label: {

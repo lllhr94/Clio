@@ -1891,10 +1891,42 @@ final class ChatLayoutCache: @unchecked Sendable {
             } else if let retainedRowIDs, !owner.hasPrefix("streaming-"), !retainedRowIDs.contains(owner) {
                 blockHeightOverridesByOwner.removeValue(forKey: owner)
                 overrideVersionsByOwner.removeValue(forKey: owner)
+                assistantStreamingCache.removeValue(forKey: owner)
+                assistantFinalizedCache.removeAll { $0.id == owner }
             }
         }
         stateLock.unlock()
         builder.pruneStreamScanners(keepingStreamingKey: activeStreamingOwnerID)
+    }
+
+    /// Pure O(1) cache probe for whether an offscreen streaming/fresh reply has reveal-eligible prose,
+    /// without ever running synchronous CoreText layout during scroll frames (CX-08).
+    @MainActor
+    func cachedRevealEligibility(
+        streamingGeneration: Int?,
+        rowID: String?,
+        fade: Bool,
+        reduceMotion: Bool
+    ) -> Bool? {
+        stateLock.lock()
+        let entry: AssistantLayoutEntry?
+        if let gen = streamingGeneration, let live = lastLiveStreamingEntry, live.key.generation == gen {
+            entry = live.entry
+        } else if let rowID, let hit = assistantStreamingCache[rowID] {
+            entry = hit.entry
+        } else {
+            entry = nil
+        }
+        stateLock.unlock()
+        guard let entry else { return nil }
+        return entry.slices.contains {
+            guard case .richText(let prose) = $0.slice else { return false }
+            return ChatRevealPolicy.isEligible(
+                fade: fade,
+                reduceMotion: reduceMotion,
+                attributedLength: prose.attributed.length
+            )
+        }
     }
 
     var debugBlockHeightOverrideOwnerCount: Int {

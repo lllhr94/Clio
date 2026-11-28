@@ -189,7 +189,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var lastReportedActiveTurnID: String?
     private var lastReportedReplyOwner: String?
     private var lastReportedReplyRect: CGRect = .null
-    private var lastKnownRevealLimit: (ownerID: String, lineBottom: CGFloat)?
+    private var lastKnownRevealLimit: (ownerID: String, localOffsetY: CGFloat)?
 
     private var pendingScrollRequest: (id: String, anchor: UnitPoint, animated: Bool)?
     private var pendingDynamicRefresh = false
@@ -2980,16 +2980,36 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let lineBottom: CGFloat
         if let cell = collectionView.cellForItem(at: path) as? ChatAssistantCell {
             guard let visible = cell.revealedLineBottom(in: collectionView) else { return bottom }
-            lastKnownRevealLimit = (ownerID: item.ownerID, lineBottom: visible)
+            let localOffset = max(0, visible - cell.frame.minY)
+            lastKnownRevealLimit = (ownerID: item.ownerID, localOffsetY: localOffset)
             lineBottom = visible
         } else {
             // CX-08: Never run synchronous CoreText layout measurement for offscreen cells during scroll ticks.
+            guard let attrs = collectionView.layoutAttributesForItem(at: path) else { return bottom }
             if let cached = lastKnownRevealLimit, cached.ownerID == item.ownerID {
-                lineBottom = cached.lineBottom
-            } else if let attrs = collectionView.layoutAttributesForItem(at: path) {
-                lineBottom = attrs.frame.minY + min(attrs.frame.height, 2 * Ink.Size.body)
+                lineBottom = attrs.frame.minY + min(attrs.frame.height, cached.localOffsetY)
             } else {
-                return bottom
+                let eligible: Bool?
+                switch item.id {
+                case .liveProse(let gen):
+                    eligible = layoutCache.cachedRevealEligibility(
+                        streamingGeneration: gen,
+                        rowID: nil,
+                        fade: currentStyle.fade,
+                        reduceMotion: currentStyle.reduceMotion
+                    )
+                case .line(let id):
+                    eligible = layoutCache.cachedRevealEligibility(
+                        streamingGeneration: nil,
+                        rowID: id,
+                        fade: currentStyle.fade,
+                        reduceMotion: currentStyle.reduceMotion
+                    )
+                default:
+                    eligible = false
+                }
+                guard eligible == true else { return bottom }
+                lineBottom = attrs.frame.minY + min(attrs.frame.height, 2 * Ink.Size.body)
             }
         }
         let insets = collectionView.adjustedContentInset
