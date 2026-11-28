@@ -25,6 +25,9 @@ extension TeamModel {
         var thinkingSelection: ThinkingSelection?
         /// Conversation-scoped read-only Plan mode (default off; never mutates global `Grant`).
         var planMode: Bool?
+        /// Non-reusable conversation identity that migrates into `Leaf.conversationID` on `shelveCurrent`
+        /// so late async subtask deliveries and approvals never land in a new conversation reusing the same slot.
+        var conversationID: String?
 
         var isPlanMode: Bool { planMode == true }
 
@@ -50,7 +53,8 @@ extension TeamModel {
             spend: Spend? = nil,
             thinking: Thinking? = nil,
             thinkingSelection: ThinkingSelection? = nil,
-            planMode: Bool? = nil
+            planMode: Bool? = nil,
+            conversationID: String? = nil
         ) {
             self.off = off
             self.model = model
@@ -60,10 +64,11 @@ extension TeamModel {
             self.thinking = thinking
             self.thinkingSelection = thinkingSelection
             self.planMode = planMode
+            self.conversationID = conversationID
         }
 
         private enum CodingKeys: String, CodingKey {
-            case off, model, place, title, spend, thinking, thinkingSelection, planMode
+            case off, model, place, title, spend, thinking, thinkingSelection, planMode, conversationID
         }
 
         init(from decoder: Decoder) throws {
@@ -76,6 +81,7 @@ extension TeamModel {
             thinking = try? c.decodeIfPresent(Thinking.self, forKey: .thinking)
             thinkingSelection = try? c.decodeIfPresent(ThinkingSelection.self, forKey: .thinkingSelection)
             planMode = try? c.decodeIfPresent(Bool.self, forKey: .planMode)
+            conversationID = try? c.decodeIfPresent(String.self, forKey: .conversationID)
         }
     }
 

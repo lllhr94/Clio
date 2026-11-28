@@ -128,6 +128,10 @@ public struct PendingLeafOpen: Codable, Equatable, Sendable {
     /// POSIX inode of the source leaf file `chats/<leafKey>.json` captured before writes started;
     /// forward cleanup only removes the exact leaf file opened by this transaction.
     public var leafChatInode: UInt64?
+    /// Non-reusable conversation identity of the active slot BEFORE this leaf-open transaction (used on rollback).
+    public var priorConversationID: String?
+    /// Non-reusable conversation identity of the target leaf being opened (used on forward commit cleanup).
+    public var targetConversationID: String?
 
     public init(
         chatKey: String,
@@ -138,7 +142,9 @@ public struct PendingLeafOpen: Codable, Equatable, Sendable {
         writtenActiveQueuedIds: [UUID] = [],
         writtenChatInode: UInt64? = nil,
         chatsDirInode: UInt64? = nil,
-        leafChatInode: UInt64? = nil
+        leafChatInode: UInt64? = nil,
+        priorConversationID: String? = nil,
+        targetConversationID: String? = nil
     ) {
         self.chatKey = chatKey
         self.leafId = leafId
@@ -149,6 +155,8 @@ public struct PendingLeafOpen: Codable, Equatable, Sendable {
         self.writtenChatInode = writtenChatInode
         self.chatsDirInode = chatsDirInode
         self.leafChatInode = leafChatInode
+        self.priorConversationID = priorConversationID
+        self.targetConversationID = targetConversationID
     }
 }
 
@@ -784,6 +792,34 @@ public enum QueuedMessageStore {
             let leafChatURL = chatsDir.appendingPathComponent("\(safeLeaf).json")
             let leafSummaryURL = chatsDir.appendingPathComponent("\(safeChat)~\(tx.leafId)~summary.json")
             let leafListURL = chatsDir.appendingPathComponent("\(safeChat)~leaves.json")
+            let optionsURL = chatsDir.appendingPathComponent("\(safeChat)~options.json")
+
+            func reconcileOptionsConversationID(_ expectedConversationID: String?) -> Bool {
+                guard let expectedConversationID, !expectedConversationID.isEmpty else { return true }
+                var obj: [String: Any]
+                if fm.fileExists(atPath: optionsURL.path) {
+                    guard let data = try? Data(contentsOf: optionsURL),
+                          let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        return false
+                    }
+                    obj = parsed
+                } else {
+                    obj = [:]
+                }
+                if (obj["conversationID"] as? String) == expectedConversationID {
+                    return true
+                }
+                obj["conversationID"] = expectedConversationID
+                guard let encoded = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else {
+                    return false
+                }
+                do {
+                    try encoded.write(to: optionsURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                    return true
+                } catch {
+                    return false
+                }
+            }
 
             // Determine whether the leaf index already dropped `tx.leafId`.
             let indexExists = fm.fileExists(atPath: leafListURL.path)
@@ -826,11 +862,15 @@ public enum QueuedMessageStore {
                         rollbackOk = false
                     }
                 }
+                if !reconcileOptionsConversationID(tx.priorConversationID) {
+                    rollbackOk = false
+                }
                 if rollbackOk {
                     clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
                 }
             } else if !leafStillInIndex {
-                // Index write already committed before crash: finish deleting leftover leaf files and leaf queue.
+                // Index write already committed before crash: ensure target conversationID is persisted and clean leftover leaf files.
+                let optionsSynced = reconcileOptionsConversationID(tx.targetConversationID)
                 let leafMatchesInode = tx.leafChatInode == nil || fileInode(at: leafChatURL) == tx.leafChatInode
                 if fm.fileExists(atPath: leafChatURL.path), leafMatchesInode {
                     try? fm.removeItem(at: leafChatURL)
@@ -841,9 +881,10 @@ public enum QueuedMessageStore {
                 if !fm.fileExists(atPath: leafChatURL.path) {
                     try? save([], for: tx.leafKey, under: queuedRoot)
                 }
-                if !leafMatchesInode {
+                if optionsSynced && !leafMatchesInode {
                     clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
-                } else if !fm.fileExists(atPath: leafChatURL.path),
+                } else if optionsSynced,
+                          !fm.fileExists(atPath: leafChatURL.path),
                           !fm.fileExists(atPath: folder(for: tx.leafKey, under: queuedRoot).path) {
                     clearPendingLeafOpen(for: tx.chatKey, under: queuedRoot)
                 }

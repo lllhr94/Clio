@@ -66,6 +66,17 @@ public final class HostBindingBook: @unchecked Sendable {
         return hosts[chat]
     }
 
+    public func remove(for chat: String) {
+        lock.lock()
+        hosts.removeValue(forKey: chat)
+        lock.unlock()
+    }
+
+    public var count: Int {
+        lock.lock(); defer { lock.unlock() }
+        return hosts.count
+    }
+
     /// Changes every live binding to this remote host and returns the affected execution conversations.
     public func replace(_ oldHostID: String, with newHostID: String) -> [String] {
         lock.lock(); defer { lock.unlock() }

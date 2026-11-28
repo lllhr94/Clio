@@ -17,8 +17,29 @@ extension TeamModel {
         let laters: [Later]
         let routines: [Routine]
         let queued: [String: [StoredQueuedMessage]]
+        let restoreRecoveryError: String?
 
         nonisolated static func read() -> Self {
+            if !Backup.reconcileInterruptedRestoreBeforeStorageInit() {
+                Disk.frozen = true
+                let reason = Backup.lastStartupRestoreRecoveryError ?? "上次恢复目录回滚未完成"
+                DispatchQueue.main.async {
+                    Diag.note("启动恢复自愈失败，已冻结写入以防破坏原数据：\(reason)")
+                }
+                return Self(
+                    settings: TeamSettings(),
+                    bots: [],
+                    rooms: [],
+                    memory: MemoryBook(),
+                    suppressedMemoryHashes: [],
+                    pinnedMemoryIDs: [],
+                    laters: [],
+                    routines: [],
+                    queued: [:],
+                    restoreRecoveryError: reason
+                )
+            }
+            CasualColdStartCoordinator.shared.reconcileOnceOnLaunch()
             let barrierBlocked = QueuedStore.reconcilePreRestoreBarrier(teamRoot: Disk.root)
             QueuedStore.reconcilePendingLeafOpens(teamRoot: Disk.root)
             let settings = Disk.load(TeamSettings.self, "settings.json") ?? TeamSettings()
@@ -54,7 +75,8 @@ extension TeamModel {
                 pinnedMemoryIDs: memoryBoot.pinnedIDs,
                 laters: laters,
                 routines: routines,
-                queued: queued
+                queued: queued,
+                restoreRecoveryError: nil
             )
         }
 
@@ -233,7 +255,17 @@ extension TeamModel {
             // deduplicate any ID appearing in both `base` and `base~leaf`.
             for (base, leafIds) in leavesByBase {
                 guard let activeItems = kept[base], !activeItems.isEmpty else { continue }
-                let activeIsEmptyOnDisk = Disk.loadChat(base).isEmpty
+                let activeIsEmptyOnDisk: Bool
+                switch Disk.loadChatChecked(base) {
+                case .missing:
+                    activeIsEmptyOnDisk = true
+                case .loaded(let entries):
+                    activeIsEmptyOnDisk = entries.isEmpty
+                case .corrupt(let recovered, let quarantined, _):
+                    activeIsEmptyOnDisk = quarantined && recovered.isEmpty
+                case .unreadable:
+                    activeIsEmptyOnDisk = false
+                }
                 var activeFiltered = activeItems
                 for leafId in leafIds {
                     let leafKey = TeamModel.threadKey(base, leaf: leafId)
@@ -273,6 +305,14 @@ extension TeamModel {
     }
 
     func load(_ data: InitialData) {
+        if let recoveryError = data.restoreRecoveryError {
+            Disk.frozen = true
+            queueDispatchSuspended = true
+            entries = [:]
+            approvals = []
+            Diag.note("已中止常规加载并保持只读冻结状态，待恢复目录还原后重启：\(recoveryError)")
+            return
+        }
         settings = data.settings
         if Self.settle(&settings) { saveSettings() }
         bots = data.bots

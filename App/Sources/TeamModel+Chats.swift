@@ -9,20 +9,53 @@ extension TeamModel {
 
     func history(_ key: String) -> [Entry] {
         if let kept = entries[key] { return kept }
-        let loaded = keeping ? Disk.loadChat(key) : []
-        entries[key] = loaded
-        return loaded
+        guard keeping else {
+            entries[key] = []
+            return []
+        }
+        return applyChatLoadOutcome(Disk.loadChatChecked(key), for: key)
     }
 
     func loadHistory(_ key: String) async -> [Entry] {
         if let kept = entries[key] { return kept }
         guard keeping else { return [] }
-        let loaded = await Task.detached(priority: .userInitiated) {
-            Disk.loadChat(key)
+        let outcome = await Task.detached(priority: .userInitiated) {
+            Disk.loadChatChecked(key)
         }.value
         if let newer = entries[key] { return newer }
-        if !Task.isCancelled { entries[key] = loaded }
-        return loaded
+        guard !Task.isCancelled else {
+            switch outcome {
+            case .loaded(let loaded): return loaded
+            case .corrupt(let recovered, _, _): return recovered
+            case .missing, .unreadable: return []
+            }
+        }
+        return applyChatLoadOutcome(outcome, for: key)
+    }
+
+    @discardableResult
+    func applyChatLoadOutcome(_ outcome: Disk.ChatLoadOutcome, for key: String) -> [Entry] {
+        switch outcome {
+        case .missing:
+            unreadableChats.remove(key)
+            entries[key] = []
+            return []
+        case .loaded(let loaded):
+            unreadableChats.remove(key)
+            entries[key] = loaded
+            return loaded
+        case .corrupt(let recovered, let quarantined, _):
+            if quarantined {
+                unreadableChats.remove(key)
+                entries[key] = recovered
+            } else {
+                unreadableChats.insert(key)
+            }
+            return recovered
+        case .unreadable:
+            unreadableChats.insert(key)
+            return []
+        }
     }
 
     // MARK: Archive

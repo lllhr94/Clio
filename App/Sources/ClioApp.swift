@@ -101,6 +101,11 @@ struct ClioApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     init() {
+        // Reconcile any interrupted backup directory swap BEFORE any store touches `Disk.root`
+        // or creates empty skeleton folders (`Team/chats`, `Team/subtasks`, etc.).
+        if !Backup.reconcileInterruptedRestoreBeforeStorageInit() {
+            Disk.frozen = true
+        }
         Pref.settleType()
         L.prepare()
         FontShelf.shared.prepare()

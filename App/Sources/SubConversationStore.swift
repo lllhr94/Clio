@@ -5,6 +5,16 @@ import SQLite3
 /// JSON owns the record. The database can be removed and regenerated from it.
 actor SubConversationStore {
     static let shared = SubConversationStore(teamRoot: Disk.root)
+    /// Synchronous lock serializing canonical JSON writes against `Backup.restore`'s freeze barrier
+    /// so no write that passed `!Disk.frozen` can cross directory staging or directory swap.
+    private static let writeBarrierLock = NSLock()
+
+    static func withBackupBarrier<T>(_ body: () throws -> T) rethrows -> T {
+        try writeBarrierLock.withLock {
+            try body()
+        }
+    }
+
     let directory: URL
     let projectionURL: URL
     private let respectsRestore: Bool
@@ -82,17 +92,35 @@ actor SubConversationStore {
 
     private func canonicalRecords() throws -> [SubConversationRecord] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .compactMap { url in
-                guard url.pathExtension == "json", let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { return nil }
-                return try load(id)
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        var loaded: [SubConversationRecord] = []
+        for url in files {
+            guard url.pathExtension == "json",
+                  let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { continue }
+            do {
+                loaded.append(try load(id))
+            } catch {
+                // Keep the corrupt file untouched on disk and skip it instead of breaking the whole store.
+                let name = url.lastPathComponent
+                let reason = error.localizedDescription
+                DispatchQueue.main.async {
+                    Diag.note("子对话文件 \(name) 损坏，已跳过保留原件（\(reason)）")
+                }
             }
+        }
+        return loaded
     }
 
     private func write(_ record: SubConversationRecord) throws {
-        guard !respectsRestore || !Disk.frozen else { throw Failure.restoring }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(record).write(to: path(record.id), options: [.atomic, .completeFileProtection])
+        let encoded = try JSONEncoder().encode(record)
+        let targetDir = directory
+        let targetPath = path(record.id)
+        let checkRestore = respectsRestore
+        try Self.writeBarrierLock.withLock {
+            guard !checkRestore || !Disk.frozen else { throw Failure.restoring }
+            try FileManager.default.createDirectory(at: targetDir, withIntermediateDirectories: true)
+            try encoded.write(to: targetPath, options: [.atomic, .completeFileProtection])
+        }
         projectionDirty = true
         // A damaged or unavailable projection must not turn a committed JSON write into a retry.
         try? rebuildProjection()

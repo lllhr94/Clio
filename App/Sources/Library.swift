@@ -779,9 +779,15 @@ private struct OutboundConsent: Codable, Hashable, Sendable {
 /// Everything the app keeps, as small JSON files in Application Support.
 enum Disk {
     static let root: URL = {
+        // Reconcile any interrupted backup swap BEFORE creating empty skeleton subdirectories under `Team/`.
+        if !Backup.reconcileInterruptedRestoreBeforeStorageInit() {
+            frozen = true
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Team", isDirectory: true)
-        for folder in ["", "chats", "media", "diary"] {
-            try? FileManager.default.createDirectory(at: base.appendingPathComponent(folder, isDirectory: true), withIntermediateDirectories: true)
+        if !frozen {
+            for folder in ["", "chats", "media", "diary"] {
+                try? FileManager.default.createDirectory(at: base.appendingPathComponent(folder, isDirectory: true), withIntermediateDirectories: true)
+            }
         }
         return base
     }()
@@ -800,15 +806,38 @@ enum Disk {
         }
     }
 
+    /// Testing hook to simulate atomic write failures on `Disk.write` (e.g. disk full / Data Protection error).
+    nonisolated(unsafe) static var writeDataOverride: (@Sendable (Data, URL) throws -> Void)?
+
+    /// Serializes direct `Disk.write` / `Disk.remove` / `Disk.writePhoto` mutations against `Backup.restore`'s
+    /// freeze barrier so a background task (such as `openLeafNow`) that passed `!frozen` cannot cross directory swap.
+    private static let writeBarrierLock = NSLock()
+
+    static func withWriteBarrier<T>(_ body: () throws -> T) rethrows -> T {
+        try writeBarrierLock.withLock {
+            try body()
+        }
+    }
+
     static func write<Value: Encodable>(_ value: Value, _ name: String) throws {
-        guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
         let data = try JSONEncoder().encode(value)
-        try data.write(to: url(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let destination = url(name)
+        try writeBarrierLock.withLock {
+            guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
+            if let override = writeDataOverride {
+                try override(data, destination)
+            } else {
+                try data.write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            }
+        }
     }
 
     static func remove(_ name: String) {
-        guard !frozen else { return }
-        try? FileManager.default.removeItem(at: url(name))
+        let destination = url(name)
+        writeBarrierLock.withLock {
+            guard !frozen else { return }
+            try? FileManager.default.removeItem(at: destination)
+        }
     }
 
     /// Set once a backup has been put back: what is in memory is the old state, and writing it out would undo the
@@ -819,20 +848,85 @@ enum Disk {
     }
     private static let frozenFlag = Mutex(false)
 
-    /// A conversation's messages. A file that cannot be read as a whole is never taken for an empty conversation:
-    /// that would let the next message overwrite it. It is copied aside first (…broken-<time>.json, kept out of the
-    /// way), and every message that can still be read is kept.
-    static func loadChat(_ key: String) -> [Entry] {
-        let name = chatFile(key)
-        guard let data = try? Data(contentsOf: url(name)) else { return [] }
-        if let entries = try? JSONDecoder().decode([Entry].self, from: data) { return entries }
-        let aside = name.replacingOccurrences(of: ".json", with: ".broken-\(Int(Date().timeIntervalSince1970)).json")
-        if !frozen { try? data.write(to: url(aside), options: .atomic) }
-        let readable = ((try? JSONDecoder().decode([Lenient].self, from: data)) ?? []).compactMap(\.entry)
-        DispatchQueue.main.async {
-            Diag.note("对话文件 \(name) 有坏的地方：读出了 \(readable.count) 条，原文件另存为 \(aside)")
+    enum ChatLoadOutcome: Equatable, Sendable {
+        case missing
+        case loaded([Entry])
+        case unreadable(String)
+        case corrupt(recovered: [Entry], quarantined: Bool, reason: String)
+    }
+
+    /// Testing hook to simulate transient unreadable file I/O errors (e.g. Data Protection lock / EACCES).
+    nonisolated(unsafe) static var readChatDataOverride: (@Sendable (URL) throws -> Data)?
+
+    private static func isFileMissingError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain && ns.code == NSFileReadNoSuchFileError {
+            return true
         }
-        return readable
+        if ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOENT) {
+            return true
+        }
+        if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isFileMissingError(underlying)
+        }
+        return false
+    }
+
+    /// Reads a conversation's messages while distinguishing genuine absence (`ENOENT`) from transient
+    /// unreadable/I/O failures and partial corruption so callers never cache `[]` and overwrite real history.
+    static func loadChatChecked(_ key: String) -> ChatLoadOutcome {
+        let name = chatFile(key)
+        let fileURL = url(name)
+        let data: Data
+        do {
+            if let override = readChatDataOverride {
+                data = try override(fileURL)
+            } else {
+                data = try Data(contentsOf: fileURL)
+            }
+        } catch {
+            if isFileMissingError(error) {
+                return .missing
+            }
+            let reason = error.localizedDescription
+            DispatchQueue.main.async {
+                Diag.note("对话文件 \(name) 暂时读不出来（\(reason)），已暂停覆写以保护原记录。")
+            }
+            return .unreadable(reason)
+        }
+        if let entries = try? JSONDecoder().decode([Entry].self, from: data) {
+            return .loaded(entries)
+        }
+        let aside = name.replacingOccurrences(of: ".json", with: ".broken-\(Int(Date().timeIntervalSince1970)).json")
+        var quarantined = false
+        if !frozen {
+            do {
+                try data.write(to: url(aside), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                quarantined = true
+            } catch {
+                quarantined = false
+            }
+        }
+        let readable = ((try? JSONDecoder().decode([Lenient].self, from: data)) ?? []).compactMap(\.entry)
+        let note = quarantined
+            ? "对话文件 \(name) 有坏的地方：读出了 \(readable.count) 条，原文件另存为 \(aside)"
+            : "对话文件 \(name) 有坏的地方且未能备份原件：读出了 \(readable.count) 条，已暂停覆写原文件"
+        DispatchQueue.main.async {
+            Diag.note(note)
+        }
+        return .corrupt(recovered: readable, quarantined: quarantined, reason: note)
+    }
+
+    /// A conversation's messages. Read-only convenience wrapper over `loadChatChecked`.
+    static func loadChat(_ key: String) -> [Entry] {
+        switch loadChatChecked(key) {
+        case .missing, .unreadable:
+            return []
+        case .loaded(let entries):
+            return entries
+        case .corrupt(let recovered, _, _):
+            return recovered
+        }
     }
 
     private struct Lenient: Decodable {
@@ -853,9 +947,12 @@ enum Disk {
 
     /// Writes a photo atomically and throws on failure so callers transferring queued photos can abort before deleting the source.
     static func writePhoto(_ data: Data) throws -> String {
-        guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
         let name = UUID().uuidString + ".jpg"
-        try data.write(to: url("media/\(name)"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let destination = url("media/\(name)")
+        try writeBarrierLock.withLock {
+            guard !frozen else { throw TeamError(message: "刚恢复了备份，重新打开 Clio 后才能保存。") }
+            try data.write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
         return name
     }
 

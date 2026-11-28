@@ -1,6 +1,7 @@
 import AgentKit
 import Combine
 import Craft
+import CryptoKit
 import Foundation
 import SwiftUI
 import UIKit
@@ -10,10 +11,10 @@ import UIKit
 /// and two-phase crash-safe `clio.question` resumes.
 @MainActor
 final class SubtaskManager: ObservableObject {
-    static let sharedCanonicalStore: TaskStore = {
+    nonisolated static let sharedCanonicalStore: TaskStore = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let dbURL = appSupport.appendingPathComponent("ClioIndex", isDirectory: true).appendingPathComponent("clio-tasks.db")
-        return TaskStore(canonicalTeamDirectory: Disk.root, projectionDatabaseURL: dbURL)
+        return TaskStore(canonicalTeamDirectory: Disk.root, projectionDatabaseURL: dbURL, isWriteFrozen: { Disk.frozen })
     }()
 
     let store: TaskStore
@@ -23,6 +24,8 @@ final class SubtaskManager: ObservableObject {
     /// Keyed by `threadID`, storing the active `(attemptID, task)` so stale cleanup never clobbers a newer retry.
     private var runningTasks: [String: (attemptID: String, task: Task<Void, Never>)] = [:]
     private var liveQuestionWaiters: [String: (formID: UUID, fieldKey: String)] = [:]
+    /// Subtask deliveries that arrived while `openLeafNow` was in flight for `parentChat`; replayed once flip settles.
+    private var deferredDeliveriesWhileOpening: [String: [(threadID: String, attemptID: String, eventID: String)]] = [:]
     private var unlockObserver: AnyCancellable?
     private weak var boundTeam: TeamModel?
 
@@ -126,8 +129,10 @@ final class SubtaskManager: ObservableObject {
         let taintedIn = team.taint.isTainted(parentChat) || team.isTurnMemoryTainted(parentChat)
 
         do {
+            let parentConversationID = team.activeConversationID(for: parentChat)
             let (thread, attempt) = try store.createThread(
                 stableParentChatID: parentChat,
+                parentConversationID: parentConversationID,
                 askerBotID: asker.id,
                 helperBotID: helper.id,
                 helperBotName: helper.name,
@@ -239,6 +244,7 @@ final class SubtaskManager: ObservableObject {
             team.livePlanModeLedger.setInheritedReadOnly(false, for: executionKey)
             team.livePlanModeLedger.setDelegationParent(nil, for: executionKey)
             team.ephemeralPlaces.removeValue(forKey: executionKey)
+            team.hostBindings.remove(for: executionKey)
             team.approvalReceipts.clear(executionChat: executionKey)
             if runningTasks[threadID]?.attemptID == executionKey {
                 runningTasks.removeValue(forKey: threadID)
@@ -351,7 +357,28 @@ final class SubtaskManager: ObservableObject {
             system: prompt.full,
             tools: subtaskTools,
             approve: { [weak team] ask, tool in
-                await team?.ask(ask, tool: tool, bot: helper.id, chat: parentChat, executionChat: executionKey, workplace: workplace) ?? false
+                guard let team else { return false }
+                let target = await MainActor.run {
+                    team.resolveConversationTarget(
+                        slotKey: parentChat,
+                        conversationID: thread.parentConversationID,
+                        threadCreatedAtMs: thread.createdAtMs
+                    )
+                }
+                switch target {
+                case .active(let slot):
+                    return await team.ask(ask, tool: tool, bot: helper.id, chat: slot, executionChat: executionKey, workplace: workplace)
+                case .leaf(let slot, let leaf):
+                    var labeled = ask
+                    labeled.reason = "【来自已收起对话「\(leaf.title)」的后台任务】\n" + ask.reason
+                    return await team.ask(labeled, tool: tool, bot: helper.id, chat: slot, executionChat: executionKey, workplace: workplace)
+                case .ambiguous:
+                    var labeled = ask
+                    labeled.reason = "【来自更早对话的后台任务】\n" + ask.reason
+                    return await team.ask(labeled, tool: tool, bot: helper.id, chat: parentChat, executionChat: executionKey, workplace: workplace)
+                case .gone:
+                    return false
+                }
             }
         )
         agent.screen = TeamModel.screen
@@ -507,9 +534,9 @@ final class SubtaskManager: ObservableObject {
         )
     }
 
-    /// Idempotently injects the subtask outcome into `stableParentChatID` keyed by `eventID`,
-    /// writing & confirming the parent entry BEFORE recording `deliveredEventIDs` so crashes
-    /// never lose delivery and cold-start replays never duplicate.
+    /// Idempotently injects the subtask outcome into the original parent conversation (active slot or shelved leaf)
+    /// keyed by `eventID`, confirming on-disk persistence via `onSaved` BEFORE recording `deliveredEventIDs`
+    /// so write failures never mark delivery complete and in-memory duplicates never mask disk failures.
     @discardableResult
     func deliverIdempotentlyToParent(
         thread: SubtaskThread,
@@ -521,12 +548,19 @@ final class SubtaskManager: ObservableObject {
             return false
         }
         let parentChat = thread.stableParentChatID
+        // Never write into a leaf or active slot while `openLeafNow` is swapping files for `parentChat`:
+        // defer until the leaf flip commits/rolls back and then re-resolve target cleanly.
+        if team.openingLeaves.contains(parentChat) {
+            var queue = deferredDeliveriesWhileOpening[parentChat] ?? []
+            if !queue.contains(where: { $0.eventID == eventID }) {
+                queue.append((threadID: thread.threadID, attemptID: attemptID, eventID: eventID))
+                deferredDeliveriesWhileOpening[parentChat] = queue
+            }
+            return false
+        }
+
         let attempt = thread.attempts.first { $0.attemptID == attemptID } ?? thread.latestAttempt
         let isTainted = attempt?.isTaintedForParent ?? false
-        if isTainted {
-            team.taint.mark(parentChat)
-            team.markTurnMemoryTainted(parentChat)
-        }
 
         let summary: String
         switch attempt?.status {
@@ -538,25 +572,167 @@ final class SubtaskManager: ObservableObject {
             summary = "【后台子任务失败 · \(thread.helperBotName)】\(attempt?.errorMessage ?? "执行未完成")"
         }
 
-        let alreadyInParent = (team.entries[parentChat]?.contains(where: { $0.id == eventID }) ?? false)
-            || team.history(parentChat).contains(where: { $0.id == eventID })
-        if !alreadyInParent {
-            var noteEntry = Entry(id: eventID, at: Now.ms, message: .assistant(summary), note: true)
-            noteEntry.delegated = true
-            if isTainted { noteEntry.tainted = true }
-            team.append(noteEntry, to: parentChat)
-            if team.keeping { ChatDisk.finishWrites() }
-            team.touch(parentChat, preview: summary)
-            team.record(attempt?.status == .succeeded ? .done : .failed, in: parentChat)
+        var noteEntry = Entry(id: eventID, at: Now.ms, message: .assistant(summary), note: true)
+        noteEntry.delegated = true
+        if isTainted { noteEntry.tainted = true }
+
+        let target = team.resolveConversationTarget(
+            slotKey: parentChat,
+            conversationID: thread.parentConversationID,
+            threadCreatedAtMs: thread.createdAtMs
+        )
+
+        final class SavedReceiptBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var saved = false
+            func set(_ value: Bool) { lock.withLock { saved = value } }
+            func get() -> Bool { lock.withLock { saved } }
         }
 
-        let recorded = (try? store.recordParentDelivery(
-            threadID: thread.threadID,
-            attemptID: attemptID,
-            eventID: eventID
-        )) ?? false
-        refresh()
-        return recorded
+        switch target {
+        case .ambiguous:
+            // Legacy thread lacking `parentConversationID` after a newer leaf was shelved:
+            // keep undelivered rather than risking cross-conversation bleed into a different chat.
+            Diag.note("旧版后台子任务 \(thread.threadID) 缺少父会话身份且期间已换页，暂保留待核对以避免串投。")
+            refresh()
+            return false
+
+        case .gone:
+            // Parent conversation was deleted or cleared: never inject into a new conversation reusing `parentChat`.
+            let recorded = (try? store.recordParentDelivery(
+                threadID: thread.threadID,
+                attemptID: attemptID,
+                eventID: eventID
+            )) ?? false
+            refresh()
+            return recorded
+
+        case .leaf(let slotKey, let leaf):
+            // Deliver directly into the shelved leaf file without touching or tainting the newer active conversation.
+            guard team.appendToShelvedLeaf(noteEntry, chatKey: slotKey, leaf: leaf) else {
+                refresh()
+                return false
+            }
+            let recorded = (try? store.recordParentDelivery(
+                threadID: thread.threadID,
+                attemptID: attemptID,
+                eventID: eventID
+            )) ?? false
+            refresh()
+            return recorded
+
+        case .active(let activeChat):
+            if isTainted {
+                team.taint.mark(activeChat)
+                team.markTurnMemoryTainted(activeChat)
+            }
+
+            let alreadyOnDisk: Bool
+            if team.keeping {
+                switch Disk.loadChatChecked(activeChat) {
+                case .loaded(let diskEntries):
+                    alreadyOnDisk = diskEntries.contains(where: { $0.id == eventID })
+                case .corrupt(let recovered, let quarantined, _):
+                    guard quarantined else {
+                        refresh()
+                        return false
+                    }
+                    alreadyOnDisk = recovered.contains(where: { $0.id == eventID })
+                case .missing:
+                    alreadyOnDisk = false
+                case .unreadable:
+                    refresh()
+                    return false
+                }
+            } else {
+                alreadyOnDisk = team.entries[activeChat]?.contains(where: { $0.id == eventID }) ?? false
+            }
+
+            if !alreadyOnDisk {
+                // Remove any unpersisted in-memory remnant before re-appending so retries never duplicate or mask failures.
+                if team.keeping, var mem = team.entries[activeChat] {
+                    let before = mem.count
+                    mem.removeAll { $0.id == eventID }
+                    if mem.count != before {
+                        team.entries[activeChat] = mem
+                    }
+                }
+                let receipt = SavedReceiptBox()
+                team.append(noteEntry, to: activeChat) { ok in
+                    receipt.set(ok)
+                }
+                if team.keeping {
+                    ChatDisk.finishWrites()
+                }
+                guard receipt.get() else {
+                    if team.keeping, var mem = team.entries[activeChat] {
+                        mem.removeAll { $0.id == eventID }
+                        team.entries[activeChat] = mem
+                        team.notify(activeChat, .changed)
+                    }
+                    refresh()
+                    return false
+                }
+                team.touch(activeChat, preview: summary)
+                team.record(attempt?.status == .succeeded ? .done : .failed, in: activeChat)
+            } else if !(team.entries[activeChat]?.contains(where: { $0.id == eventID }) ?? false) {
+                // Disk already has the event; ensure in-memory view reflects it without rewriting disk.
+                var mem = team.history(activeChat)
+                if !mem.contains(where: { $0.id == eventID }) {
+                    mem.append(noteEntry)
+                    team.entries[activeChat] = mem
+                    team.notify(activeChat, .changed)
+                }
+            }
+
+            let recorded = (try? store.recordParentDelivery(
+                threadID: thread.threadID,
+                attemptID: attemptID,
+                eventID: eventID
+            )) ?? false
+            refresh()
+            return recorded
+        }
+    }
+
+    /// Replays any subtask deliveries deferred while `openLeafNow` was in flight for `parentChat`.
+    func drainDeferredDeliveries(for parentChat: String, team: TeamModel) {
+        guard !team.openingLeaves.contains(parentChat),
+              let pending = deferredDeliveriesWhileOpening.removeValue(forKey: parentChat),
+              !pending.isEmpty else { return }
+        for item in pending {
+            guard let latest = store.thread(id: item.threadID) else { continue }
+            _ = deliverIdempotentlyToParent(
+                thread: latest,
+                attemptID: item.attemptID,
+                eventID: item.eventID,
+                team: team
+            )
+        }
+    }
+
+    /// Cancels all live subtask tasks and their approvals before/after a backup restore without writing into the swapped directory.
+    func cancelAllForBackupRestore(team: TeamModel) {
+        let active = runningTasks
+        runningTasks.removeAll()
+        var keysToClear: Set<String> = []
+        for (threadID, entry) in active {
+            entry.task.cancel()
+            keysToClear.insert(threadID)
+            keysToClear.insert(entry.attemptID)
+            team.hostBindings.remove(for: entry.attemptID)
+            team.ephemeralPlaces.removeValue(forKey: entry.attemptID)
+            team.livePlanModeLedger.setInheritedReadOnly(false, for: entry.attemptID)
+            team.livePlanModeLedger.setDelegationParent(nil, for: entry.attemptID)
+        }
+        guard !keysToClear.isEmpty else { return }
+        for approval in team.approvals where approval.executionChat.map(keysToClear.contains) == true {
+            team.approvalQueue.cancel(id: approval.id)
+        }
+        for key in keysToClear {
+            team.approvalReceipts.clear(executionChat: key)
+        }
+        team.approvals.removeAll { $0.executionChat.map(keysToClear.contains) == true }
     }
 
     // MARK: - Stop Scope Controls
@@ -732,9 +908,24 @@ final class SubtaskManager: ObservableObject {
         return true
     }
 
+    private static func deterministicUUID(from seed: String) -> UUID {
+        let digest = Array(SHA256.hash(data: Data(seed.utf8)))
+        var bytes: uuid_t = (
+            digest[0], digest[1], digest[2], digest[3],
+            digest[4], digest[5], digest[6], digest[7],
+            digest[8], digest[9], digest[10], digest[11],
+            digest[12], digest[13], digest[14], digest[15]
+        )
+        // RFC 4122 version 5 / variant bits
+        bytes.6 = (bytes.6 & 0x0F) | 0x50
+        bytes.8 = (bytes.8 & 0x3F) | 0x80
+        return UUID(uuid: bytes)
+    }
+
     /// Phase 2: Drains all `.answered` questions once App Lock is unlocked.
-    /// Dispatches ONLY when `resumeAttemptID` is not already in Canonical manifest AND delivery succeeds;
-    /// if `team.send` returns `false`, leaves `.answered` unconsumed so a later foreground resume can retry cleanly.
+    /// Persists the reply under a deterministic `resumeAttemptID`-derived entry/queued ID and confirms disk save
+    /// BEFORE claiming the resume manifest & marking `.consumed` so crashes before or after write neither swallow
+    /// nor duplicate the reply.
     func drainPendingQuestionResumes(team: TeamModel) {
         bind(to: team)
         guard AppLock.isCurrentlyUnlocked else { return }
@@ -748,15 +939,22 @@ final class SubtaskManager: ObservableObject {
                 continue
             }
             let text = item.answerText ?? ""
-            let dispatched: Bool
+            let persistedAndDispatched: Bool
             if let live = liveQuestionWaiters.removeValue(forKey: item.questionID) {
                 Asker.shared.answer([live.fieldKey: text], to: live.formID)
-                dispatched = true
+                persistedAndDispatched = true
             } else {
                 let replyPrompt = "【关于「\(item.title)」的回答】\(text)"
-                dispatched = team.send(replyPrompt, photos: [], to: item.chatKey, userInitiated: true)
+                let deterministicEntryID = "qresume-\(resumeID)"
+                let deterministicQueuedID = Self.deterministicUUID(from: "qresume-\(resumeID)")
+                persistedAndDispatched = team.sendConfirmedForQuestionResume(
+                    replyPrompt,
+                    to: item.chatKey,
+                    deterministicEntryID: deterministicEntryID,
+                    deterministicQueuedID: deterministicQueuedID
+                )
             }
-            guard dispatched else { continue }
+            guard persistedAndDispatched else { continue }
             _ = try? store.claimQuestionResume(questionID: item.questionID)
             _ = try? store.markQuestionConsumed(questionID: item.questionID)
         }
