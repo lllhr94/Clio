@@ -103,8 +103,24 @@ struct SubConversationSheet: View {
                     .disabled(question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(Ink.Space.m)
-        .background(.regularMaterial)
+        .padding(.horizontal, Ink.Space.m)
+        .padding(.vertical, Ink.Space.s)
+        .frostedChatChrome(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
+        .padding(.horizontal, Ink.Space.page)
+        .padding(.vertical, Ink.Space.s)
+        .background {
+            LinearGradient(
+                stops: [
+                    .init(color: Ink.paper.opacity(0), location: 0),
+                    .init(color: Ink.paper.opacity(0.72), location: 0.45),
+                    .init(color: Ink.paper.opacity(0.95), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        }
     }
 
     private func run(_ action: @escaping @MainActor () async throws -> Void) {

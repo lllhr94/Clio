@@ -11,6 +11,50 @@ private final class PassThroughTopEdgeContainerView: UIView {
     weak var hostView: UIView?
     var interactiveRects: [Int: CGRect] = [:]
     var isCollapsed = false
+    private let paperFadeLayer = CAGradientLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupPaperFade()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupPaperFade()
+    }
+
+    private func setupPaperFade() {
+        paperFadeLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
+        paperFadeLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
+        paperFadeLayer.locations = [0.0, 0.50, 0.78, 1.0]
+        paperFadeLayer.zPosition = -1
+        layer.insertSublayer(paperFadeLayer, at: 0)
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: PassThroughTopEdgeContainerView, _) in
+            view.refreshThemeColors()
+        }
+        refreshThemeColors()
+    }
+
+    func refreshThemeColors() {
+        let paper = UIColor(Ink.paper).resolvedColor(with: traitCollection)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        paperFadeLayer.colors = [
+            paper.withAlphaComponent(0.98).cgColor,
+            paper.withAlphaComponent(0.92).cgColor,
+            paper.withAlphaComponent(0.66).cgColor,
+            paper.withAlphaComponent(0.0).cgColor,
+        ]
+        CATransaction.commit()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        paperFadeLayer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height + 16)
+        CATransaction.commit()
+    }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         guard !isCollapsed else { return nil }
@@ -189,6 +233,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var lastReportedActiveTurnID: String?
     private var lastReportedReplyOwner: String?
     private var lastReportedReplyRect: CGRect = .null
+    private var lastKnownRevealLimit: (ownerID: String, localOffsetY: CGFloat)?
 
     private var pendingScrollRequest: (id: String, anchor: UnitPoint, animated: Bool)?
     private var pendingDynamicRefresh = false
@@ -307,6 +352,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         pendingRevealTransfers.removeAll()
         settlingRevealID = nil
+        lastKnownRevealLimit = nil
         cancelAllPrefetches()
         cancelPrewarm()
         if let topEdgeInteraction {
@@ -1419,6 +1465,18 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return
         }
 
+        if (prev.hasStreaming && !next.hasStreaming)
+            || (next.hasStreaming && prev.streamGeneration != next.streamGeneration)
+        {
+            layoutCache.pruneStaleStreamingState(
+                activeStreamingOwnerID: next.hasStreaming ? "streaming-\(next.streamGeneration)" : nil,
+                retainedRowIDs: Set(next.rows.map(\.line.id))
+            )
+            if !next.hasStreaming {
+                lastKnownRevealLimit = nil
+            }
+        }
+
         let nextItems = buildItemIDs(for: next)
         let nextRowMap = Dictionary(uniqueKeysWithValues: next.rows.map { ($0.line.id, $0) })
         let structuralChanged = nextItems != items || prev.historyInView != next.historyInView
@@ -1469,6 +1527,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         pendingSelectionTransfers.removeAll()
         pendingRevealTransfers.removeAll()
         settlingRevealID = nil
+        lastKnownRevealLimit = nil
         if activeTraceSheetLineID != nil,
            activeTraceSheetModel != nil,
            let presented = presentedViewController,
@@ -2041,6 +2100,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         guard isViewVisible else { return }
         let nextStyle = ChatListStyle.current(traits: traitCollection, reduceMotion: currentState?.reduceMotion ?? false)
         view.backgroundColor = UIColor(Ink.paper)
+        topEdgeContainerView?.refreshThemeColors()
         guard nextStyle != currentStyle else { return }
         topBarNeedsRemeasure = true
         updateTopEdgeContainerLayout(animated: false)
@@ -2421,9 +2481,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         publishEffectiveBottomGeometryIfNeeded(resolved)
 
         if hasPerformedInitialScroll, collectionView != nil, collectionView.bounds.width > 0 {
+            let insets = collectionView.adjustedContentInset
             let currentMetrics = makeScrollFrameMetrics(
-                topInset: collectionView.contentInset.top,
-                bottomInset: collectionView.contentInset.bottom,
+                topInset: insets.top,
+                bottomInset: insets.bottom,
                 anchor: nil
             )
             scrollArbiter.beginKeyboardTransition(
@@ -2665,9 +2726,10 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         publishMetrics: Bool = false
     ) -> Bool {
         guard collectionView != nil, collectionView.bounds.width > 0 else { return false }
+        let insets = collectionView.adjustedContentInset
         let metrics = makeScrollFrameMetrics(
-            topInset: collectionView.contentInset.top,
-            bottomInset: collectionView.contentInset.bottom,
+            topInset: insets.top,
+            bottomInset: insets.bottom,
             anchor: anchor
         )
         let decision = scrollArbiter.resolveWrite(source: source, metrics: metrics, explicitTargetY: explicitTargetY)
@@ -2760,7 +2822,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     // MARK: - Anchor Lock & Scroll Helpers
 
     private func topVisibleAnchor() -> (id: ChatListItemID, visualY: CGFloat)? {
-        let topEdge = collectionView.contentOffset.y + collectionView.contentInset.top
+        let topEdge = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
         let visiblePaths = collectionView.indexPathsForVisibleItems.sorted { $0.section < $1.section }
 
         if !selectingOwnerIDs.isEmpty {
@@ -2913,18 +2975,19 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.layoutIfNeeded()
         guard let attrs = resolvedLayoutAttributes(at: indexPath) else { return }
 
-        let visibleH = max(40, collectionView.bounds.height - collectionView.contentInset.top - collectionView.contentInset.bottom)
+        let insets = collectionView.adjustedContentInset
+        let visibleH = max(40, collectionView.bounds.height - insets.top - insets.bottom)
 
         let rawTargetY: CGFloat
         switch anchor {
         case .top:
-            rawTargetY = attrs.frame.minY - collectionView.contentInset.top
+            rawTargetY = attrs.frame.minY - insets.top
         case .center:
-            rawTargetY = attrs.frame.midY - (collectionView.contentInset.top + visibleH * 0.5)
+            rawTargetY = attrs.frame.midY - (insets.top + visibleH * 0.5)
         case .bottom:
-            rawTargetY = attrs.frame.maxY - (collectionView.bounds.height - collectionView.contentInset.bottom)
+            rawTargetY = attrs.frame.maxY - (collectionView.bounds.height - insets.bottom)
         default:
-            rawTargetY = attrs.frame.minY - collectionView.contentInset.top
+            rawTargetY = attrs.frame.minY - insets.top
         }
 
         _ = commitContentOffset(
@@ -2937,8 +3000,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func bottomOffsetY(for scrollView: UIScrollView) -> CGFloat {
-        let minY = -scrollView.contentInset.top
-        let maxY = scrollView.contentSize.height - scrollView.bounds.height + scrollView.contentInset.bottom
+        let insets = scrollView.adjustedContentInset
+        let minY = -insets.top
+        let maxY = scrollView.contentSize.height - scrollView.bounds.height + insets.bottom
         return max(minY, maxY)
     }
 
@@ -2961,42 +3025,49 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         let lineBottom: CGFloat
         if let cell = collectionView.cellForItem(at: path) as? ChatAssistantCell {
             guard let visible = cell.revealedLineBottom(in: collectionView) else { return bottom }
+            let localOffset = max(0, visible - cell.frame.minY)
+            lastKnownRevealLimit = (ownerID: item.ownerID, localOffsetY: localOffset)
             lineBottom = visible
         } else {
+            // CX-08: Never run synchronous CoreText layout measurement for offscreen cells during scroll ticks.
             guard let attrs = collectionView.layoutAttributesForItem(at: path) else { return bottom }
-            let entry: ChatLayoutCache.AssistantLayoutEntry
-            switch item.id {
-            case .liveProse(let generation):
-                guard let state = currentState else { return bottom }
-                entry = layoutCache.measureLiveStreamingProse(
-                    text: state.streamText, generation: generation,
-                    collectionWidth: collectionView.bounds.width, style: currentStyle
-                )
-            case .line(let id):
-                guard let row = rowByID[id] else { return bottom }
-                entry = measureAssistant(row: row, width: collectionView.bounds.width)
-            default:
-                return bottom
+            if let cached = lastKnownRevealLimit, cached.ownerID == item.ownerID {
+                lineBottom = attrs.frame.minY + min(attrs.frame.height, cached.localOffsetY)
+            } else {
+                let eligible: Bool?
+                switch item.id {
+                case .liveProse(let gen):
+                    eligible = layoutCache.cachedRevealEligibility(
+                        streamingGeneration: gen,
+                        rowID: nil,
+                        fade: currentStyle.fade,
+                        reduceMotion: currentStyle.reduceMotion
+                    )
+                case .line(let id):
+                    eligible = layoutCache.cachedRevealEligibility(
+                        streamingGeneration: nil,
+                        rowID: id,
+                        fade: currentStyle.fade,
+                        reduceMotion: currentStyle.reduceMotion
+                    )
+                default:
+                    eligible = false
+                }
+                guard eligible == true else { return bottom }
+                lineBottom = attrs.frame.minY + min(attrs.frame.height, 2 * Ink.Size.body)
             }
-            let canReveal = entry.slices.contains {
-                guard case .richText(let prose) = $0.slice else { return false }
-                return ChatRevealPolicy.isEligible(
-                    fade: currentStyle.fade, reduceMotion: currentStyle.reduceMotion,
-                    attributedLength: prose.attributed.length
-                )
-            }
-            guard canReveal else { return bottom }
-            lineBottom = attrs.frame.minY + min(attrs.frame.height, 2 * Ink.Size.body)
         }
-        let visibleHeight = collectionView.bounds.height - collectionView.contentInset.bottom
+        let insets = collectionView.adjustedContentInset
+        let visibleHeight = collectionView.bounds.height - insets.bottom
         let headroom = max(Ink.Space.s, currentStyle.fonts.reading.regular.lineHeight)
-        return max(-collectionView.contentInset.top, min(bottom, lineBottom + headroom - visibleHeight))
+        return max(-insets.top, min(bottom, lineBottom + headroom - visibleHeight))
     }
 
     private func followRevealFrame(ownerID: String, completed: Bool) {
         guard revealFollowItem?.ownerID == ownerID else { return }
         if completed && settlingRevealID == ownerID {
             settlingRevealID = nil
+            lastKnownRevealLimit = nil
         }
         guard hasPerformedInitialScroll, canAutoPinToBottom, !isProgrammaticScroll,
               !isInHostUpdate, !isDismantled, isViewVisible else { return }
@@ -3099,6 +3170,20 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         publishActiveTurnIfNeeded(for: scrollView)
     }
 
+    func scrollViewWillEndDragging(
+        _ scrollView: UIScrollView,
+        withVelocity velocity: CGPoint,
+        targetContentOffset: UnsafeMutablePointer<CGPoint>
+    ) {
+        // CX-08: Prevent manual flicks from overshooting past the actively pacing reveal boundary into blank tail space.
+        guard revealFollowItem != nil else { return }
+        let revealLimitY = bottomOffsetFollowingReveal()
+        let fullBottomY = bottomOffsetY(for: scrollView)
+        if revealLimitY < fullBottomY - 2, targetContentOffset.pointee.y > revealLimitY {
+            targetContentOffset.pointee.y = revealLimitY
+        }
+    }
+
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         actions.onChromeDragEnded()
         if decelerate {
@@ -3147,7 +3232,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
         }
 
-        let distanceFromBottom = bottomOffsetFollowingReveal() - scrollView.contentOffset.y
+        let revealLimitY = bottomOffsetFollowingReveal()
+        let fullBottomY = bottomOffsetY(for: scrollView)
+        let distanceFromBottom = revealLimitY - scrollView.contentOffset.y
         let withinFollowThreshold = distanceFromBottom < 80
             || (wasPinnedAtDragStart && !userMovedAwayFromBottomDuringDrag && distanceFromBottom < 120)
         let shouldFollow = !(currentState?.historyInView ?? false) && selectingOwnerIDs.isEmpty && withinFollowThreshold
@@ -3161,8 +3248,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         if prevPinned != isPinnedToBottom {
             actions.onFollowingChanged(isPinnedToBottom)
         }
-        if isPinnedToBottom && distanceFromBottom > 2 && insetDisplayLink == nil && CACurrentMediaTime() > activeKeyboardDeadline {
-            scrollToBottom(animated: distanceFromBottom > 12)
+        let overshotReveal = revealFollowItem != nil
+            && revealLimitY < fullBottomY - 2
+            && scrollView.contentOffset.y > revealLimitY + 1
+        if (overshotReveal || (isPinnedToBottom && distanceFromBottom > 2))
+            && insetDisplayLink == nil
+            && CACurrentMediaTime() > activeKeyboardDeadline
+        {
+            scrollToBottom(animated: abs(distanceFromBottom) > 12)
         }
         actions.onScrollEnded()
         publishVisibleAndFooterMetricsNow()
@@ -3171,12 +3264,30 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard hasPerformedInitialScroll, !isDismantled else { return }
 
-        let currentY = scrollView.contentOffset.y
+        var currentY = scrollView.contentOffset.y
         let prevY = lastScrollOffsetY
-        lastScrollOffsetY = currentY
-
+        let insets = scrollView.adjustedContentInset
         let touching = scrollView.isDragging || scrollView.isDecelerating
         let bottomY = touching ? bottomOffsetFollowingReveal() : bottomOffsetY(for: scrollView)
+
+        // CX-08: Clamp inertial deceleration if it glides past the actively pacing reveal boundary.
+        if !isProgrammaticScroll,
+           !isInHostUpdate,
+           scrollView.isDecelerating,
+           !scrollView.isDragging,
+           revealFollowItem != nil,
+           bottomY < bottomOffsetY(for: scrollView) - 2,
+           currentY > bottomY + 1
+        {
+            let wasProgrammatic = isProgrammaticScroll
+            isProgrammaticScroll = true
+            scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: bottomY), animated: false)
+            isProgrammaticScroll = wasProgrammatic
+            currentY = bottomY
+        }
+
+        lastScrollOffsetY = currentY
+
         if !isProgrammaticScroll && !isInHostUpdate {
             if currentY < prevY - 0.5 {
                 scrollDirection = -1
@@ -3196,14 +3307,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             if touching {
                 let rawDeltaY = currentY - prevY
                 if abs(rawDeltaY) > 0.01 {
-                    let minY = -scrollView.contentInset.top
+                    let minY = -insets.top
                     let trueBottomY = bottomOffsetY(for: scrollView)
                     let clampedPrev = min(trueBottomY, max(minY, prevY))
                     let clampedCurr = min(trueBottomY, max(minY, currentY))
                     let clampedDeltaY = clampedCurr - clampedPrev
                     let trueDistanceFromBottom = max(0, trueBottomY - currentY)
                     let distanceFromTop = currentY - minY
-                    let totalContentH = scrollView.contentSize.height + scrollView.contentInset.top + scrollView.contentInset.bottom
+                    let totalContentH = scrollView.contentSize.height + insets.top + insets.bottom
                     let isScrollable = totalContentH > scrollView.bounds.height + 60
                     actions.onScrollDelta(
                         rawDeltaY,
@@ -3217,7 +3328,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
         }
 
-        let distanceFromTop = currentY + scrollView.contentInset.top
+        let distanceFromTop = currentY + insets.top
         let movingUp = currentY < prevY
         if !isProgrammaticScroll,
            !isInHostUpdate,

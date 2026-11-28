@@ -28,11 +28,12 @@ extension Notification.Name {
 /// Dedicated lightweight Casual Track view (`Team/casual/<botID>.jsonl`) with 2.5s burst merging,
 /// zero automatic memory/experience writes, custom user-imported stickers (0 presets, max 1/turn),
 /// quiet draft restoration on track switch, and inline handoff confirmation into formal chat.
-struct CasualChatView: View {
+struct CasualChatView<TopBar: View>: View {
     @ObservedObject var team: TeamModel
     let bot: BotInfo
     let onSwitchToFormal: () -> Void
     let onHandoffToFormal: (String) -> Void
+    @ViewBuilder let topBar: () -> TopBar
 
     @StateObject private var controller: CasualTrackController
     @StateObject private var stickers = StickerPackStore.shared
@@ -41,70 +42,128 @@ struct CasualChatView: View {
     @State private var pendingHandoffSummary: String?
     @State private var reviewCandidateText: String?
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var isNearBottom = true
+    @State private var pendingUserAutoScroll = false
+
+    init(
+        team: TeamModel,
+        bot: BotInfo,
+        onSwitchToFormal: @escaping () -> Void,
+        onHandoffToFormal: @escaping (String) -> Void,
+        @ViewBuilder topBar: @escaping () -> TopBar
+    ) {
+        self.team = team
+        self.bot = bot
+        self.onSwitchToFormal = onSwitchToFormal
+        self.onHandoffToFormal = onHandoffToFormal
+        self.topBar = topBar
+        _controller = StateObject(wrappedValue: CasualTrackController(botID: bot.id))
+    }
 
     init(
         team: TeamModel,
         bot: BotInfo,
         onSwitchToFormal: @escaping () -> Void,
         onHandoffToFormal: @escaping (String) -> Void
-    ) {
-        self.team = team
-        self.bot = bot
-        self.onSwitchToFormal = onSwitchToFormal
-        self.onHandoffToFormal = onHandoffToFormal
-        _controller = StateObject(wrappedValue: CasualTrackController(botID: bot.id))
+    ) where TopBar == EmptyView {
+        self.init(
+            team: team,
+            bot: bot,
+            onSwitchToFormal: onSwitchToFormal,
+            onHandoffToFormal: onHandoffToFormal,
+            topBar: { EmptyView() }
+        )
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
-                        if !controller.reconcileBatches.isEmpty {
-                            reconcileBanner
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Ink.Space.m) {
+                    if !controller.reconcileBatches.isEmpty {
+                        reconcileBanner
+                    }
+                    if controller.entries.isEmpty && controller.pendingBurstSegments.isEmpty {
+                        Text(L.format("casual.emptyHint", bot.name))
+                            .font(Ink.secondary)
+                            .foregroundStyle(Ink.inkSoft)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Ink.Space.l)
+                            .paperCard()
+                    } else {
+                        ForEach(controller.entries) { entry in
+                            bubbleRow(entry)
+                                .id(entry.id)
                         }
-                        if controller.entries.isEmpty && controller.pendingBurstSegments.isEmpty {
-                            Text(L.format("casual.emptyHint", bot.name))
-                                .font(Ink.secondary)
-                                .foregroundStyle(Ink.inkSoft)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(Ink.Space.l)
-                                .paperCard()
-                        } else {
-                            ForEach(controller.entries) { entry in
-                                bubbleRow(entry)
-                                    .id(entry.id)
-                            }
-                            if !controller.pendingBurstSegments.isEmpty {
-                                pendingBurstPreview
-                                    .id("casual-pending-burst")
-                            }
-                        }
-                        if let pendingHandoffSummary {
-                            HandoffConfirmCard(
-                                summary: pendingHandoffSummary,
-                                botName: bot.name,
-                                onConfirm: {
-                                    let text = pendingHandoffSummary
-                                    self.pendingHandoffSummary = nil
-                                    controller.cancelForTrackSwitch()
-                                    onHandoffToFormal(text)
-                                },
-                                onDismiss: { self.pendingHandoffSummary = nil }
-                            )
+                        if !controller.pendingBurstSegments.isEmpty {
+                            pendingBurstPreview
+                                .id("casual-pending-burst")
                         }
                     }
-                    .padding(.horizontal, Ink.Space.page)
-                    .padding(.vertical, Ink.Space.l)
+                    if let pendingHandoffSummary {
+                        HandoffConfirmCard(
+                            summary: pendingHandoffSummary,
+                            botName: bot.name,
+                            onConfirm: {
+                                let text = pendingHandoffSummary
+                                self.pendingHandoffSummary = nil
+                                controller.cancelForTrackSwitch()
+                                onHandoffToFormal(text)
+                            },
+                            onDismiss: { self.pendingHandoffSummary = nil }
+                        )
+                    }
                 }
-                .onChange(of: controller.entries.last?.id) { _, lastID in
-                    if let lastID {
-                        withAnimation(.smooth) { proxy.scrollTo(lastID, anchor: .bottom) }
-                    }
+                .padding(.horizontal, Ink.Space.page)
+                .padding(.vertical, Ink.Space.l)
+            }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+            .scrollEdgeEffectStyle(.soft, for: .top)
+            .scrollEdgeEffectHidden(Theme.shared.reduceVisualEffects, for: .top)
+            .scrollEdgeEffectHidden(true, for: .bottom)
+            .onScrollGeometryChange(for: Bool.self) { geo in
+                let maxY = max(-geo.contentInsets.top, geo.contentSize.height + geo.contentInsets.bottom - geo.containerSize.height)
+                return (maxY - geo.contentOffset.y) < 80
+            } action: { _, nearBottom in
+                if isNearBottom != nearBottom {
+                    isNearBottom = nearBottom
                 }
             }
-
-            composerBar
+            .safeAreaBar(edge: .top, spacing: 0) {
+                topBar()
+                    .background(alignment: .top) {
+                        LinearGradient(
+                            stops: [
+                                .init(color: Ink.paper.opacity(0.98), location: 0),
+                                .init(color: Ink.paper.opacity(0.92), location: 0.50),
+                                .init(color: Ink.paper.opacity(0.66), location: 0.78),
+                                .init(color: Ink.paper.opacity(0), location: 1.0),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .padding(.bottom, -14)
+                        .ignoresSafeArea(edges: .top)
+                        .allowsHitTesting(false)
+                    }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                composerBar
+            }
+            .onChange(of: controller.entries.last?.id) { _, lastID in
+                guard let lastID else { return }
+                let shouldFollow = isNearBottom || pendingUserAutoScroll
+                pendingUserAutoScroll = false
+                if shouldFollow {
+                    withAnimation(.smooth) { proxy.scrollTo(lastID, anchor: .bottom) }
+                }
+            }
+            .onChange(of: controller.pendingBurstSegments.count) { oldCount, newCount in
+                if newCount > oldCount && (isNearBottom || pendingUserAutoScroll) {
+                    pendingUserAutoScroll = false
+                    withAnimation(.smooth) { proxy.scrollTo("casual-pending-burst", anchor: .bottom) }
+                }
+            }
         }
         .background(Ink.paper.ignoresSafeArea())
         .onAppear {
@@ -265,14 +324,15 @@ struct CasualChatView: View {
             TextField(L.format("casual.inputPlaceholder", bot.name), text: $draftInput, axis: .vertical)
                 .lineLimit(1...4)
                 .font(Ink.reading)
-                .padding(.horizontal, Ink.Space.m)
-                .padding(.vertical, Ink.Space.s)
-                .background(Ink.paperRaised, in: Capsule(style: .continuous))
+                .padding(.horizontal, Ink.Space.xs)
+                .padding(.vertical, Ink.Space.xs)
 
             Button {
                 let text = draftInput.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return }
                 draftInput = ""
+                pendingUserAutoScroll = true
+                isNearBottom = true
                 Haptics.light()
                 controller.enqueueBurstMessage(text, team: team, bot: bot) { suggested in
                     pendingHandoffSummary = suggested
@@ -285,9 +345,27 @@ struct CasualChatView: View {
             .buttonStyle(.plain)
             .disabled(draftInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
+        .padding(.horizontal, Ink.Space.s)
+        .padding(.vertical, 6 * UIScale.factor)
+        .frostedChatChrome(in: RoundedRectangle(cornerRadius: max(26 * ChatBarMetrics.scale, Ink.Radius.card), style: .continuous))
         .padding(.horizontal, Ink.Space.page)
         .padding(.vertical, Ink.Space.s)
-        .background(Ink.paper)
+        .background {
+            LinearGradient(
+                stops: [
+                    .init(color: Ink.paper.opacity(0), location: 0),
+                    .init(color: Ink.paper.opacity(0.72), location: 0.28),
+                    .init(color: Ink.paper.opacity(0.96), location: 0.60),
+                    .init(color: Ink.paper.opacity(1.0), location: 0.80),
+                    .init(color: Ink.paper.opacity(1.0), location: 1.0),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .padding(.top, -16)
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        }
     }
 
     private var stickerPickerSheet: some View {
@@ -310,6 +388,8 @@ struct CasualChatView: View {
                                         ForEach(pack.items) { item in
                                             Button {
                                                 if controller.sendSticker(item.id) {
+                                                    pendingUserAutoScroll = true
+                                                    isNearBottom = true
                                                     showingStickers = false
                                                 }
                                             } label: {

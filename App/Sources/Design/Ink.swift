@@ -955,22 +955,23 @@ private struct FrostedChatChromeModifier<S: InsettableShape>: ViewModifier {
         } else {
             let isDark = colorScheme == .dark
             let tintLayer = (isDark && Theme.shared.oled)
-                ? Ink.paper.opacity(0.18)
-                : Ink.paperRaised.opacity(isDark ? 0.14 : 0.18)
-            let topRim = Ink.Artwork.white.opacity(isDark ? 0.14 : 0.62)
-            let shadowColor = Ink.Artwork.black.opacity(isDark ? 0.22 : 0.07)
+                ? Ink.paper.opacity(0.08)
+                : Ink.paperRaised.opacity(isDark ? 0.06 : 0.08)
+            let topRim = Ink.Artwork.white.opacity(isDark ? 0.12 : 0.28)
+            let bottomRule = Ink.rule.opacity(isDark ? 0.36 : 0.26)
+            let shadowColor = Ink.Artwork.black.opacity(isDark ? 0.20 : 0.05)
             content
                 .background {
                     ZStack {
                         shape.fill(.ultraThinMaterial)
                         shape.fill(tintLayer)
                     }
-                    .shadow(color: shadowColor, radius: 10, y: 3)
+                    .shadow(color: shadowColor, radius: 8, y: 2)
                 }
                 .overlay {
                     shape.strokeBorder(
                         LinearGradient(
-                            colors: [topRim, Ink.rule.opacity(ruleOpacity)],
+                            colors: [topRim, bottomRule],
                             startPoint: .top,
                             endPoint: .bottom
                         ),

@@ -305,7 +305,7 @@ private struct ChatMinimapCursorOverlay: View {
                     .frame(width: 200, alignment: .trailing)
                     .padding(.horizontal, Ink.Space.m)
                     .padding(.vertical, Ink.Space.s)
-                    .glassFace(in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
+                    .frostedChatChrome(in: RoundedRectangle(cornerRadius: Ink.Radius.small, style: .continuous))
                     .offset(x: -24, y: min(max(0, previewY - 18), max(0, height - 44)))
                     .allowsHitTesting(false)
                     .transition(.opacity)

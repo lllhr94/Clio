@@ -1113,23 +1113,25 @@ struct ChatPage: View {
                     nonKeyboardSafeMaxY = $0
                 }
             if !isRoom && trackMode == .casual {
-                VStack(spacing: 0) {
-                    header
-                    CasualChatView(
-                        team: team,
-                        bot: bot,
-                        onSwitchToFormal: { trackMode = .formal },
-                        onHandoffToFormal: { summary in
-                            trackMode = .formal
-                            let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !trimmed.isEmpty {
-                                draft = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                    ? trimmed
-                                    : draft + "\n\n" + trimmed
-                            }
-                            setComposerFocused(true)
+                CasualChatView(
+                    team: team,
+                    bot: bot,
+                    onSwitchToFormal: { trackMode = .formal },
+                    onHandoffToFormal: { summary in
+                        trackMode = .formal
+                        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            draft = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? trimmed
+                                : draft + "\n\n" + trimmed
                         }
-                    )
+                        setComposerFocused(true)
+                    }
+                ) {
+                    header
+                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY.rounded(.up) } action: {
+                            if abs((headerBottomY ?? 0) - $0) > 0.5 { headerBottomY = $0 }
+                        }
                 }
             } else {
                 conversation
