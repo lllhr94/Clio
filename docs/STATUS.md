@@ -1,5 +1,14 @@
 # 现状与交接
 
+## 0.37 发版定稿（11-29，PR #103–#125 → `batch-0.37` → `main`）
+
+- **正式版本**：**Clio 0.37**（`CFBundleShortVersionString = "0.37"`，发行标签 `v0.37` / `latest`），基于 `batch-0.37`（`69dc488` + 发版文档定稿）快进合入 `main`，更新说明见 `docs/releases/0.37.md`。
+- **包含范围**：共合入 23 个 PR（#103–#125），涵盖 Canonical 恢复契约与逻辑日/经验库、工具图片引用与书案回收站、斗室 DNS/温控与 SessionPool、Telegram 1:1 增量流式排版、models.dev v2 与服务商中心、OpenAI Responses/Anthropic 1h 缓存/MCP 2025-11-25、Plan 模式、异步子任务、四层人格/名帖 v3/头像解耦、闲谈双轨与划词支线、R1A–R1C 数据与安全收口、Batch 2A/2B 磨砂与流畅补齐、Batch 3 设置 3 组 10 行减负、Batch 4 安全/统一代理路由与瘦身、Batch 5 核心稳定性与真机 45 页巡检修复、Batch 6 流式分块加密备份 v2/`ArtifactIndex`/`SQLiteEngine`/`Team.swift` 瘦身；AgentKit 580+ 项与 `ClioAppTests` 174 项自动化测试全部通过。
+- **0.38 下一阶段重点**：
+  1. **全格式文件与压缩包补齐（主人 11-29 实测提出）**：压缩包（`.tar.gz`/`.tgz`/`.tar`/`.zip`）书案目录预览/安全解压/AI 读取工具与技能多包导入；Word/Excel/PPT/RTF/EPUB 与 GBK/GB18030 文本原生可读与全文检索；恢复聊天 `＋` 面板「扫描文档」「从书案选文件」、剪贴板直接贴图、音频文件自动转写、PDF 原生直传、Share Extension。
+  2. **基础聊天与设置能力补齐**：删除单条消息/多选/导出 PDF 与整段长图、模型连通性测速与高级参数（Top-P / 惩罚项 / Extra Body）、快捷提示词模板、云端 TTS 朗读。
+  3. **中期架构瘦身第二阶段**：其余 5 个 Craft SQLite 模块迁移 `SQLiteEngine`、`TeamModel` `@Observable` 域拆分、`ChatListViewController` 拆分。
+
 ## 0.37 Batch 6：中期架构瘦身第一阶段（`antigravity/batch6-architecture-slimming`）
 
 - **`CLIO-039` 流式分块加密备份（`BackupCrypto` v2 + `Backup.swift`）**：新增 `CLIO-BACKUP-ENC-2\n` 1 MiB 分块 AES-256-GCM 流式加密（每块独立派生 nonce，并将头/块序号/终结标志绑定为 AAD 防篡改/截断/尾缀/重排）；`Backup.make` 改为直接通过 `StreamEncryptor` 边打包边加密写盘，既严守 `#keys` 明文 0 字节落盘红线，又将大备份内存峰值压到恒定 ~2 MiB；解密端 `BackupCrypto.decrypt` / `decryptFile` 100% 向后兼容旧版 v1 加密备份；补齐 `BackupCryptoTests` v2 分块与红队单测。
