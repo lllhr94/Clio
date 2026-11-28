@@ -86,7 +86,7 @@ struct WorkingBar: View {
             .padding(.horizontal, Ink.Space.l)
             .frame(height: 40)
             .frame(maxWidth: 260 * UIScale.factor)
-            .glassFace(in: Capsule())
+            .frostedChatChrome(in: Capsule(style: .continuous))
             .animation(Ink.Motion.quick, value: words)
             .animation(Ink.Motion.quick, value: icon)
             .animation(Ink.Motion.quick, value: tools)

@@ -536,6 +536,21 @@ struct ChatBottomStackView<FindBar: View>: View {
                         )
                     }
                 }
+                .background(alignment: .bottom) {
+                    LinearGradient(
+                        stops: [
+                            .init(color: Ink.paper.opacity(0), location: 0),
+                            .init(color: Ink.paper.opacity(0.68), location: 0.45),
+                            .init(color: Ink.paper.opacity(0.95), location: 1.0),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .padding(.top, -18)
+                    .padding(.bottom, -48)
+                    .ignoresSafeArea(edges: .bottom)
+                    .allowsHitTesting(false)
+                }
                 .overlay(alignment: .top) {
                     ChatDockedJumpOverlaySlot(
                         chatKey: chat.key,

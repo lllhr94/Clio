@@ -343,6 +343,20 @@ final class ChatProseBuilder: @unchecked Sendable {
         scannerLock.unlock()
     }
 
+    func pruneStreamScanners(keepingStreamingKey activeKey: String?) {
+        scannerLock.lock()
+        for key in Array(streamScanners.keys) where key.hasPrefix("streaming-") && key != activeKey {
+            streamScanners.removeValue(forKey: key)
+        }
+        scannerLock.unlock()
+    }
+
+    var debugStreamScannerCount: Int {
+        scannerLock.lock()
+        defer { scannerLock.unlock() }
+        return streamScanners.count
+    }
+
     func buildUserText(_ text: String, style: ChatListStyle) -> ChatRenderedProse {
         let box = style.metrics.userBox
         let pStyle = box.makeParagraphStyle()
@@ -607,6 +621,11 @@ final class ChatProseBuilder: @unchecked Sendable {
         }
         scannerLock.lock()
         defer { scannerLock.unlock() }
+        if streamKey.hasPrefix("streaming-") {
+            for existing in Array(streamScanners.keys) where existing.hasPrefix("streaming-") && existing != streamKey {
+                streamScanners.removeValue(forKey: existing)
+            }
+        }
         var entry = streamScanners[streamKey] ?? StreamScannerEntry(
             scanner: StreamBlocks(),
             sealedBlocks: [],
@@ -1837,6 +1856,52 @@ final class ChatLayoutCache: @unchecked Sendable {
     private var lastLiveStreamingEntry: (key: LiveStreamingKey, entry: AssistantLayoutEntry)?
     private var blockHeightOverridesByOwner: [String: [String: CGFloat]] = [:]
     private var overrideVersionsByOwner: [String: UInt64] = [:]
+    private var memoryWarningObserver: NSObjectProtocol?
+
+    init() {
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleMemoryWarning()
+        }
+    }
+
+    deinit {
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
+    }
+
+    func handleMemoryWarning() {
+        invalidateAll(clearOverrides: false)
+        pruneStaleStreamingState(activeStreamingOwnerID: nil, retainedRowIDs: nil)
+    }
+
+    func pruneStaleStreamingState(activeStreamingOwnerID: String?, retainedRowIDs: Set<String>? = nil) {
+        stateLock.lock()
+        if activeStreamingOwnerID == nil {
+            lastLiveStreamingEntry = nil
+        }
+        for owner in Array(blockHeightOverridesByOwner.keys) {
+            if owner.hasPrefix("streaming-") && owner != activeStreamingOwnerID {
+                blockHeightOverridesByOwner.removeValue(forKey: owner)
+                overrideVersionsByOwner.removeValue(forKey: owner)
+            } else if let retainedRowIDs, !owner.hasPrefix("streaming-"), !retainedRowIDs.contains(owner) {
+                blockHeightOverridesByOwner.removeValue(forKey: owner)
+                overrideVersionsByOwner.removeValue(forKey: owner)
+            }
+        }
+        stateLock.unlock()
+        builder.pruneStreamScanners(keepingStreamingKey: activeStreamingOwnerID)
+    }
+
+    var debugBlockHeightOverrideOwnerCount: Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return blockHeightOverridesByOwner.count
+    }
 
     func invalidateAll(clearOverrides: Bool = false) {
         stateLock.lock()
@@ -2118,7 +2183,7 @@ final class ChatLayoutCache: @unchecked Sendable {
             rawBody,
             style: style,
             isStreaming: isFresh,
-            streamKey: isFresh ? "fresh-\(input.id)" : nil
+            streamKey: "fresh-\(input.id)"
         )
         let measuredResult = measureSlices(
             slices,

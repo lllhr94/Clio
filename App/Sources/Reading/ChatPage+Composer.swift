@@ -73,7 +73,7 @@ struct ChatAwayCardView: View {
             }
             .padding(.horizontal, Ink.Space.m)
             .padding(.vertical, Ink.Space.s)
-            .glassBacking(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
+            .frostedChatChrome(in: RoundedRectangle(cornerRadius: Ink.Radius.card, style: .continuous))
             .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
         }
     }
