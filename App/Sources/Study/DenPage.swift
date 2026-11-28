@@ -56,7 +56,7 @@ struct DenPage: View {
             .detentPaperBackdrop()
         }
         .sheet(isPresented: $den.showingDNSSettings) {
-            DenDNSSettingsSheet(den: den)
+            NetworkSettingsPage(embedded: false)
                 .detentPaperBackdrop()
         }
     }
@@ -246,105 +246,5 @@ private struct DenCommandComposer: View {
         back = 0
         command = ""
         onSubmit(typed)
-    }
-}
-
-private struct DenDNSSettingsSheet: View {
-    @ObservedObject var den: Den
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var mode: DenDNSMode = Den.shared.dnsMode
-    @State private var customText: String = Den.shared.customDNSInput
-    @State private var validationNote: String?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Picker(Words.t("DNS 模式"), selection: $mode) {
-                        Text(Words.t("跟随系统（自动）")).tag(DenDNSMode.auto)
-                        Text(Words.t("自定义 DNS")).tag(DenDNSMode.custom)
-                    }
-                    .pickerStyle(.segmented)
-
-                    if mode == .auto {
-                        Text(Words.t("网络切换时自动同步系统 DNS 与搜索域；若系统暂时未返回 DNS，会保留最近一次有效配置，不会擅自切到公共 DNS。"))
-                            .font(Ink.footnote)
-                            .foregroundStyle(Ink.inkSoft)
-                    } else {
-                        TextField("例如：192.168.1.1, 10.0.0.2 或 fe80::1%en0", text: $customText, axis: .vertical)
-                            .font(Ink.mono(Ink.Size.sub))
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        Text(Words.t("仅接受合法的 IPv4 / IPv6 地址（可用逗号、分号或换行分隔，支持 IPv6 %网卡后缀）。"))
-                            .font(Ink.footnote)
-                            .foregroundStyle(Ink.inkSoft)
-                    }
-
-                    if let validationNote {
-                        Text(validationNote)
-                            .font(Ink.footnote)
-                            .foregroundStyle(.red)
-                    } else if let runtimeError = den.lastDNSError {
-                        Text(runtimeError)
-                            .font(Ink.footnote)
-                            .foregroundStyle(.red)
-                    }
-                } header: {
-                    Text(Words.t("斗室网络解析"))
-                }
-
-                Section {
-                    if den.appliedDNSServers.isEmpty {
-                        Text(Words.t("尚未写入可用 DNS，联网或保存设置后生效"))
-                            .font(Ink.footnote)
-                            .foregroundStyle(Ink.inkFaint)
-                    } else {
-                        ForEach(den.appliedDNSServers, id: \.self) { server in
-                            Text(server)
-                                .font(Ink.mono(Ink.Size.sub))
-                                .foregroundStyle(Ink.ink)
-                        }
-                    }
-                    if !den.appliedSearchDomains.isEmpty {
-                        Text("search " + den.appliedSearchDomains.joined(separator: " "))
-                            .font(Ink.mono(Ink.Size.micro))
-                            .foregroundStyle(Ink.inkSoft)
-                    }
-                } header: {
-                    Text(Words.t("当前生效配置"))
-                }
-            }
-            .navigationTitle(Words.t("网络与 DNS"))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(L.t("actions.cancel")) { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(L.t("actions.save")) { save() }
-                }
-            }
-            .onAppear {
-                mode = den.dnsMode
-                customText = den.customDNSInput
-                validationNote = nil
-            }
-        }
-    }
-
-    private func save() {
-        let parsed = DenDNSConfig.parseCustomDNSList(customText)
-        if mode == .custom && parsed.valid.isEmpty {
-            validationNote = "请填写至少一个合法的 IPv4 或 IPv6 地址"
-            return
-        }
-        if mode == .custom && !parsed.invalid.isEmpty {
-            validationNote = "存在无效地址：\(parsed.invalid.joined(separator: "、"))"
-            return
-        }
-        validationNote = nil
-        _ = den.updateDNSConfiguration(mode: mode, customInput: customText)
-        dismiss()
     }
 }

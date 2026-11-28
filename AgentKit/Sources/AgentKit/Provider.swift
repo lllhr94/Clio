@@ -156,8 +156,41 @@ enum SSE {
     }
 }
 
+/// Process-wide hook allowing the host app to attach per-scope proxy routing to `AgentKit` sessions
+/// without coupling `AgentKit` to UI or storage layers.
+public enum AgentNetworkRouter {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _configure: (@Sendable (URLSessionConfiguration, String) -> Void)?
+    nonisolated(unsafe) private static var _signature: (@Sendable () -> String)?
+
+    public static func install(
+        configure: @escaping @Sendable (URLSessionConfiguration, String) -> Void,
+        signature: @escaping @Sendable () -> String
+    ) {
+        lock.withLock {
+            _configure = configure
+            _signature = signature
+        }
+        HTTP.SessionPool.shared.refreshProxyIfNeeded()
+    }
+
+    public static func notifyChanged() {
+        HTTP.SessionPool.shared.refreshProxyIfNeeded()
+    }
+
+    static func apply(to configuration: URLSessionConfiguration, scope: String) {
+        let hook = lock.withLock { _configure }
+        hook?(configuration, scope)
+    }
+
+    static func currentRoutingSignature() -> String {
+        let hook = lock.withLock { _signature }
+        return hook?() ?? "unconfigured"
+    }
+}
+
 enum HTTP {
-    /// Manages a shared `URLSession` that rotates across network interface or proxy changes
+    /// Manages shared `URLSession`s that rotate across network interface, system proxy, or in-app router changes
     /// via delayed `finishTasksAndInvalidate()` leases so active and newly-starting streams never hit an invalidated session.
     final class SessionPool: @unchecked Sendable {
         static let shared = SessionPool()
@@ -171,12 +204,13 @@ enum HTTP {
         private let factory: @Sendable (Int) -> URLSession
         private let proxySignatureProvider: @Sendable () -> String
         private var _currentSession: URLSession
+        private var _scopedSessions: [String: URLSession] = [:]
         private var _generation: Int = 0
         private var _lastPathSignature: String?
         private var _lastProxySignature: String
         private var _retiredCount: Int = 0
         private var _activeCheckouts: [Int: Int] = [:]
-        private var _pendingRetirement: [Int: URLSession] = [:]
+        private var _pendingRetirement: [Int: [URLSession]] = [:]
         #if canImport(Network)
         private var monitor: NWPathMonitor?
         private let monitorQueue = DispatchQueue(label: "clio.http.session-pool")
@@ -199,9 +233,14 @@ enum HTTP {
         }
 
         static func makeDefaultSession(_ generation: Int) -> URLSession {
+            makeScopedSession(scope: "default")
+        }
+
+        static func makeScopedSession(scope: String) -> URLSession {
             let configuration = URLSessionConfiguration.default
             configuration.timeoutIntervalForRequest = 120
             configuration.timeoutIntervalForResource = 900
+            AgentNetworkRouter.apply(to: configuration, scope: scope)
             return URLSession(configuration: configuration)
         }
 
@@ -232,61 +271,76 @@ enum HTTP {
 
         /// Acquires a pinned `URLSession` lease so a concurrent rotation defers `finishTasksAndInvalidate()`
         /// until the caller creates its task inside the session.
-        func acquireLease() -> Lease {
+        func acquireLease(scope: String = "default") -> Lease {
             let proxyNow = proxySignatureProvider()
-            var retiredNow: URLSession?
+            var retiredNow: [URLSession] = []
             lock.lock()
             if proxyNow != _lastProxySignature {
                 _lastProxySignature = proxyNow
                 retiredNow = rotateLocked(newPathSignature: _lastPathSignature)
             }
             let gen = _generation
-            let sess = _currentSession
+            let sess: URLSession
+            if scope == "default" || scope.isEmpty {
+                sess = _currentSession
+            } else if let existing = _scopedSessions[scope] {
+                sess = existing
+            } else {
+                let created = Self.makeScopedSession(scope: scope)
+                _scopedSessions[scope] = created
+                sess = created
+            }
             _activeCheckouts[gen, default: 0] += 1
             lock.unlock()
 
-            retiredNow?.finishTasksAndInvalidate()
+            for session in retiredNow {
+                session.finishTasksAndInvalidate()
+            }
             return Lease(session: sess, generation: gen)
         }
 
         func releaseLease(_ lease: Lease) {
-            var deferredRetire: URLSession?
+            var deferredRetire: [URLSession] = []
             lock.lock()
             let remaining = max(0, (_activeCheckouts[lease.generation] ?? 1) - 1)
             if remaining == 0 {
                 _activeCheckouts.removeValue(forKey: lease.generation)
-                deferredRetire = _pendingRetirement.removeValue(forKey: lease.generation)
+                deferredRetire = _pendingRetirement.removeValue(forKey: lease.generation) ?? []
             } else {
                 _activeCheckouts[lease.generation] = remaining
             }
             lock.unlock()
 
-            deferredRetire?.finishTasksAndInvalidate()
+            for session in deferredRetire {
+                session.finishTasksAndInvalidate()
+            }
         }
 
-        /// Checks system proxy state independently of interface callbacks and rotates if changed.
+        /// Checks system proxy and in-app router state independently of interface callbacks and rotates if changed.
         @discardableResult
         func refreshProxyIfNeeded() -> Bool {
             let proxyNow = proxySignatureProvider()
-            var sessionToRetire: URLSession?
+            var sessionsToRetire: [URLSession] = []
             lock.lock()
             guard proxyNow != _lastProxySignature else {
                 lock.unlock()
                 return false
             }
             _lastProxySignature = proxyNow
-            sessionToRetire = rotateLocked(newPathSignature: _lastPathSignature)
+            sessionsToRetire = rotateLocked(newPathSignature: _lastPathSignature)
             lock.unlock()
 
-            sessionToRetire?.finishTasksAndInvalidate()
+            for session in sessionsToRetire {
+                session.finishTasksAndInvalidate()
+            }
             return true
         }
 
-        /// Rotates to a new `URLSession` when the combined network/proxy signature changes.
+        /// Rotates to new `URLSession`s when the combined network/proxy signature changes.
         @discardableResult
         func rotateIfNeeded(for signature: String) -> Bool {
             let proxyNow = proxySignatureProvider()
-            var sessionToRetire: URLSession?
+            var sessionsToRetire: [URLSession] = []
             lock.lock()
             if _lastPathSignature == nil {
                 _lastPathSignature = signature
@@ -300,27 +354,31 @@ enum HTTP {
             }
             _lastPathSignature = signature
             _lastProxySignature = proxyNow
-            sessionToRetire = rotateLocked(newPathSignature: signature)
+            sessionsToRetire = rotateLocked(newPathSignature: signature)
             lock.unlock()
 
-            sessionToRetire?.finishTasksAndInvalidate()
+            for session in sessionsToRetire {
+                session.finishTasksAndInvalidate()
+            }
             return true
         }
 
-        /// Caller holds `lock`. Returns a session eligible for immediate `finishTasksAndInvalidate()`
-        /// or parks it in `_pendingRetirement` until active lease holders complete task setup.
-        private func rotateLocked(newPathSignature: String?) -> URLSession? {
+        /// Caller holds `lock`. Returns sessions eligible for immediate `finishTasksAndInvalidate()`
+        /// or parks them in `_pendingRetirement` until active lease holders complete task setup.
+        private func rotateLocked(newPathSignature: String?) -> [URLSession] {
             let oldGen = _generation
-            let oldSession = _currentSession
+            var retiring: [URLSession] = [_currentSession]
+            retiring.append(contentsOf: _scopedSessions.values)
+            _scopedSessions.removeAll(keepingCapacity: true)
             _lastPathSignature = newPathSignature
             _generation &+= 1
             _retiredCount &+= 1
             _currentSession = factory(_generation)
             if (_activeCheckouts[oldGen] ?? 0) > 0 {
-                _pendingRetirement[oldGen] = oldSession
-                return nil
+                _pendingRetirement[oldGen] = retiring
+                return []
             }
-            return oldSession
+            return retiring
         }
 
         private func startMonitoringIfNeeded() {
@@ -368,9 +426,10 @@ enum HTTP {
         #endif
 
         static func currentProxySignature() -> String {
+            let routerSig = AgentNetworkRouter.currentRoutingSignature()
             #if canImport(CFNetwork)
             guard let raw = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
-                return "none"
+                return "none|router=\(routerSig)"
             }
             let keys = [
                 "HTTPEnable", "HTTPProxy", "HTTPPort",
@@ -378,12 +437,13 @@ enum HTTP {
                 "SOCKSEnable", "SOCKSProxy", "SOCKSPort",
                 "ProxyAutoConfigEnable", "ProxyAutoConfigURLString"
             ]
-            return keys.compactMap { key in
+            let sys = keys.compactMap { key in
                 guard let value = raw[key] else { return nil }
                 return "\(key)=\(value)"
             }.joined(separator: ";")
+            return "\(sys)|router=\(routerSig)"
             #else
-            return "none"
+            return "none|router=\(routerSig)"
             #endif
         }
     }
@@ -595,6 +655,7 @@ enum HTTP {
         _ request: URLRequest,
         acceptsJSON: Bool = false,
         session: URLSession? = nil,
+        scope: String = "default",
         rejectAllRedirects: Bool = false,
         timeouts: StreamTimeouts = .default,
         stopOnFinishEvent: Bool = false,
@@ -609,7 +670,7 @@ enum HTTP {
 
             let streamTask = Task {
                 do {
-                    let lease = session == nil ? SessionPool.shared.acquireLease() : nil
+                    let lease = session == nil ? SessionPool.shared.acquireLease(scope: scope) : nil
                     let activeSession = session ?? lease?.session ?? HTTP.session
                     let bytes: URLSession.AsyncBytes
                     let response: URLResponse
@@ -760,9 +821,10 @@ enum HTTP {
     static func get(
         _ request: URLRequest,
         session: URLSession? = nil,
+        scope: String = "default",
         rejectAllRedirects: Bool = false
     ) async throws -> JSONValue {
-        let lease = session == nil ? SessionPool.shared.acquireLease() : nil
+        let lease = session == nil ? SessionPool.shared.acquireLease(scope: scope) : nil
         defer { if let lease { SessionPool.shared.releaseLease(lease) } }
         let activeSession = session ?? lease?.session ?? HTTP.session
         let taskDelegate: URLSessionTaskDelegate = rejectAllRedirects

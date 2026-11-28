@@ -184,6 +184,7 @@ enum VoiceTranscription {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 35
         config.timeoutIntervalForResource = 60
+        NetworkRuntime.shared.configure(config, for: .default)
         let session = URLSession(configuration: config, delegate: SameOriginRedirectGuard(origin: endpoint), delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
 

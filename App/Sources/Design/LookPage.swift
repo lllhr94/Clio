@@ -596,8 +596,6 @@ struct ChatDisplayPage: View {
     @AppStorage("chat.faces") private var faces = false
     @AppStorage("chat.confirmStop") private var confirmStop = true
     @AppStorage("look.uikitChatList") private var useUIKitChatList = true
-    @AppStorage(VoiceTranscription.modeKey) private var voiceModeRaw = VoiceTranscription.Mode.system.rawValue
-    @AppStorage(VoiceTranscription.modelKey) private var voiceModel = ""
 
     private var hapticMode: Pref.HapticMode { Pref.HapticMode(rawValue: hapticModeRaw) ?? Pref.hapticMode }
 
@@ -663,15 +661,6 @@ struct ChatDisplayPage: View {
         }
     }
 
-    private var voiceSummary: String {
-        let mode = VoiceTranscription.Mode(rawValue: voiceModeRaw) ?? .system
-        if mode == .cloud {
-            let trimmed = voiceModel.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? L.t("voiceSettings.cloudShort") : trimmed
-        }
-        return mode.title
-    }
-
     var body: some View {
         PreferenceForm(L.t("settingsHome.displayAndHaptics"), reset: reset) {
             Section {
@@ -714,23 +703,6 @@ struct ChatDisplayPage: View {
                 Toggle(L.t("lookChatList.toggle"), isOn: $useUIKitChatList)
             } footer: {
                 Text(L.t("lookChatList.note"))
-            }
-            Section {
-                NavigationLink {
-                    VoiceSettingsPage()
-                } label: {
-                    HStack {
-                        Text(L.t("voiceSettings.title"))
-                            .foregroundStyle(Ink.ink)
-                        Spacer(minLength: Ink.Space.s)
-                        Text(voiceSummary)
-                            .font(Ink.mono(Ink.Size.small))
-                            .foregroundStyle(Ink.inkSoft)
-                            .lineLimit(1)
-                    }
-                }
-            } footer: {
-                Text(L.t("voiceSettings.rowFooter"))
             }
         }
         .onAppear {
@@ -910,6 +882,7 @@ struct MorningSettingsPage: View {
 }
 
 struct PrivacySettingsPage<VaultRow: View>: View {
+    var title: String? = nil
     var showsVaultRow = true
     @AppStorage("lock.faceid") private var faceLock = false
     @State private var verifying = false
@@ -943,7 +916,7 @@ struct PrivacySettingsPage<VaultRow: View>: View {
     }
 
     var body: some View {
-        PreferenceForm(L.t("settings.faceLock"), reset: {
+        PreferenceForm(title ?? L.t("settings.faceLock"), reset: {
             if faceLock {
                 requestDisableLock()
             }

@@ -844,7 +844,7 @@ struct MCPClient: Sendable {
     let token: String?
     var tunneled: Bool = false
 
-    private var session: URLSession { .shared }
+    private var session: URLSession { NetworkRuntime.shared.session(for: .mcp) }
 
     struct Tool: Sendable {
         var name: String

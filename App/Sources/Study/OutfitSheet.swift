@@ -101,7 +101,7 @@ struct OutfitSheet: View {
         request.httpMethod = "HEAD"
         let start = Date()
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await NetworkRuntime.shared.session(for: .default).data(for: request)
             guard (response as? HTTPURLResponse).map({ $0.statusCode < 400 }) ?? false else { return -1 }
             return Int(Date().timeIntervalSince(start) * 1000)
         } catch {

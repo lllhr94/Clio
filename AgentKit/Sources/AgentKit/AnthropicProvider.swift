@@ -112,6 +112,7 @@ public struct AnthropicProvider: ModelProvider {
     public var cacheTier: PromptCacheTier?
     public let stableSystemPrefix: String?
     public var customHeaders: [String: String]
+    public var networkScope: String
     private let fixedRoute: Bool
 
     public init(
@@ -121,7 +122,8 @@ public struct AnthropicProvider: ModelProvider {
         stableSystemPrefix: String? = nil,
         fixedRoute: Bool = false,
         cacheTier: PromptCacheTier? = nil,
-        customHeaders: [String: String] = [:]
+        customHeaders: [String: String] = [:],
+        networkScope: String = "default"
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
@@ -130,6 +132,7 @@ public struct AnthropicProvider: ModelProvider {
         self.stableSystemPrefix = stableSystemPrefix
         self.fixedRoute = fixedRoute
         self.customHeaders = customHeaders
+        self.networkScope = networkScope
     }
 
     public var effectiveCacheTier: PromptCacheTier {
@@ -176,7 +179,7 @@ public struct AnthropicProvider: ModelProvider {
 
     func stream(_ request: ModelRequest, session: URLSession?) -> AsyncThrowingStream<StreamEvent, Error> {
         let initialTier = effectiveCacheTier
-        let activeSession = session ?? (fixedRoute ? FixedModelRoute.session : nil)
+        let activeSession = session
         let url: URL
         do {
             url = try HTTP.endpoint(baseURL, "/v1/messages")
@@ -205,6 +208,7 @@ public struct AnthropicProvider: ModelProvider {
                 return HTTP.stream(
                     http,
                     session: activeSession,
+                    scope: networkScope,
                     rejectAllRedirects: fixedRoute,
                     timeouts: request.streamTimeouts,
                     stopOnFinishEvent: true,
@@ -224,6 +228,7 @@ public struct AnthropicProvider: ModelProvider {
                     for try await event in HTTP.stream(
                         firstReq,
                         session: activeSession,
+                        scope: networkScope,
                         rejectAllRedirects: fixedRoute,
                         timeouts: request.streamTimeouts,
                         stopOnFinishEvent: true,
@@ -240,6 +245,7 @@ public struct AnthropicProvider: ModelProvider {
                             for try await event in HTTP.stream(
                                 fallbackReq,
                                 session: activeSession,
+                                scope: networkScope,
                                 rejectAllRedirects: fixedRoute,
                                 timeouts: request.streamTimeouts,
                                 stopOnFinishEvent: true,
@@ -383,10 +389,10 @@ public struct AnthropicProvider: ModelProvider {
     }
 
     public func models() async throws -> [String] {
-        let session = fixedRoute ? FixedModelRoute.session : nil
         let list = try await HTTP.get(
             signed(try HTTP.endpoint(baseURL, "/v1/models?limit=100")),
-            session: session,
+            session: nil,
+            scope: networkScope,
             rejectAllRedirects: fixedRoute
         )
         return (list["data"]?.array ?? []).compactMap { $0["id"]?.string }

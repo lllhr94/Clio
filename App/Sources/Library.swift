@@ -631,6 +631,7 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
             return DisabledProtocolProvider(reason: "「\(name)」已暂停使用，请先在服务详情页恢复后再发消息。")
         }
         let headers = customNonSecretHeaders
+        let scope = NetworkScope.service(id).tag
         switch kind {
         case .openai:
             return OpenAIProvider(
@@ -638,7 +639,8 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
                 apiKey: key,
                 style: thinkingStyle,
                 fixedRoute: true,
-                customHeaders: headers
+                customHeaders: headers,
+                networkScope: scope
             )
         case .openaiResponses:
             return OpenAIResponsesProvider(
@@ -646,7 +648,8 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
                 apiKey: key,
                 isCodex: false,
                 customHeaders: headers,
-                fixedRoute: true
+                fixedRoute: true,
+                networkScope: scope
             )
         case .openaiCodex:
             return OpenAIResponsesProvider(
@@ -654,7 +657,8 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
                 apiKey: key,
                 isCodex: true,
                 customHeaders: headers,
-                fixedRoute: true
+                fixedRoute: true,
+                networkScope: scope
             )
         case .anthropic:
             return AnthropicProvider(
@@ -664,7 +668,8 @@ struct Endpoint: Codable, Identifiable, Equatable, Sendable {
                 stableSystemPrefix: stableSystemPrefix,
                 fixedRoute: true,
                 cacheTier: effectivePromptCacheTier,
-                customHeaders: headers
+                customHeaders: headers,
+                networkScope: scope
             )
         case .unknown(let raw):
             return DisabledProtocolProvider(reason: "「\(name)」使用了当前版本不识别的协议（\(raw)），已禁用并停止发送凭据。")

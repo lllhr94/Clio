@@ -264,9 +264,11 @@ struct CareUsagePage: View {
 
 /// Standalone About Clio page pushed as the "+1" tail group of the 8+1 Settings hierarchy.
 struct CareAboutPage: View {
+    #if DEBUG
     @AppStorage("care.spikeLab") private var spikeLab = false
     @State private var tapCount = 0
     @State private var lastTapAt = Date.distantPast
+    #endif
     @State private var notice: String?
 
     private var shortVersion: String {
@@ -361,6 +363,7 @@ struct CareAboutPage: View {
     }
 
     private func handleVersionTap() {
+        #if DEBUG
         let now = Date()
         tapCount = now.timeIntervalSince(lastTapAt) > 1.5 ? 1 : (tapCount + 1)
         lastTapAt = now
@@ -370,5 +373,6 @@ struct CareAboutPage: View {
             Haptics.tick(0.6)
             notice = spikeLab ? L.t("careSpike.labEnabled") : L.t("careSpike.labDisabled")
         }
+        #endif
     }
 }

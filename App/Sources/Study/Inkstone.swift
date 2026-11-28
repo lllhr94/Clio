@@ -192,7 +192,8 @@ private struct TerminalHost: UIViewRepresentable {
                 return
             }
             var error: Int32 = 0
-            shell = DenTerminal.open(output: { data in
+            let env = NetworkRuntime.shared.shellEnvironment()
+            shell = DenTerminal.open(environment: env.isEmpty ? nil : env, output: { data in
                 buffer.append(data)
             }, exited: { [weak self] in
                 DispatchQueue.main.async {

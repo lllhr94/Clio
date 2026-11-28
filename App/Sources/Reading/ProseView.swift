@@ -2302,6 +2302,7 @@ struct ProsePicture: View {
         config.timeoutIntervalForResource = 45
         config.httpCookieAcceptPolicy = .never
         config.httpShouldSetCookies = false
+        NetworkRuntime.shared.configure(config, for: .default)
         let delegate = PublicImageRedirectDelegate()
         let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }

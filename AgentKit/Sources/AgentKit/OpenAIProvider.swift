@@ -7,6 +7,7 @@ public struct OpenAIProvider: ModelProvider {
     /// How this service wants to hear about thinking.
     public var style: ThinkingStyle
     public var customHeaders: [String: String]
+    public var networkScope: String
     var fixedRoute: Bool
 
     public init(
@@ -14,13 +15,15 @@ public struct OpenAIProvider: ModelProvider {
         apiKey: String,
         style: ThinkingStyle? = nil,
         fixedRoute: Bool = false,
-        customHeaders: [String: String] = [:]
+        customHeaders: [String: String] = [:],
+        networkScope: String = "default"
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.style = style ?? ThinkingStyle.guess(baseURL: baseURL)
         self.fixedRoute = fixedRoute
         self.customHeaders = customHeaders
+        self.networkScope = networkScope
     }
 
     func effectiveContractKey(for model: String, endpointURL: URL? = nil) -> EndpointContractKey {
@@ -55,12 +58,12 @@ public struct OpenAIProvider: ModelProvider {
             for (k, v) in request.customHeaders { mergedHeaders[k] = v }
             HTTP.applyNonSecretHeaders(mergedHeaders, to: &http)
             http.httpBody = try HTTP.json(Self.body(boundRequest, style: style))
-            let session = fixedRoute ? FixedModelRoute.session : nil
             return Self.splittingThoughts(
                 HTTP.stream(
                     http,
                     acceptsJSON: true,
-                    session: session,
+                    session: nil,
+                    scope: networkScope,
                     rejectAllRedirects: fixedRoute,
                     timeouts: request.streamTimeouts,
                     decode: Self.decode
@@ -79,8 +82,7 @@ public struct OpenAIProvider: ModelProvider {
         var http = URLRequest(url: try HTTP.endpoint(baseURL, "/models"))
         http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         HTTP.applyNonSecretHeaders(customHeaders, to: &http)
-        let session = fixedRoute ? FixedModelRoute.session : nil
-        let list = try await HTTP.get(http, session: session, rejectAllRedirects: fixedRoute)
+        let list = try await HTTP.get(http, session: nil, scope: networkScope, rejectAllRedirects: fixedRoute)
         var windows: [String: Int] = [:]
         var ids: [String] = []
         for entry in list["data"]?.array ?? [] {

@@ -1,3 +1,4 @@
+#if DEBUG
 import SwiftUI
 import UIKit
 
@@ -46,3 +47,4 @@ private struct SpikeChatRepresentable: UIViewControllerRepresentable {
         }
     }
 }
+#endif

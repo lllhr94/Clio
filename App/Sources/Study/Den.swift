@@ -387,6 +387,7 @@ final class Den: ObservableObject {
         let dnsMode = Self.readDNSMode()
         let customServers = DenDNSConfig.parseCustomDNSList(Self.readCustomDNSInput()).valid
         let dnsDir = Self.dnsDirectory
+        let netDir = NetworkRuntime.denNetDirectory
         let resolvURL = Self.resolvConfURL
         let bootRevision = Self.nextDNSRevision()
         applyThermalForkLimit()
@@ -404,7 +405,7 @@ final class Den: ObservableObject {
                     dnsResult = ([], [], false, nil)
                 }
                 Thread.detachNewThread {
-                    let code = DenKernel.bootRoot(root.path, desk: desk, dnsDir: dnsDir.path)
+                    let code = DenKernel.bootRoot(root.path, desk: desk, dnsDir: dnsDir.path, netDir: netDir.path)
                     let fallbackErr = DenKernel.lastDNSFallbackError()
                     continuation.resume(returning: (code, dnsResult, fallbackErr))
                 }
@@ -472,16 +473,24 @@ final class Den: ObservableObject {
         if shown { note(.command, command) }
         let control = CommandControl()
         let printed = PrintedLines()
-        let receive: @Sendable (String, Bool) -> Void = { [weak self] line, isError in
+        let receive: @Sendable (String, Bool) -> Void = { [weak self] rawLine, isError in
+            let line = NetworkRuntime.shared.redactSecrets(in: rawLine)
             printed.add(line)
             onOutput?(line)
             if shown { self?.buffer(Line(kind: isError ? .error : .out, text: line)) }
         }
+        let shellEnv = NetworkRuntime.shared.shellEnvironment()
         let result = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let once = Once(continuation)
-                let pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: nil, maxOutput: maxKeep, onLine: receive, done: { code, output, errorOutput in
-                    once.finish(Outcome(code: code, output: output, errorOutput: errorOutput, timedOut: false))
+                let pid = DenKernel.run("cd /root 2>/dev/null; " + command, environment: shellEnv.isEmpty ? nil : shellEnv, maxOutput: maxKeep, onLine: receive, done: { code, output, errorOutput in
+                    let cleanOut = NetworkRuntime.shared.redactSecrets(in: output)
+                    var cleanErr = NetworkRuntime.shared.redactSecrets(in: errorOutput)
+                    if code != 0, let hint = NetworkErrorDiagnostics.hint(for: cleanOut + "\n" + cleanErr) {
+                        if !cleanErr.isEmpty && !cleanErr.hasSuffix("\n") { cleanErr += "\n" }
+                        cleanErr += hint + "\n"
+                    }
+                    once.finish(Outcome(code: code, output: cleanOut, errorOutput: cleanErr, timedOut: false))
                 })
                 guard pid >= 0 else {
                     once.finish(Outcome(code: pid, output: "", errorOutput: "命令没能启动（错误 \(pid)）", timedOut: false))

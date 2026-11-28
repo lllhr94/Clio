@@ -9,7 +9,6 @@ struct AddServiceSheet: View {
     @State private var preset: String?
     @State private var signInTask: Task<Void, Never>?
     @State private var signInNote: String?
-    @State private var showsKimiOptions = false
 
     var body: some View {
         NavigationStack {
@@ -20,9 +19,7 @@ struct AddServiceSheet: View {
                     }
                     .disabled(signInTask != nil)
                     if category == .recommended { openRouterCard }
-                    if category == .codingPlan { kimiCard }
                     presets
-                    if category == .codingPlan { ExperimentalOAuthSection() }
                 }
                 .padding(.horizontal, Ink.Space.page)
                 .padding(.vertical, Ink.Space.l)
@@ -86,28 +83,6 @@ struct AddServiceSheet: View {
                 .padding([.horizontal, .bottom], Ink.Space.l)
             }
         }
-        .paperCard()
-    }
-
-    private var kimiCard: some View {
-        VStack(alignment: .leading, spacing: Ink.Space.m) {
-            DisclosureGroup(isExpanded: $showsKimiOptions) {
-                VStack(alignment: .leading, spacing: Ink.Space.m) {
-                    Text(L.t("services.kimiDeviceUnavailable"))
-                        .font(Ink.footnote).foregroundStyle(Ink.inkSoft)
-                    Button(L.t("services.useAPIKey")) {
-                        if let service = Service.byID["kimi-code"] { choose(service) }
-                    }
-                    .buttonStyle(WideButtonStyle(filled: false))
-                }
-                .padding(.top, Ink.Space.m)
-            } label: {
-                Text(L.t("services.kimiDeviceSignIn"))
-                    .font(Ink.label).foregroundStyle(Ink.ink)
-            }
-            .tint(Ink.accent)
-        }
-        .padding(Ink.Space.l)
         .paperCard()
     }
 

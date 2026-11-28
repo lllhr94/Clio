@@ -28,20 +28,52 @@ struct SettingsView: View {
     @State private var query = ""
     @State private var searching = false
     @State private var sheet: SettingsPage?
+    @State private var creatingBot = false
     @State private var editingBot: BotInfo?
     @State private var creatingRoom = false
     @State private var editingRoom: RoomInfo?
 
-    private static let groups: [(title: String, tint: Color, pages: [SettingsPage])] = [
-        ("settingsHome.modelsAndCapsGroup", Ink.Tile.dai, [.services, .models, .grants, .connectors, .skills, .searchEngine, .hosts]),
-        ("settingsHome.companionsCareGroup", Ink.Tile.yan, [.companions, .memory, .pet, .timing]),
-        ("settingsHome.lookInteractGroup", Ink.Tile.teng, [.theme, .size, .tone, .display]),
-        ("settingsHome.chatSecurityNotifyGroup", Ink.Tile.zhu, [.context, .voice, .notifications, .vault, .lock]),
-        ("settingsHome.dataCareGroup", Ink.Tile.mo, [.careBackup, .careUsage, .careStorage, .careDiagnostics]),
+    static let groups: [(title: String, tint: Color, pages: [SettingsPage])] = [
+        ("settingsHome.modelsAndCapsGroup", Ink.Tile.dai, [.services, .models, .capabilities]),
+        ("settingsHome.companionsExperienceGroup", Ink.Tile.yan, [.companions, .memoryAndRoutine, .appearance, .chatAndVoice]),
+        ("settingsHome.securityAndDataGroup", Ink.Tile.mo, [.notifications, .privacy, .care]),
     ]
 
-    private static let searchAliases: [SettingsPage: SettingsPage] = [
-        .image: .models, .rooms: .companions, .font: .size, .morning: .timing, .about: .careDiagnostics,
+    static let hubChildren: [SettingsPage: [SettingsPage]] = [
+        .capabilities: [.grants, .searchEngine, .network, .connectors, .skills, .hosts],
+        .memoryAndRoutine: [.memory, .timing],
+        .appearance: [.theme, .size, .tone, .pet],
+        .chatAndVoice: [.display, .context, .voice],
+        .care: [.careBackup, .careUsage, .careStorage, .careDiagnostics],
+    ]
+
+    static let searchAliases: [SettingsPage: SettingsPage] = [
+        .grants: .capabilities,
+        .searchEngine: .capabilities,
+        .network: .capabilities,
+        .connectors: .capabilities,
+        .skills: .capabilities,
+        .hosts: .capabilities,
+        .image: .models,
+        .rooms: .companions,
+        .memory: .memoryAndRoutine,
+        .timing: .memoryAndRoutine,
+        .morning: .memoryAndRoutine,
+        .theme: .appearance,
+        .size: .appearance,
+        .font: .appearance,
+        .tone: .appearance,
+        .pet: .appearance,
+        .display: .chatAndVoice,
+        .context: .chatAndVoice,
+        .voice: .chatAndVoice,
+        .lock: .privacy,
+        .vault: .privacy,
+        .careBackup: .care,
+        .careUsage: .care,
+        .careStorage: .care,
+        .careDiagnostics: .care,
+        .about: .care,
     ]
 
     var body: some View {
@@ -76,6 +108,7 @@ struct SettingsView: View {
             open(page)
         }
         .sheet(item: $sheet, content: sheetContent)
+        .sheet(isPresented: $creatingBot) { BotEditor(team: team, bot: nil) }
         .sheet(item: $editingBot) { BotEditor(team: team, bot: $0) }
         .sheet(isPresented: $creatingRoom) { RoomEditor(team: team) }
         .sheet(item: $editingRoom) { RoomEditor(team: team, room: $0) }
@@ -289,8 +322,12 @@ struct SettingsView: View {
     }
 
     private var found: [SettingsPage] {
+        Self.searchPages(matching: query)
+    }
+
+    static func searchPages(matching query: String) -> [SettingsPage] {
         let words = query.split(whereSeparator: \.isWhitespace)
-        let pages = Self.groups.flatMap(\.pages) + Self.searchAliases.keys.sorted { $0.rawValue < $1.rawValue }
+        let pages = groups.flatMap(\.pages) + searchAliases.keys.sorted { $0.rawValue < $1.rawValue }
         return pages.filter { page in
             let keys = [page.titleKey, page.lineKey] + page.previousSearchKeys
             let terms = keys.flatMap { key in [L.daily[key], L.literary[key]].compactMap { $0 } } + [page.keywords]
@@ -336,8 +373,10 @@ struct SettingsView: View {
     private func rowEnd(for page: SettingsPage) -> RowEnd {
         switch page {
         case .services: .dotValueChevron(servicesTint, servicesStatus)
-        case .lock where faceLock: .dotValueChevron(Ink.ok, L.t("settingsHome.enabled"))
-        case .careBackup: .dotValueChevron(davURL.isEmpty ? Ink.warn : Ink.ok, backupStatus)
+        case .lock where faceLock, .privacy where faceLock:
+            .dotValueChevron(Ink.ok, L.t("settingsHome.enabled"))
+        case .careBackup, .care:
+            .dotValueChevron(davURL.isEmpty ? Ink.warn : Ink.ok, backupStatus)
         default: summary(for: page).map { .valueChevron($0) } ?? .chevron
         }
     }
@@ -368,6 +407,16 @@ struct SettingsView: View {
         switch page {
         case .models:
             return defaultModelName
+        case .capabilities:
+            return Grant.Preset.current?.title ?? searchSummary
+        case .memoryAndRoutine:
+            return L.format("settingsHome.itemsCount", team.memories.count)
+        case .appearance:
+            return "\(schemeSummary) · \(Theme.shared.palette.title)"
+        case .chatAndVoice:
+            return voiceSummary
+        case .privacy:
+            return L.t("settingsHome.disabled")
         case .image:
             if let selection = team.imageModelSelection {
                 return selection.endpoint.displayName(for: selection.model)
@@ -399,6 +448,10 @@ struct SettingsView: View {
             return hills.servers.isEmpty ? nil : L.format("settingsHome.itemsCount", hills.servers.count)
         case .searchEngine:
             return searchSummary
+        case .network:
+            let rt = NetworkRuntime.shared
+            if !rt.settings.routingEnabled { return L.t("settingsHome.disabled") }
+            return rt.activeEndpoints != nil ? L.format("network.proxiesCountShort", rt.settings.proxies.count) : L.t("network.routeDirect")
         case .hosts:
             return L.format("settingsHome.hostsCount", hills.hosts.count)
         case .timing:
@@ -437,10 +490,32 @@ struct SettingsView: View {
             DefaultModelsPage(team: team) {
                 path.append(SettingsPage.services)
             }
+        case .capabilities:
+            hubPage(.capabilities, tint: Ink.Tile.dai)
+        case .memoryAndRoutine:
+            hubPage(.memoryAndRoutine, tint: Ink.Tile.yan)
+        case .appearance:
+            hubPage(.appearance, tint: Ink.Tile.teng)
+        case .chatAndVoice:
+            hubPage(.chatAndVoice, tint: Ink.Tile.zhu)
+        case .privacy:
+            PrivacySettingsPage(title: L.t("settingsHome.privacy"), showsVaultRow: true) {
+                NavigationLink(value: SettingsPage.vault) {
+                    VStack(alignment: .leading, spacing: Ink.Space.xs / 2) {
+                        Text(L.t(SettingsPage.vault.titleKey))
+                            .foregroundStyle(Ink.ink)
+                        Text(L.t(SettingsPage.vault.lineKey))
+                            .font(Ink.footnote)
+                            .foregroundStyle(Ink.inkSoft)
+                    }
+                }
+            }
+        case .care:
+            hubPage(.care, tint: Ink.Tile.mo)
         case .image:
             ImageModelPage(team: team)
         case .companions, .rooms:
-            SettingsCompanionsPage(team: team, tab: page, editingBot: $editingBot,
+            SettingsCompanionsPage(team: team, tab: page, creatingBot: $creatingBot, editingBot: $editingBot,
                                    creatingRoom: $creatingRoom, editingRoom: $editingRoom)
         case .pet:
             PetPage(embedded: true)
@@ -466,6 +541,8 @@ struct SettingsView: View {
             SkillsPage(embedded: true)
         case .searchEngine:
             SearchSettingsPage()
+        case .network:
+            NetworkSettingsPage(endpoints: team.settings.endpoints, embedded: true)
         case .hosts:
             HillsPage(embedded: true)
         case .timing, .morning:
@@ -491,6 +568,23 @@ struct SettingsView: View {
         case .add:
             EmptyView()
         }
+    }
+
+    private func hubPage(_ hub: SettingsPage, tint: Color) -> some View {
+        let children = Self.hubChildren[hub] ?? []
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: Ink.Space.xl) {
+                RowCard {
+                    ForEach(children) { child in pageRow(child, tint) }
+                }
+            }
+            .padding(.horizontal, Ink.Space.page)
+            .padding(.vertical, Ink.Space.l)
+        }
+        .scrollEdgeEffectStyle(.soft, for: .vertical)
+        .background(Ink.paper.ignoresSafeArea())
+        .navigationTitle(L.t(hub.titleKey))
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     @ViewBuilder
@@ -582,6 +676,7 @@ private struct SettingsUserAvatarButton: View {
 private struct SettingsCompanionsPage: View {
     let team: TeamModel
     @State var tab: SettingsPage
+    @Binding var creatingBot: Bool
     @Binding var editingBot: BotInfo?
     @Binding var creatingRoom: Bool
     @Binding var editingRoom: RoomInfo?
@@ -592,7 +687,7 @@ private struct SettingsCompanionsPage: View {
                 if tab == .rooms {
                     SettingsRoomsSection(team: team, creatingRoom: $creatingRoom, editingRoom: $editingRoom)
                 } else {
-                    SettingsCompanionsSection(team: team, editingBot: $editingBot)
+                    SettingsCompanionsSection(team: team, creatingBot: $creatingBot, editingBot: $editingBot)
                 }
             }
             .padding(.horizontal, Ink.Space.page)
@@ -653,6 +748,7 @@ private struct SettingsSchedulePage: View {
 
 private struct SettingsCompanionsSection: View {
     @ObservedObject var team: TeamModel
+    @Binding var creatingBot: Bool
     @Binding var editingBot: BotInfo?
 
     var body: some View {
@@ -663,6 +759,13 @@ private struct SettingsCompanionsSection: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(Ink.Space.l)
             }
             ForEach(team.bots) { companionRow($0) }
+            Button {
+                Haptics.light()
+                creatingBot = true
+            } label: {
+                RowLabel("plus", tint: Ink.Tile.yan, title: L.t("sidebar.newCompanion"))
+            }
+            .buttonStyle(PressStyle(haptic: false))
         }
     }
 
@@ -706,9 +809,10 @@ private struct SettingsRoomsSection: View {
     }
 }
 
-private enum SettingsPage: String, Identifiable {
-    case services, models, image, companions, rooms, pet, theme, font, size, tone
-    case display, context, grants, searchEngine, connectors, skills, timing, hosts, notifications, morning, lock
+enum SettingsPage: String, Identifiable {
+    case services, models, capabilities, companions, memoryAndRoutine, appearance, chatAndVoice, notifications, privacy, care
+    case image, rooms, pet, theme, font, size, tone
+    case display, context, grants, searchEngine, network, connectors, skills, timing, hosts, morning, lock
     case careBackup, careUsage, careStorage, careDiagnostics, about
     case memory, vault, voice, add
 
@@ -718,6 +822,7 @@ private enum SettingsPage: String, Identifiable {
         switch link {
         case "model": self = .models
         case "search": self = .searchEngine
+        case "network", "proxy", "dns": self = .network
         case "look": self = .theme
         case "look#font": self = .font
         case "look#size", "look#ui": self = .size
@@ -728,7 +833,8 @@ private enum SettingsPage: String, Identifiable {
         case "look#notify": self = .notifications
         case "look#morning": self = .morning
         case "look#lock": self = .lock
-        case "care", "backup": self = .careBackup
+        case "care": self = .care
+        case "backup": self = .careBackup
         case "usage": self = .careUsage
         case "storage": self = .careStorage
         case "diagnostics": self = .careDiagnostics
@@ -745,7 +851,13 @@ private enum SettingsPage: String, Identifiable {
         switch self {
         case .services: "settings.modelService"
         case .models: "settingsHome.defaultAndSpecialModels"
+        case .capabilities: "settingsHome.capabilities"
         case .companions: "settingsHome.companionsAndRooms"
+        case .memoryAndRoutine: "settingsHome.memoryAndRoutine"
+        case .appearance: "settingsHome.appearance"
+        case .chatAndVoice: "settingsHome.chatAndVoice"
+        case .privacy: "settingsHome.privacy"
+        case .care: "settingsHome.care"
         case .size: "settingsHome.typography"
         case .display: "settingsHome.displayAndHaptics"
         case .image: "settings.imageModel"
@@ -774,6 +886,7 @@ private enum SettingsPage: String, Identifiable {
         case .timing: "settingsHome.scheduleAndMorningLine"
         case .size: "settingsHome.typographyLine"
         case .display: "settingsHome.displayAndHapticsLine"
+        case .care: "settingsHome.careHubLine"
         case .voice: "voiceSettings.rowFooter"
         case .about: "settingsHome.aboutClioLine"
         default: "settingsHome." + rawValue + "Line"
@@ -784,8 +897,14 @@ private enum SettingsPage: String, Identifiable {
         switch self {
         case .services: "server.rack"
         case .models: "sparkles"
-        case .image: "photo.badge.plus"
+        case .capabilities: "wrench.and.screwdriver"
         case .companions: "person.2"
+        case .memoryAndRoutine: "brain"
+        case .appearance: "paintpalette"
+        case .chatAndVoice: "bubble.left.and.text.bubble.right"
+        case .privacy: "lock.shield"
+        case .care: "externaldrive.badge.icloud"
+        case .image: "photo.badge.plus"
         case .rooms: "person.3"
         case .pet: "pawprint"
         case .theme: "paintpalette"
@@ -796,6 +915,7 @@ private enum SettingsPage: String, Identifiable {
         case .context: "text.alignleft"
         case .grants: "checkmark.shield"
         case .searchEngine: "magnifyingglass"
+        case .network: "network"
         case .connectors: "powerplug"
         case .skills: "books.vertical"
         case .timing: "alarm"
@@ -830,8 +950,14 @@ private enum SettingsPage: String, Identifiable {
         switch self {
         case .services: "添一家 添加模型服务 密钥 key api deepseek kimi claude openai ollama lm studio 本地 中转"
         case .models: "默认 备用 换模型 兜底 出错 失败 记忆整理模型 小模型"
+        case .capabilities: "权限 批准 联网 搜索 网络 代理 dns socks5 连接器 技能 远程主机 ssh mcp"
+        case .memoryAndRoutine: "记忆 拾遗 定时任务 更漏 早报 晨信 日记 手札"
+        case .appearance: "外观 主题 设色 字体 字号 行距 称谓 书卷 日常 宠物 伴读"
+        case .chatAndVoice: "对话 显示 触感 震动 淡入 思考 压缩 上下文 温度 语音 听写 转写"
+        case .privacy: "隐私 面容 face id 锁 密码匣 信匣 vault"
+        case .care: "备份 恢复 webdav 用量 余额 存储 清理 归档 诊断 掉帧 养护"
         case .image: "画图 绘图 生图 图像 generate_image"
-        case .companions: "人物 角色 改名 头像 性格"
+        case .companions: "人物 角色 改名 头像 性格 新建助手 新旅伴"
         case .rooms: "群聊 雅集 开一场 成员"
         case .pet: "宠物 伴读 小克 肉包 形象 头像 气泡 安静 导入 宠物包 图片 gif"
         case .theme: "纸墨 主题 深色 夜间 纯黑 主色 设色"
@@ -842,6 +968,7 @@ private enum SettingsPage: String, Identifiable {
         case .context: "压缩 上下文 温度 输出 长度 步数 最多步数"
         case .grants: "权限 批准 允许 智能审批 联网 浏览器 日历 提醒 位置 通讯录 照片 健康 拾遗 书案 斗室"
         case .searchEngine: "联网 搜索 引擎 anysearch tavily exa brave bing duckduckgo searxng 查资料 密钥 key"
+        case .network: "网络 代理 分流 路由 socks5 http https bypass 直连 dns 终端 斗室 诊断 proxy"
         case .connectors: "连接 谷歌 google gmail 邮箱 邮件 云盘 云端硬盘 drive 高德 地图 导航 github notion linear jira confluence asana canva figma zapier composio rube mcp"
         case .skills: "skill 本事 技能"
         case .timing: "每天 每周 到点 定时任务"

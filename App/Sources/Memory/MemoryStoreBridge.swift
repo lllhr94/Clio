@@ -129,6 +129,126 @@ final class MemoryStoreBridge: @unchecked Sendable {
         return combined
     }
 
+    /// Idempotently merges legacy `ExperienceStore` records into unified `MemoryRecord` storage (`MemoryLayer.deep`, empty topic),
+    /// applying Vault secret redaction and propagating soft-deleted experience hashes into `tombstones` / `memory-retracted.json`.
+    @discardableResult
+    func mergeLegacyExperiencesSync(
+        secrets explicitSecrets: [String]? = nil,
+        nowMs: Double = Now.ms
+    ) -> ExperienceMemoryMergeReport? {
+        guard let expBridge = experienceBridge else { return nil }
+        return commitQueue.sync {
+            queue.sync {
+                guard !Disk.frozen, !stateLock.withLock({ canonicalLoadFailed }) else { return nil }
+                let expBook: CanonicalExperienceBook
+                do {
+                    expBook = try expBridge.queue.sync {
+                        try ExperienceStore(canonicalFileURL: expBridge.canonicalFileURL).readBook()
+                    }
+                } catch {
+                    return nil
+                }
+                guard !expBook.records.isEmpty || !expBook.retractedHashes.isEmpty else { return nil }
+
+                let secrets = Self.orderedSecrets(explicitSecrets ?? Vault.allStrings())
+                let memoryURL = teamRoot.appendingPathComponent(Self.memoryFileName)
+                let retractedURL = teamRoot.appendingPathComponent(Self.retractedFileName)
+                let existingRetracted = loadRetractedHashes(at: retractedURL)
+
+                var canonical: CanonicalMemoryBook
+                switch loadCanonicalBookFromDisk(at: memoryURL) {
+                case .decoded(let decoded, _):
+                    canonical = decoded
+                case .missing:
+                    canonical = CanonicalMemoryBook()
+                case .unreadable, .corrupt:
+                    return nil
+                }
+
+                let existingRecords: [MemoryRecord] = (canonical.memories + canonical.archived).map { item in
+                    MemoryRecord(
+                        id: item.id,
+                        text: item.text,
+                        layer: item.resolvedLayer,
+                        pinned: item.pinned ?? (item.resolvedLayer == .pinned),
+                        kind: item.kind ?? "fact",
+                        topic: item.topic ?? "",
+                        sourceChat: item.sourceChat,
+                        sourceEntryID: item.sourceEntryID,
+                        confidence: item.confidence ?? 1.0,
+                        createdAtMs: item.at,
+                        updatedAtMs: item.effectiveUpdatedAtMs,
+                        usedAtMs: item.used,
+                        byBot: item.by,
+                        automatic: item.automatic ?? false,
+                        editedByUser: item.editedByUser ?? false,
+                        deletedAtMs: nil
+                    )
+                }
+
+                var combinedRetracted = existingRetracted
+                combinedRetracted.formUnion(canonical.suppressedFlushHashes)
+                combinedRetracted.formUnion(canonical.tombstones.map(\.textSHA256))
+
+                let report = ExperienceMemoryMerger.merge(
+                    experiences: expBook,
+                    into: existingRecords,
+                    existingRetractedHashes: combinedRetracted,
+                    secrets: secrets,
+                    nowMs: nowMs
+                )
+
+                var tombstonesByHash = Dictionary(
+                    canonical.tombstones.map { ($0.textSHA256.lowercased(), $0) },
+                    uniquingKeysWith: { lhs, rhs in lhs.deletedAtMs >= rhs.deletedAtMs ? lhs : rhs }
+                )
+                for hash in report.retractedHashes where tombstonesByHash[hash] == nil {
+                    tombstonesByHash[hash] = MemoryTombstone(
+                        textSHA256: hash,
+                        memoryID: nil,
+                        deletedAtMs: nowMs,
+                        reason: "legacy_experience_retracted"
+                    )
+                }
+
+                canonical.memories = report.memories
+                    .filter { $0.deletedAtMs == nil && $0.layer != .archived }
+                    .map(CanonicalMemoryItem.init(from:))
+                canonical.archived = report.memories
+                    .filter { $0.deletedAtMs == nil && $0.layer == .archived }
+                    .map(CanonicalMemoryItem.init(from:))
+                canonical.suppressedFlushHashes = report.retractedHashes.sorted()
+                canonical.tombstones = tombstonesByHash.values.sorted { $0.textSHA256 < $1.textSHA256 }
+
+                do {
+                    _ = try self.store.openOrRecover()
+                    let newDigest = try self.writeCanonicalBookToDisk(canonical, at: memoryURL)
+                    let reconciled = try self.store.reconcile(
+                        book: canonical,
+                        secrets: secrets,
+                        nowMs: nowMs,
+                        jsonDigest: newDigest
+                    )
+                    try? self.store.checkpoint()
+                    try syncRetractedHashesFileThrowing(
+                        Set(reconciled.suppressedFlushHashes),
+                        existing: existingRetracted,
+                        at: retractedURL
+                    )
+                    let liveRecords = try self.store.list(layer: nil, includeDeleted: false, secrets: secrets)
+                    _ = updateShadowState(
+                        liveRecords: liveRecords,
+                        tombstones: reconciled.tombstones,
+                        appBook: Self.toAppMemoryBook(reconciled)
+                    )
+                } catch {
+                    return nil
+                }
+                return report
+            }
+        }
+    }
+
     func withBackupBarrier<T>(_ work: () throws -> T) rethrows -> T {
         if let expBridge = experienceBridge {
             return try commitQueue.sync {

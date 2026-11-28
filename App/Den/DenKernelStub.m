@@ -9,6 +9,11 @@
 
 + (int)bootRoot:(NSString *)root desk:(nullable NSString *)desk dnsDir:(nullable NSString *)dnsDir { return -38; }
 
++ (int)bootRoot:(NSString *)root
+           desk:(nullable NSString *)desk
+         dnsDir:(nullable NSString *)dnsDir
+         netDir:(nullable NSString *)netDir { return -38; }
+
 + (void)setForkRateLimit:(uint32_t)perSecond burst:(uint32_t)burst {}
 
 + (NSArray<NSString *> *)systemDNSServers { return @[]; }
@@ -16,6 +21,8 @@
 + (NSArray<NSString *> *)systemSearchDomains { return @[]; }
 
 + (nullable NSString *)lastDNSFallbackError { return nil; }
+
++ (NSString *)kernelNetworkStatus { return @"simulator"; }
 
 + (BOOL)booted { return NO; }
 
@@ -42,6 +49,13 @@
 @implementation DenTerminal
 
 + (nullable instancetype)openWithOutput:(void (^)(NSData *data))output exited:(void (^)(void))exited error:(int *)error {
+    return [self openWithEnvironment:nil output:output exited:exited error:error];
+}
+
++ (nullable instancetype)openWithEnvironment:(nullable NSDictionary<NSString *, NSString *> *)environment
+                                      output:(void (^)(NSData *data))output
+                                      exited:(void (^)(void))exited
+                                       error:(int *)error {
     if (error) { *error = -38; }
     return nil;
 }

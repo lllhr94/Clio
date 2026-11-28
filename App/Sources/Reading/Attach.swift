@@ -243,6 +243,15 @@ struct PlusSheet: View {
 
     private var options: TeamModel.ChatOptions { team.options(key) }
 
+    private var abilitiesSummary: String {
+        Self.abilitiesSummaryText(placeTitle: team.place(of: key).title, offCount: options.off.count)
+    }
+
+    static func abilitiesSummaryText(placeTitle: String, offCount: Int) -> String {
+        let status = offCount == 0 ? "全开" : "关了 \(offCount) 项"
+        return "\(placeTitle) · \(status)"
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -254,19 +263,9 @@ struct PlusSheet: View {
                         line("folder", "添加文件") { choose(.files) }
                     }
                     group {
-                        NavigationLink {
-                            PlacePicker(team: team, key: key)
-                        } label: {
-                            row("desktopcomputer", "在哪里干活", value: team.place(of: key).title)
-                        }
-                        .buttonStyle(TapStyle())
+                        line("checkmark.shield", Words.t("本事"), value: abilitiesSummary) { abilities = true }
                         divider
-                        line("checkmark.shield", Words.t("本事"), value: options.off.isEmpty ? "全开" : "关了 \(options.off.count) 项") { abilities = true }
-                    }
-                    group {
                         line("books.vertical", "技能", value: enabledSkillsCount.map { "\($0) 个" }) { skills = true }
-                        divider
-                        toggle("brain", L.t("nav.memory"), note: "记住你说过的事", isOn: !options.off.contains(Grant.memory.rawValue)) { team.setAbility(.memory, on: $0, in: key) }
                     }
                 }
                 .padding(.horizontal, Ink.Space.page)

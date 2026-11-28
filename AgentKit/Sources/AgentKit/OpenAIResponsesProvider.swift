@@ -8,19 +8,22 @@ public struct OpenAIResponsesProvider: ModelProvider, CatalogReportingProvider {
     public var isCodex: Bool
     public var customHeaders: [String: String]
     public var fixedRoute: Bool
+    public var networkScope: String
 
     public init(
         baseURL: String,
         apiKey: String,
         isCodex: Bool = false,
         customHeaders: [String: String] = [:],
-        fixedRoute: Bool = false
+        fixedRoute: Bool = false,
+        networkScope: String = "default"
     ) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.isCodex = isCodex
         self.customHeaders = customHeaders
         self.fixedRoute = fixedRoute
+        self.networkScope = networkScope
     }
 
     public var protocolKind: String {
@@ -77,12 +80,12 @@ public struct OpenAIResponsesProvider: ModelProvider, CatalogReportingProvider {
                 throw ProviderError(reason)
             }
             let http = try urlRequest(request)
-            let activeSession = session ?? (fixedRoute ? FixedModelRoute.session : nil)
             let decoder = Self.makeDecoder(contractKey: contract, speakerOrThreadID: request.speakerOrThreadID)
             return HTTP.stream(
                 http,
                 acceptsJSON: false,
-                session: activeSession,
+                session: session,
+                scope: networkScope,
                 rejectAllRedirects: fixedRoute,
                 timeouts: request.streamTimeouts,
                 stopOnFinishEvent: true,
@@ -105,8 +108,7 @@ public struct OpenAIResponsesProvider: ModelProvider, CatalogReportingProvider {
         var http = URLRequest(url: try HTTP.endpoint(baseURL, "/models"))
         http.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         HTTP.applyNonSecretHeaders(customHeaders, to: &http)
-        let activeSession = session ?? (fixedRoute ? FixedModelRoute.session : nil)
-        let list = try await HTTP.get(http, session: activeSession, rejectAllRedirects: fixedRoute)
+        let list = try await HTTP.get(http, session: session, scope: networkScope, rejectAllRedirects: fixedRoute)
         var windows: [String: Int] = [:]
         var ids: [String] = []
         for entry in list["data"]?.array ?? [] {

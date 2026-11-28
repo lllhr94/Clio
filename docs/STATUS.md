@@ -1,5 +1,26 @@
 # 现状与交接
 
+## 0.37 Batch 4：安全加固、应用内网络路由与瘦身清理（`antigravity/batch4-security-memory-cleanup`）
+
+- **安全与记忆（Batch 4a）**：
+  - 接入 `Craft/SkillSourceValidator` 修复 `CLIO-022`：`SkillInstaller.parseGitHubURL`、`fetchGitHubContents` 与 `fetchGitHubArchive` 全部切到严格 RFC 3986 校验与 `gitHubArchiveZipPaths`，非法 GitHub 链接直接拒绝不再回落普通下载器，保留标准 `.zip` 归档与 release 链接；补充 `SkillSourceValidatorTests` 与 `SkillInstallerValidationTests`。
+  - 新增纯函数旧经验合并器 `Craft/ExperienceMemoryMerger` 并桥接至 `MemoryStoreBridge.mergeLegacyExperiencesSync`：去重与撤回拦截严格走 `MemorySafety.retractionHash`，默认落 `MemoryLayer.deep`、空 `topic`，跳过已软删与不允许持久化来源并同步软删哈希入撤回集，接入 Vault 脱敏并拒收 `〔隐去〕` 及常见裸密钥前缀，合并时间戳避开 `0` 覆盖并保留 `usedAtMs`/`automatic`/`editedByUser`；补充 `ExperienceMemoryMergerTests` 与 App 侧端到端测试。
+- **应用内网络路由、诊断与斗室内核修复**：
+  - 修复 `DenKernel.m` 3 处底层问题：去掉真机 `NSTemporaryDirectory()` 的 `/private` 前缀并校验 Darwin `sun_path`（104 字节）上限防 `AF_UNIX` 越界；启动前设置 `ISH_NETLINK_STUB=1` 打开已编入内核的 netlink 桩；合并 `DenKernel.run` 与 `DenTerminal` 环境拼装并补齐 `OPENSSL_armcap=0` / `TZ` / `GODEBUG` / `GOMAXPROCS` / `ENV` / `CHARSET`。
+  - 原创实现纯 Swift 本地双入口路由器 `ClioNetHub`（127.0.0.1 按需启动 SOCKS5 + HTTP CONNECT，支持代理认证、CIDR/通配符 Bypass、回环强制直连、SSH banner 早期字节透传、连续 3 次失败告警与一键脱敏诊断）+ `Craft/NetworkRouting` + `NetworkRuntime` + `NetworkSettingsPage`（并删除旧重复弹窗 `DenDNSSettingsSheet`）。
+  - 删除冲突的静态 `FixedModelRoute.session`，把全部 AI 服务商、内置浏览器（`WKWebsiteDataStore.proxyConfigurations`）、MCP/OAuth、WebDAV、技能下载、语音转写、ModelsDev、天气、远程图片与斗室（含 OpenSSH `/etc/clio-net/ssh_config` 代理辅助）统一接入 `NetworkRuntime`。
+- **瘦身与死代码清理（Batch 4b）**：
+  - 删除零引用的 3.65 MB 字体 `App/Fonts/ClioKai-Regular.ttf` 并从 `App/project.yml` 移除。
+  - 将 7 个 `ChatUIKitSpike` 原型文件与 `CarePage`/`CareSubpages` 实验入口全部隔离到 `#if DEBUG`，Release 包体不再包含原型代码。
+  - 删除死视图 `GlanceCard`（保留仍在使用的 `BreathingRing`），并从双语词典对称清理 66 个经全仓核实的零引用键。
+
+## 0.37 Batch 3：设置与菜单减负（`antigravity/batch3-settings-menus-simplify`）
+
+- 设置首页由 5 组 24 行收敛为 3 组 10 行（模型与能力 3 行 / 助手与体验 4 行 / 安全与数据 3 行），下沉细项收入对应汇聚页；所有历史 `clio://settings/*` 深链与搜索直达完整保留；「助手与群聊」补齐新建助手入口；「隐私与密匣」复用内置密匣入口；去除 `ChatDisplayPage` 内重复的语音转写入口。
+- 服务添加页（`AddServiceSheet`）移除 4 个不可点击的未验证 OAuth 占位项与「Kimi 设备登录暂不可用」冗余折叠卡，只展示真实可用服务。
+- 聊天 `＋` 面板移除与「本事」重复的工作地推页和独立记忆开关，在「本事」行摘要直接展示工作地与开关数；顶栏 `⋯` 菜单去掉与居中头像胶囊重复的规划模式、压缩前文和对话详情。
+- 双语词典对称新增 13 个 `settingsHome.*` 键，新增 `SettingsLayoutTests`（5 项），本地 `check` 与 `test-build` 全绿。
+
 ## 0.37 Telegram 时间线与浮层（批次 C）
 
 - 时间线数据源独立管理快照、行索引和回合索引。结构更新时保留内容与邻接信息未变的行高，同宽且处于结构更新期间的用户行可以直接复用结果。

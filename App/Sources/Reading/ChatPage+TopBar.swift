@@ -1441,16 +1441,6 @@ private struct ChatTopBarControlsView: View {
                             outlining = true
                         }
                     }
-                    let planOn = team.isPlanModeActive(for: chat.key)
-                    Button {
-                        Haptics.light()
-                        team.setPlanMode(!planOn, in: chat.key)
-                    } label: {
-                        Label(
-                            L.t(planOn ? "plan.exitMenu" : "plan.enterMenu"),
-                            systemImage: planOn ? "map.fill" : "map"
-                        )
-                    }
                 }
                 Menu(L.t("chatMenu.workbench"), systemImage: "wrench.and.screwdriver") {
                     menuButton("chat.files", icon: "folder") { filesOpen = true }
@@ -1463,24 +1453,6 @@ private struct ChatTopBarControlsView: View {
                     }
                 }
                 Menu(L.t("chatMenu.manageExport"), systemImage: "tray.full") {
-                    menuButton("chat.compactContext", icon: "rectangle.compress.vertical") {
-                        Task {
-                            do {
-                                let count = try await team.compress(chat.key)
-                                Haptics.thud()
-                                ToastCenter.shared.show(
-                                    count > 0 ? "已压缩 \(count) 条较早消息" : "前文暂不需要压缩",
-                                    symbol: "rectangle.compress.vertical"
-                                )
-                            } catch {
-                                ToastCenter.shared.show(
-                                    error.localizedDescription,
-                                    symbol: "exclamationmark.triangle",
-                                    tint: Ink.warn
-                                )
-                            }
-                        }
-                    }
                     menuButton("chat.rename", icon: "pencil") {
                         renameText = team.title(of: chat.key) ?? ""
                         renaming = true
@@ -1502,7 +1474,6 @@ private struct ChatTopBarControlsView: View {
                         }
                     }
                     menuButton("chat.conversationHistory", icon: "book.pages") { leafing = true }
-                    menuButton("chat.details", icon: "info.circle") { detailOpen = true }
                 }
                 Section {
                     Button(L.t("actions.clear"), systemImage: "trash", role: .destructive) {

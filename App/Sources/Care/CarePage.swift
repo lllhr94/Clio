@@ -55,10 +55,12 @@ struct CarePage: View {
     @State private var probing = false
     @State private var copied = false
     @State private var copyingReport = false
+    #if DEBUG
     @State private var uikitSpikeOpen = false
     @AppStorage("care.spikeLab") private var spikeLab = false
     @State private var versionTapCount = 0
     @State private var lastVersionTapAt = Date.distantPast
+    #endif
     @State private var passphraseSetup: PassphraseSetupRequest?
     @State private var pendingSetupAction: PendingSetupAction?
     @State private var pendingRestore: PendingRestore?
@@ -68,7 +70,7 @@ struct CarePage: View {
         #if DEBUG
         return true
         #else
-        return spikeLab
+        return false
         #endif
     }
 
@@ -274,9 +276,15 @@ struct CarePage: View {
                 Button(L.t("actions.done"), role: .cancel) {}
             }
         }
-        .fullScreenCover(isPresented: $uikitSpikeOpen) {
-            SpikeChatSheet()
-        }
+        .modifier(DebugSpikeCoverModifier(isPresented: debugSpikeBinding))
+    }
+
+    private var debugSpikeBinding: Binding<Bool> {
+        #if DEBUG
+        $uikitSpikeOpen
+        #else
+        .constant(false)
+        #endif
     }
 
     // MARK: Sections
@@ -374,6 +382,7 @@ struct CarePage: View {
 
     @ViewBuilder
     private var spikeLabSection: some View {
+        #if DEBUG
         Section {
             Button {
                 Haptics.light()
@@ -397,6 +406,9 @@ struct CarePage: View {
         } header: {
             Text(L.t("careSpike.section"))
         }
+        #else
+        EmptyView()
+        #endif
     }
 
     @ViewBuilder
@@ -421,6 +433,7 @@ struct CarePage: View {
     }
 
     private func handleVersionTap() {
+        #if DEBUG
         let now = Date()
         if now.timeIntervalSince(lastVersionTapAt) > 1.5 {
             versionTapCount = 1
@@ -434,6 +447,7 @@ struct CarePage: View {
             Haptics.tick(0.6)
             notice = spikeLab ? L.t("careSpike.labEnabled") : L.t("careSpike.labDisabled")
         }
+        #endif
     }
 
     private func row(_ title: String, _ value: String, bytes: Int64? = nil) -> some View {
@@ -1802,5 +1816,19 @@ private enum CareWebDAVCoordinator {
                 }
             }
         }
+    }
+}
+
+private struct DebugSpikeCoverModifier: ViewModifier {
+    @Binding var isPresented: Bool
+
+    func body(content: Content) -> some View {
+        #if DEBUG
+        content.fullScreenCover(isPresented: $isPresented) {
+            SpikeChatSheet()
+        }
+        #else
+        content
+        #endif
     }
 }
