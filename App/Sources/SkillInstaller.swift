@@ -47,13 +47,6 @@ enum SkillInstaller {
         }
     }
 
-    private struct GitHubTarget {
-        let owner: String
-        let repo: String
-        let ref: String?
-        let subpath: String
-    }
-
     private final class PublicRedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(
             _ session: URLSession,
@@ -118,9 +111,9 @@ enum SkillInstaller {
 
         let scratch = makeScratchDir()
         do {
-            if let gh = parseGitHubURL(url) {
+            if let gh = try parseGitHubURL(trimmed) {
                 try await fetchGitHub(gh, into: scratch)
-                let fallback = gh.subpath.split(separator: "/").last.map(String.init) ?? gh.repo
+                let fallback = gh.subpathSegments.last ?? gh.repo
                 let skills = try discoverSkills(in: scratch, preferredName: fallback)
                 return StagedBatch(scratchRoot: scratch, skills: skills)
             }
@@ -234,42 +227,62 @@ enum SkillInstaller {
 
     // MARK: GitHub resolution
 
-    private static func isSafeGitHubSlug(_ slug: String) -> Bool {
-        guard !slug.isEmpty, slug != ".", slug != ".." else { return false }
-        return slug.allSatisfy { ch in
-            ch.isASCII && (ch.isLetter || ch.isNumber || ch == "-" || ch == "_" || ch == ".")
+    private static func isDirectGitHubZipURL(_ rawText: String, url: URL) -> Bool {
+        guard let host = url.host?.lowercased(), host == "github.com" || host == "www.github.com" else {
+            return false
         }
-    }
-
-    private static func parseGitHubURL(_ url: URL) -> GitHubTarget? {
-        guard let host = url.host?.lowercased(), host == "github.com" || host == "www.github.com" else { return nil }
+        guard !rawText.contains("?"), !rawText.contains("#"), !rawText.contains("\\"),
+              !rawText.contains(".."), !rawText.lowercased().contains("%2e"), !rawText.lowercased().contains("%2f"),
+              url.user == nil, url.password == nil, url.port == nil else {
+            return false
+        }
         let parts = url.pathComponents.filter { $0 != "/" && !$0.isEmpty }
-        guard parts.count >= 2 else { return nil }
-        let owner = parts[0]
-        var repo = parts[1]
-        if repo.hasSuffix(".git") { repo = String(repo.dropLast(4)) }
-        guard isSafeGitHubSlug(owner), isSafeGitHubSlug(repo) else { return nil }
-        if parts.count == 2 {
-            return GitHubTarget(owner: owner, repo: repo, ref: nil, subpath: "")
+        guard parts.count >= 4,
+              let last = parts.last?.lowercased(), last.hasSuffix(".zip") else {
+            return false
         }
-        let kind = parts[2]
-        if kind == "tree", parts.count >= 4 {
-            let ref = parts[3]
-            let sub = parts.dropFirst(4).joined(separator: "/")
-            return GitHubTarget(owner: owner, repo: repo, ref: ref, subpath: sub)
-        }
-        if kind == "blob", parts.count >= 5 {
-            let ref = parts[3]
-            let subParts = Array(parts.dropFirst(4))
-            // Direct link to SKILL.md (or another file inside the skill folder): use its parent directory.
-            let dirParts = subParts.dropLast()
-            return GitHubTarget(owner: owner, repo: repo, ref: ref, subpath: dirParts.joined(separator: "/"))
-        }
-        // Archive or release zip URLs should fall through to the direct zip downloader.
-        return nil
+        let kind = parts[2].lowercased()
+        return kind == "archive" || kind == "releases"
     }
 
-    private static func fetchGitHub(_ target: GitHubTarget, into scratch: URL) async throws {
+    static func parseGitHubURL(_ rawText: String) throws -> ValidatedSkillSource? {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let host = url.host?.lowercased() else {
+            return nil
+        }
+        let isGitHubHost = host == "github.com" || host == "www.github.com" || host == "raw.githubusercontent.com"
+        guard isGitHubHost else { return nil }
+        if isDirectGitHubZipURL(trimmed, url: url) {
+            return nil
+        }
+        switch SkillSourceValidator.parseAndValidate(urlString: trimmed, allowRawContentDomain: true) {
+        case .success(let validated):
+            return validated
+        case .failure(let error):
+            throw Problem.message(validationMessage(for: error))
+        }
+    }
+
+    private static func validationMessage(for error: SkillSourceValidationError) -> String {
+        switch error {
+        case .disallowedScheme:
+            return "技能链接必须使用 https:// 协议。"
+        case .disallowedHost:
+            return "不受支持的 GitHub 主机地址。"
+        case .forbiddenURLCredentialsOrPort:
+            return "技能链接不能包含用户名、密码或自定义端口。"
+        case .forbiddenURLQueryOrFragment:
+            return "GitHub 技能链接不能包含查询参数或锚点。"
+        case .controlOrNullByte, .containsWhitespace, .containsBackslash,
+             .invalidPercentEncoding, .percentEncodedTraversalOrDelimiter,
+             .dotPathSegment, .forbiddenGitInternalPath:
+            return "GitHub 技能链接包含不安全的路径或编码字符，已拒绝解析。"
+        default:
+            return "无法识别这个 GitHub 技能链接，请粘贴公开仓库、目录或 SKILL.md 的标准链接。"
+        }
+    }
+
+    private static func fetchGitHub(_ target: ValidatedSkillSource, into scratch: URL) async throws {
         // First try GitHub Contents API for subpaths or repo roots (fast, fetches only the requested folder).
         do {
             try await fetchGitHubContents(target, into: scratch)
@@ -281,25 +294,15 @@ enum SkillInstaller {
         try await fetchGitHubArchive(target, into: scratch)
     }
 
-    private static func fetchGitHubContents(_ target: GitHubTarget, into scratch: URL) async throws {
+    private static func fetchGitHubContents(_ target: ValidatedSkillSource, into scratch: URL) async throws {
         var totalBytes = 0
         var fileCount = 0
 
-        func walk(apiSubpath: String, localBase: URL) async throws {
+        func walk(source: ValidatedSkillSource, localBase: URL) async throws {
             try Task.checkCancellation()
-            var allowed = CharacterSet.urlPathAllowed
-            allowed.remove(charactersIn: "?#")
-            let encodedPath = apiSubpath
-                .split(separator: "/")
-                .map { String($0).addingPercentEncoding(withAllowedCharacters: allowed) ?? String($0) }
-                .joined(separator: "/")
-            var urlString = "https://api.github.com/repos/\(target.owner)/\(target.repo)/contents"
-            if !encodedPath.isEmpty { urlString += "/\(encodedPath)" }
-            if let ref = target.ref, !ref.isEmpty {
-                let encodedRef = ref.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ref
-                urlString += "?ref=\(encodedRef)"
+            guard let apiURL = URL(string: "https://api.github.com\(source.gitHubContentsAPIPath)") else {
+                throw Problem.message("无法解析 GitHub 链接。")
             }
-            guard let apiURL = URL(string: urlString) else { throw Problem.message("无法解析 GitHub 链接。") }
             let jsonData = try await downloadBytes(from: apiURL, limit: 4 << 20, accept: "application/vnd.github+json")
             let parsed = try JSONSerialization.jsonObject(with: jsonData)
             let entries: [[String: Any]]
@@ -317,11 +320,17 @@ enum SkillInstaller {
                       let type = item["type"] as? String else { continue }
                 if name == ".DS_Store" || name == "__MACOSX" { continue }
                 if type == "dir" {
-                    let nextAPI = apiSubpath.isEmpty ? name : "\(apiSubpath)/\(name)"
+                    let nextSubpath = source.subpath.isEmpty ? name : "\(source.subpath)/\(name)"
+                    guard case .success(let childSource) = SkillSourceValidator.validate(
+                        owner: source.owner,
+                        repo: source.repo,
+                        ref: source.ref,
+                        subpath: nextSubpath
+                    ) else { continue }
                     let nextLocal = localBase.appendingPathComponent(name, isDirectory: true)
                     guard nextLocal.standardizedFileURL.path.hasPrefix(scratch.standardizedFileURL.path + "/") else { continue }
                     try FileManager.default.createDirectory(at: nextLocal, withIntermediateDirectories: true)
-                    try await walk(apiSubpath: nextAPI, localBase: nextLocal)
+                    try await walk(source: childSource, localBase: nextLocal)
                 } else if type == "file" {
                     fileCount += 1
                     guard fileCount <= maxFileCount else { throw Problem.message("技能目录里的文件太多了（超过 \(maxFileCount) 个）。") }
@@ -340,41 +349,31 @@ enum SkillInstaller {
             }
         }
 
-        try await walk(apiSubpath: target.subpath, localBase: scratch)
+        try await walk(source: target, localBase: scratch)
     }
 
-    private static func fetchGitHubArchive(_ target: GitHubTarget, into scratch: URL) async throws {
-        var refsToTry: [String] = []
-        if let ref = target.ref, !ref.isEmpty {
-            refsToTry = [ref]
+    private static func fetchGitHubArchive(_ target: ValidatedSkillSource, into scratch: URL) async throws {
+        let defaultBranch: String?
+        if target.ref == nil {
+            defaultBranch = await fetchDefaultBranch(encodedOwner: target.encodedOwner, encodedRepo: target.encodedRepo)
         } else {
-            if let defaultBranch = await fetchDefaultBranch(owner: target.owner, repo: target.repo) {
-                refsToTry = [defaultBranch]
-            } else {
-                refsToTry = ["main", "master"]
-            }
+            defaultBranch = nil
         }
 
+        let zipPaths = target.gitHubArchiveZipPaths(resolvedDefaultBranch: defaultBranch)
         let zipFile = scratch.appendingPathComponent(".github.zip")
         var downloaded = false
         var lastError: Error?
-        for ref in refsToTry {
-            let candidates = [
-                "https://codeload.github.com/\(target.owner)/\(target.repo)/zip/refs/heads/\(ref)",
-                "https://codeload.github.com/\(target.owner)/\(target.repo)/zip/\(ref)",
-            ]
-            for address in candidates {
-                guard let url = URL(string: address) else { continue }
-                do {
-                    try await downloadToFile(from: url, to: zipFile, limit: maxArchiveBytes)
-                    downloaded = true
-                    break
-                } catch {
-                    lastError = error
-                    try? FileManager.default.removeItem(at: zipFile)
-                }
+        for path in zipPaths {
+            guard let url = URL(string: "https://codeload.github.com\(path)") else { continue }
+            do {
+                try await downloadToFile(from: url, to: zipFile, limit: maxArchiveBytes)
+                downloaded = true
+                break
+            } catch {
+                lastError = error
+                try? FileManager.default.removeItem(at: zipFile)
             }
-            if downloaded { break }
         }
         guard downloaded else {
             throw lastError ?? Problem.message("没能从 GitHub 下载这个技能目录，请检查链接是否公开且有效。")
@@ -392,8 +391,8 @@ enum SkillInstaller {
         try? FileManager.default.removeItem(at: zipFile)
     }
 
-    private static func fetchDefaultBranch(owner: String, repo: String) async -> String? {
-        guard let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)") else { return nil }
+    private static func fetchDefaultBranch(encodedOwner: String, encodedRepo: String) async -> String? {
+        guard let url = URL(string: "https://api.github.com/repos/\(encodedOwner)/\(encodedRepo)") else { return nil }
         guard let data = try? await downloadBytes(from: url, limit: 256 << 10, accept: "application/vnd.github+json"),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let branch = json["default_branch"] as? String, !branch.isEmpty else { return nil }

@@ -1,5 +1,10 @@
 # 现状与交接
 
+## 0.37 Batch 4a：Skill 来源红队校验与旧经验合并器（`antigravity/batch4-security-memory-cleanup`）
+
+- 接入 `Craft/SkillSourceValidator` 修复 `CLIO-022`：`SkillInstaller.parseGitHubURL`、`fetchGitHubContents` 与 `fetchGitHubArchive` 全部切到严格 RFC 3986 校验与 `gitHubArchiveZipPaths`，非法 GitHub 链接直接拒绝不再回落普通下载器，保留标准 `.zip` 归档与 release 链接；补充 `SkillSourceValidatorTests` 与 `SkillInstallerValidationTests`。
+- 新增纯函数旧经验合并器 `Craft/ExperienceMemoryMerger` 并桥接至 `MemoryStoreBridge.mergeLegacyExperiencesSync`：去重与撤回拦截严格走 `MemorySafety.retractionHash`，默认落 `MemoryLayer.deep`、空 `topic`，跳过已软删与不允许持久化来源并同步软删哈希入撤回集，接入 Vault 脱敏并拒收 `〔隐去〕` 及常见裸密钥前缀，合并时间戳避开 `0` 覆盖并保留 `usedAtMs`/`automatic`/`editedByUser`；补充 `ExperienceMemoryMergerTests` 与 App 侧端到端测试。
+
 ## 0.37 Batch 3：设置与菜单减负（`antigravity/batch3-settings-menus-simplify`）
 
 - 设置首页由 5 组 24 行收敛为 3 组 10 行（模型与能力 3 行 / 助手与体验 4 行 / 安全与数据 3 行），下沉细项收入对应汇聚页；所有历史 `clio://settings/*` 深链与搜索直达完整保留；「助手与群聊」补齐新建助手入口；「隐私与密匣」复用内置密匣入口；去除 `ChatDisplayPage` 内重复的语音转写入口。
