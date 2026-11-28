@@ -131,6 +131,21 @@ struct CasualChatView<TopBar: View>: View {
             }
             .safeAreaBar(edge: .top, spacing: 0) {
                 topBar()
+                    .background(alignment: .top) {
+                        LinearGradient(
+                            stops: [
+                                .init(color: Ink.paper.opacity(0.98), location: 0),
+                                .init(color: Ink.paper.opacity(0.92), location: 0.50),
+                                .init(color: Ink.paper.opacity(0.66), location: 0.78),
+                                .init(color: Ink.paper.opacity(0), location: 1.0),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .padding(.bottom, -14)
+                        .ignoresSafeArea(edges: .top)
+                        .allowsHitTesting(false)
+                    }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 composerBar
@@ -339,12 +354,15 @@ struct CasualChatView<TopBar: View>: View {
             LinearGradient(
                 stops: [
                     .init(color: Ink.paper.opacity(0), location: 0),
-                    .init(color: Ink.paper.opacity(0.72), location: 0.45),
-                    .init(color: Ink.paper.opacity(0.95), location: 1.0),
+                    .init(color: Ink.paper.opacity(0.72), location: 0.28),
+                    .init(color: Ink.paper.opacity(0.96), location: 0.60),
+                    .init(color: Ink.paper.opacity(1.0), location: 0.80),
+                    .init(color: Ink.paper.opacity(1.0), location: 1.0),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
+            .padding(.top, -16)
             .ignoresSafeArea(edges: .bottom)
             .allowsHitTesting(false)
         }

@@ -540,13 +540,15 @@ struct ChatBottomStackView<FindBar: View>: View {
                     LinearGradient(
                         stops: [
                             .init(color: Ink.paper.opacity(0), location: 0),
-                            .init(color: Ink.paper.opacity(0.68), location: 0.45),
-                            .init(color: Ink.paper.opacity(0.95), location: 1.0),
+                            .init(color: Ink.paper.opacity(0.72), location: 0.24),
+                            .init(color: Ink.paper.opacity(0.94), location: 0.48),
+                            .init(color: Ink.paper.opacity(1.0), location: 0.68),
+                            .init(color: Ink.paper.opacity(1.0), location: 1.0),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                    .padding(.top, -18)
+                    .padding(.top, -22)
                     .padding(.bottom, -48)
                     .ignoresSafeArea(edges: .bottom)
                     .allowsHitTesting(false)
