@@ -1512,7 +1512,7 @@ struct ChatPage: View {
                   generation == viewport.navigationGeneration,
                   !viewport.isTouching, !touchScrolling else { return }
             viewport.recordJump("点了提纲")
-            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top) }
+            withAnimation(Ink.Motion.settle) { scroller?.scrollTo(id, anchor: .top, animated: true) }
         }
     }
 

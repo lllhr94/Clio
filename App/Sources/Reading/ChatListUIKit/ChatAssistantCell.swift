@@ -431,7 +431,7 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         if let coord = messageRevealCoordinator, !coord.isComplete {
             return true
         }
-        return richTextViews.contains { !$0.isHidden && $0.hasActiveFlyingSnippets }
+        return richTextViews.contains { !$0.isHidden && $0.hasActiveReveal }
     }
 
     func revealedLineBottom(in view: UIView) -> CGFloat? {
@@ -984,22 +984,22 @@ final class ChatAssistantCell: UICollectionViewCell, ChatRevealDisplayClient {
         let widthKey = Int(((entry.contentWidth + style.metrics.spacePage * 2) * 2).rounded())
         let isLive = isLiveStreamingOnly || (currentRow?.isFreshWriting ?? false)
         let hasActiveSelection = transferredSelection != nil || !activeSelectionOwnerIDs().isEmpty
-        let totalTextLen = entry.slices.reduce(0) { acc, measured in
+        let textSliceLengths: [Int] = entry.slices.compactMap { measured in
             switch measured.slice {
-            case .richText(let prose): return acc + prose.attributed.length
-            case .pictures(let words, _, _): return acc + (words?.attributed.length ?? 0)
-            default: return acc
+            case .richText(let prose): return prose.attributed.length
+            case .pictures(let words, _, _): return words?.attributed.length
+            default: return nil
             }
         }
         let continuingOwnReveal = messageRevealCoordinator != nil
             && revealOwnerID == lineID
             && !(messageRevealCoordinator?.isComplete ?? true)
-        let useUnifiedReveal = style.fade
-            && !style.reduceMotion
-            && !hasActiveSelection
-            && totalTextLen > 0
-            && totalTextLen <= ChatRevealPolicy.maxTailAttributedLength * 3
-            && (isLive || transferredReveal != nil || continuingOwnReveal)
+        let useUnifiedReveal = ChatRevealPolicy.shouldUseUnifiedReveal(
+            fade: style.fade,
+            reduceMotion: style.reduceMotion,
+            hasActiveSelection: hasActiveSelection,
+            sliceLengths: textSliceLengths
+        ) && (isLive || transferredReveal != nil || continuingOwnReveal)
 
         var totalRichTextCount = 0
         for measured in entry.slices {

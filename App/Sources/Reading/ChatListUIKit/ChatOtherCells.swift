@@ -1723,7 +1723,7 @@ final class ChatLiveToolTailCell: UICollectionViewCell {
         for idx in 0..<currentLines.count where idx < lineLabels.count {
             lineLabels[idx].font = font
         }
-        lastReportedHeight = Self.measureHeight(lines: currentLines, style: style)
+        lastReportedHeight = Self.measureHeight(lines: currentLines, style: style, compact: compact)
         refreshColors()
         setNeedsLayout()
     }

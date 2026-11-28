@@ -46,6 +46,49 @@ final class ChatFrozenProseTests: XCTestCase {
         XCTAssertEqual(prefix("AB", lines: [next], boundary: 900).reusableBottom(comparedWith: prior, padding: 12), 0)
     }
 
+    func testOversizedSealedPrefixYieldsUnifiedRevealWhileTailRemainsEligible() {
+        let cap = ChatRevealPolicy.maxTailAttributedLength
+        XCTAssertTrue(ChatRevealPolicy.shouldUseUnifiedReveal(
+            fade: true, reduceMotion: false, hasActiveSelection: false,
+            sliceLengths: [cap, 400]
+        ))
+        XCTAssertFalse(ChatRevealPolicy.shouldUseUnifiedReveal(
+            fade: true, reduceMotion: false, hasActiveSelection: false,
+            sliceLengths: [cap + 1, 400]
+        ))
+        XCTAssertFalse(ChatRevealPolicy.shouldUseUnifiedReveal(
+            fade: true, reduceMotion: false, hasActiveSelection: false,
+            sliceLengths: [cap, cap, cap, 1]
+        ))
+        XCTAssertTrue(ChatRevealPolicy.isEligible(fade: true, reduceMotion: false, attributedLength: 400))
+    }
+
+    func testLiveOversizedSealedPrefixStaysOnTilesWithoutMountingTextView() {
+        let style = ChatListStyle.current(traits: UITraitCollection(userInterfaceStyle: .light))
+        let longText = String(repeating: "长回复正文", count: 2_000)
+        let rendered = ChatRenderedProse(
+            attributed: NSAttributedString(string: longText),
+            decorations: .empty,
+            topInset: 0,
+            bottomInset: 2,
+            renderToken: 42,
+            hasLinks: false,
+            liveTailIndex: nil,
+            spacingAfter: nil,
+            frozenPrefixLength: longText.utf16.count - 50
+        )
+        let view = ChatRichTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 600))
+        view.apply(
+            ownerID: "streaming-long#rt0",
+            rendered: rendered,
+            style: style,
+            isLive: true,
+            isLiveTail: false,
+            externalRevealControlled: false
+        )
+        XCTAssertFalse(view.subviews.contains { $0 is UITextView })
+    }
+
     private func prefix(_ text: String, lines: [ChatFrozenTilePrefix.Line], boundary: CGFloat,
                         style: String = "light") -> ChatFrozenTilePrefix {
         ChatFrozenTilePrefix(text: NSAttributedString(string: text), decorations: .empty,

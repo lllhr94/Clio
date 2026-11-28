@@ -40,6 +40,10 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         revealMaskCoordinator.snippetHost.activeCount > 0
     }
 
+    var hasActiveReveal: Bool {
+        hasActiveFlyingSnippets || (revealSession.map { !$0.isComplete } ?? false)
+    }
+
     /// Local bottom of the line currently being revealed, or the first line while tiles are being prepared.
     var revealedLineBottom: CGFloat? {
         guard let style = currentStyle, selectionTextView == nil,
@@ -335,12 +339,19 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             reduceMotion: style.reduceMotion,
             attributedLength: rendered.attributed.length
         )
+        let keepFrozenTilesInLive = isLive
+            && !isLiveTail
+            && rendered.frozenPrefixLength > 0
+            && restoredRange == nil
+            && !(selectionTextView != nil && oldRange.length > 0)
 
-        let keepLiveTailGeneration = sameOwner
-            && style.styleKey == lastStyleKey
-            && (isLiveTail || externalRevealControlled)
+        let keepRevealGeneration = (isLiveTail || externalRevealControlled)
             && (lastIsLiveTail || isExternallyRevealControlled)
             && eligibleReveal
+        let keepFrozenGeneration = keepFrozenTilesInLive && currentRendered.frozenPrefixLength > 0
+        let keepLiveTailGeneration = sameOwner
+            && style.styleKey == lastStyleKey
+            && (keepRevealGeneration || keepFrozenGeneration)
             && restoredRange == nil
             && selectionTextView == nil
         if !keepLiveTailGeneration {
@@ -378,7 +389,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
                 && selectionTextView != nil
                 && !rendered.isEmpty
 
-            if isLive || restoredRange != nil {
+            if (isLive && !keepFrozenTilesInLive) || restoredRange != nil {
                 isAwaitingFinalizedTiles = false
                 activeRenderKey = ""
                 inFlightRenderKey = ""
@@ -458,7 +469,7 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
             activeRenderKey = ""
             appliedRenderKey = ""
             inFlightRenderKey = ""
-        } else if isLive {
+        } else if isLive && !keepFrozenTilesInLive {
             // Non-tail live view (e.g., live-pulse): retain TextKit 2 path without reveal mask.
             teardownReveal()
             isAwaitingFinalizedTiles = false
@@ -792,8 +803,8 @@ final class ChatRichTextView: UIView, UITextViewDelegate, UIGestureRecognizerDel
         }
 
         let previousFrozenTiles = currentRendered.frozenPrefixLength > 0 ? lastFrozenTiles : nil
-        if !wantsRevealTiles {
-            clearTileLayers(keepingFrozenPrefix: previousFrozenTiles != nil)
+        if !wantsRevealTiles && previousFrozenTiles == nil {
+            clearTileLayers()
         }
         let requestedToken = currentRendered.renderToken
         let requestWidth = bounds.width

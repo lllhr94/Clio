@@ -27,6 +27,27 @@ enum ChatRevealPolicy {
         fade && !reduceMotion && attributedLength > 0 && attributedLength <= maxTailAttributedLength
     }
 
+    /// Unified cross-block reveal stays active while every text slice fits the per-slice reveal
+    /// budget and total message text fits the multi-slice cap. Once a sealed prefix grows past the
+    /// per-slice ceiling, sealed prose stays on frozen CoreText tiles while the live tail reveals on its own.
+    static func shouldUseUnifiedReveal(
+        fade: Bool,
+        reduceMotion: Bool,
+        hasActiveSelection: Bool,
+        sliceLengths: [Int],
+        maxSliceLength: Int = maxTailAttributedLength,
+        maxTotalLength: Int = maxTailAttributedLength * 3
+    ) -> Bool {
+        guard fade, !reduceMotion, !hasActiveSelection else { return false }
+        var total = 0
+        for length in sliceLengths {
+            if length > maxSliceLength { return false }
+            total += length
+            if total > maxTotalLength { return false }
+        }
+        return total > 0
+    }
+
     nonisolated static func allowsMotionEffects(
         reduceMotion: Bool,
         isLowPowerMode: Bool,
