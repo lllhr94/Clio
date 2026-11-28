@@ -634,6 +634,7 @@ enum Workspace {
                 try data.write(to: target, options: .atomic)
             }
         }
+        Task { await ArtifactIndex.shared.markFilesDirty() }
     }
 
     /// What only 书案 has: deleting, and a quick JavaScript calculator. Reading, writing and finding are the workspace tools.
@@ -830,6 +831,7 @@ enum Workspace {
                     do {
                         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                         try Data(text.utf8).write(to: url, options: .atomic)
+                        Task { await ArtifactIndex.shared.markFilesDirty() }
                         return true
                     } catch {
                         return false

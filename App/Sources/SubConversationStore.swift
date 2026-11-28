@@ -1,6 +1,5 @@
 import Craft
 import Foundation
-import SQLite3
 
 /// JSON owns the record. The database can be removed and regenerated from it.
 actor SubConversationStore {
@@ -127,52 +126,56 @@ actor SubConversationStore {
     }
 
     private func replaceProjection(with records: [SubConversationRecord]) throws {
-        try FileManager.default.createDirectory(at: projectionURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        var database: OpaquePointer?
-        defer { sqlite3_close(database) }
-        guard sqlite3_open_v2(projectionURL.path, &database, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
-            throw Failure.projection
-        }
-        func execute(_ sql: String) throws {
-            guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw Failure.projection }
+        let options = SQLiteOpenOptions(
+            busyTimeoutMs: 5_000,
+            enableWAL: true,
+            enableForeignKeys: true,
+            synchronousNormal: true,
+            applyFileProtection: true,
+            excludeFromBackup: true
+        )
+
+        func writeAll() throws {
+            let conn = try SQLiteConnection.open(at: projectionURL, options: options)
+            defer { conn.close() }
+            try conn.withTransaction(immediate: true) { db in
+                try db.execute("""
+                    DROP TABLE IF EXISTS sub_conversations;
+                    CREATE TABLE sub_conversations (
+                      id TEXT PRIMARY KEY, source_chat TEXT NOT NULL, source_entry TEXT NOT NULL,
+                      plan INTEGER NOT NULL, tainted INTEGER NOT NULL, promoted_chat TEXT
+                    );
+                    CREATE INDEX subconv_source ON sub_conversations(source_chat, source_entry);
+                    """)
+                let stmt = try db.prepare("INSERT INTO sub_conversations VALUES (?, ?, ?, ?, ?, ?)")
+                defer { stmt.finalize() }
+                for item in records {
+                    try stmt.reset()
+                    try stmt.bind(item.id.uuidString, at: 1)
+                    try stmt.bind(item.origin.sourceChatKey, at: 2)
+                    try stmt.bind(item.origin.sourceEntryID, at: 3)
+                    try stmt.bind(item.inheritedPlanMode, at: 4)
+                    try stmt.bind(item.tainted, at: 5)
+                    try stmt.bind(item.promotedChatKey, at: 6)
+                    try stmt.step()
+                }
+            }
+            SQLiteConnection.applyFileAttributes(at: projectionURL, options: options)
+            projectionDirty = false
         }
 
-        try execute("BEGIN IMMEDIATE")
         do {
-            try execute("""
-                DROP TABLE IF EXISTS sub_conversations;
-                CREATE TABLE sub_conversations (
-                  id TEXT PRIMARY KEY, source_chat TEXT NOT NULL, source_entry TEXT NOT NULL,
-                  plan INTEGER NOT NULL, tainted INTEGER NOT NULL, promoted_chat TEXT
-                );
-                CREATE INDEX subconv_source ON sub_conversations(source_chat, source_entry);
-                """)
-            var statement: OpaquePointer?
-            defer { sqlite3_finalize(statement) }
-            guard sqlite3_prepare_v2(database, "INSERT INTO sub_conversations VALUES (?, ?, ?, ?, ?, ?)", -1, &statement, nil) == SQLITE_OK else {
+            try writeAll()
+        } catch let error as SQLiteEngineError where error.isCorruption {
+            // Only quarantine and rebuild on confirmed structural corruption, never on SQLITE_BUSY.
+            _ = SQLiteConnection.quarantineCorruptDatabase(at: projectionURL)
+            do {
+                try writeAll()
+            } catch {
                 throw Failure.projection
             }
-            let copy = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-            for item in records {
-                guard sqlite3_reset(statement) == SQLITE_OK,
-                      sqlite3_bind_text(statement, 1, item.id.uuidString, -1, copy) == SQLITE_OK,
-                      sqlite3_bind_text(statement, 2, item.origin.sourceChatKey, -1, copy) == SQLITE_OK,
-                      sqlite3_bind_text(statement, 3, item.origin.sourceEntryID, -1, copy) == SQLITE_OK,
-                      sqlite3_bind_int(statement, 4, item.inheritedPlanMode ? 1 : 0) == SQLITE_OK,
-                      sqlite3_bind_int(statement, 5, item.tainted ? 1 : 0) == SQLITE_OK else { throw Failure.projection }
-                let promoted: Int32
-                if let key = item.promotedChatKey {
-                    promoted = sqlite3_bind_text(statement, 6, key, -1, copy)
-                } else {
-                    promoted = sqlite3_bind_null(statement, 6)
-                }
-                guard promoted == SQLITE_OK, sqlite3_step(statement) == SQLITE_DONE else { throw Failure.projection }
-            }
-            try execute("COMMIT")
-            projectionDirty = false
         } catch {
-            try? execute("ROLLBACK")
-            throw error
+            throw Failure.projection
         }
     }
 }

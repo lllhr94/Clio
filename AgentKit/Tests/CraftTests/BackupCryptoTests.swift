@@ -283,4 +283,80 @@ final class BackupCryptoTests: XCTestCase {
             XCTAssertTrue(BackupArchivePolicy.isExcludedArchivePath(path), "Expected excluded path: \(path)")
         }
     }
+
+    func testStreamingV2RoundTripMultiChunkExactBoundaryAndEmpty() throws {
+        let passphrase = "streaming-v2-passphrase!"
+        let chunkSize = 4_096
+
+        // 1. Empty payload
+        var emptyCipher = Data()
+        let emptyEnc = try BackupCrypto.StreamEncryptor(passphrase: passphrase, chunkSize: chunkSize) { emptyCipher.append($0) }
+        try emptyEnc.finish()
+        XCTAssertTrue(BackupCrypto.isEncrypted(emptyCipher))
+        XCTAssertTrue(emptyCipher.starts(with: BackupCrypto.streamingMagic))
+        XCTAssertEqual(try BackupCrypto.decrypt(emptyCipher, passphrase: passphrase), Data())
+
+        // 2. Exact multiple of chunkSize (3 * 4096 bytes) fed in irregular slices
+        let exactPayload = Data((0..<(chunkSize * 3)).map { UInt8($0 % 251) })
+        var exactCipher = Data()
+        let exactEnc = try BackupCrypto.StreamEncryptor(passphrase: passphrase, chunkSize: chunkSize) { exactCipher.append($0) }
+        var pos = 0
+        for step in [17, 4_096, 1_024, 5_000, exactPayload.count] {
+            guard pos < exactPayload.count else { break }
+            let end = min(exactPayload.count, pos + step)
+            try exactEnc.append(exactPayload[pos..<end])
+            pos = end
+        }
+        try exactEnc.finish()
+        XCTAssertEqual(try BackupCrypto.decrypt(exactCipher, passphrase: passphrase), exactPayload)
+
+        // 3. Non-multiple multi-chunk + encryptFile / decryptFile round-trip
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("clio-v2-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let srcURL = tmp.appendingPathComponent("plain.bin")
+        let encURL = tmp.appendingPathComponent("enc.clio-backup")
+        let decURL = tmp.appendingPathComponent("dec.bin")
+        let bigPayload = Data((0..<(chunkSize * 4 + 333)).map { UInt8(($0 * 7) % 253) })
+        try bigPayload.write(to: srcURL)
+        try BackupCrypto.encryptFile(from: srcURL, to: encURL, passphrase: passphrase, chunkSize: chunkSize)
+        try BackupCrypto.decryptFile(from: encURL, to: decURL, passphrase: passphrase)
+        XCTAssertEqual(try Data(contentsOf: decURL), bigPayload)
+    }
+
+    func testStreamingV2RejectsTamperingTruncationTrailingGarbageAndWrongPassphrase() throws {
+        let passphrase = "v2-tamper-passphrase"
+        let chunkSize = 4_096
+        let payload = Data((0..<(chunkSize * 2 + 128)).map { UInt8($0 % 199) })
+        var encrypted = Data()
+        let enc = try BackupCrypto.StreamEncryptor(passphrase: passphrase, chunkSize: chunkSize) { encrypted.append($0) }
+        try enc.append(payload)
+        try enc.finish()
+
+        // Wrong passphrase
+        XCTAssertThrowsError(try BackupCrypto.decrypt(encrypted, passphrase: "wrong-pass")) { error in
+            XCTAssertEqual(error as? BackupCryptoError, .authenticationFailed)
+        }
+
+        // Truncation (drop last frame)
+        let truncated = encrypted.prefix(encrypted.count - 40)
+        XCTAssertThrowsError(try BackupCrypto.decrypt(Data(truncated), passphrase: passphrase)) { error in
+            XCTAssertEqual(error as? BackupCryptoError, .authenticationFailed)
+        }
+
+        // Trailing garbage after final chunk
+        var withTrailing = encrypted
+        withTrailing.append(Data([0x01, 0x00, 0x00, 0x00, 0x00]))
+        XCTAssertThrowsError(try BackupCrypto.decrypt(withTrailing, passphrase: passphrase)) { error in
+            XCTAssertEqual(error as? BackupCryptoError, .authenticationFailed)
+        }
+
+        // Flip bit in first ciphertext byte
+        let headerLen = BackupCrypto.streamingMagic.count + 2 + BackupCrypto.defaultSaltLength + 4 + 4 + BackupCrypto.nonceLength
+        var tampered = encrypted
+        tampered[headerLen + 5] ^= 0x80
+        XCTAssertThrowsError(try BackupCrypto.decrypt(tampered, passphrase: passphrase)) { error in
+            XCTAssertEqual(error as? BackupCryptoError, .authenticationFailed)
+        }
+    }
 }
