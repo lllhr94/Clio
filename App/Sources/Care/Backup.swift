@@ -365,11 +365,22 @@ enum Backup {
             }
         }
 
-        // Build the archive strictly in memory when encrypting so plaintext `#keys` never touch disk.
-        var memoryPayload = Data()
-        let out: FileHandle?
+        // Stream encrypted chunks directly to `encryptedPartial` via `BackupCrypto.StreamEncryptor` (v2)
+        // so plaintext `#keys` never touch disk AND peak memory stays bounded (~2 MiB) even for huge backups.
+        let out: FileHandle
+        var encryptor: BackupCrypto.StreamEncryptor?
+        var encryptedBytesWritten = 0
         if shouldEncrypt {
-            out = nil
+            guard let passphrase else { throw BackupCryptoError.passphraseRequired }
+            guard manager.createFile(atPath: encryptedPartial.path, contents: nil, attributes: protection) else {
+                throw TeamError(message: "没能在手机上建加密备份文件。")
+            }
+            let encHandle = try FileHandle(forWritingTo: encryptedPartial)
+            out = encHandle
+            encryptor = try BackupCrypto.StreamEncryptor(passphrase: passphrase) { chunk in
+                try encHandle.write(contentsOf: chunk)
+                encryptedBytesWritten += chunk.count
+            }
         } else {
             guard manager.createFile(atPath: partial.path, contents: nil, attributes: protection) else {
                 throw TeamError(message: "没能在手机上建备份文件。")
@@ -379,15 +390,19 @@ enum Backup {
         var outClosed = false
         defer {
             if !outClosed {
-                try? out?.close()
+                try? out.close()
             }
         }
 
-        if let out {
-            try out.write(contentsOf: magic)
-        } else {
-            memoryPayload.append(magic)
+        func writeArchiveBytes(_ bytesToWrite: Data) throws {
+            if let encryptor {
+                try encryptor.append(bytesToWrite)
+            } else {
+                try out.write(contentsOf: bytesToWrite)
+            }
         }
+
+        try writeArchiveBytes(magic)
         var count = 0
         var bytes = magic.count
         var unreadable: [String] = []
@@ -401,17 +416,10 @@ enum Backup {
             }
             var nameLength = UInt32(name.count).bigEndian
             var dataLength = UInt64(data.count).bigEndian
-            if let out {
-                try out.write(contentsOf: Data(bytes: &nameLength, count: 4))
-                try out.write(contentsOf: name)
-                try out.write(contentsOf: Data(bytes: &dataLength, count: 8))
-                try out.write(contentsOf: data)
-            } else {
-                withUnsafeBytes(of: &nameLength) { memoryPayload.append(contentsOf: $0) }
-                memoryPayload.append(name)
-                withUnsafeBytes(of: &dataLength) { memoryPayload.append(contentsOf: $0) }
-                memoryPayload.append(data)
-            }
+            try writeArchiveBytes(Data(bytes: &nameLength, count: 4))
+            try writeArchiveBytes(name)
+            try writeArchiveBytes(Data(bytes: &dataLength, count: 8))
+            try writeArchiveBytes(data)
             bytes += headerAndNameCount + data.count
             count += 1
         }
@@ -548,25 +556,19 @@ enum Backup {
             }
         }
 
-        if let out {
-            try out.synchronize()
-            try out.close()
-            outClosed = true
+        if let encryptor {
+            try encryptor.finish()
         }
+        try out.synchronize()
+        try out.close()
+        outClosed = true
 
         if shouldEncrypt {
-            guard let passphrase else { throw BackupCryptoError.passphraseRequired }
-            let encryptedArchive = try BackupCrypto.encrypt(payload: memoryPayload, passphrase: passphrase)
-            memoryPayload.removeAll(keepingCapacity: false)
-            guard manager.createFile(atPath: encryptedPartial.path, contents: nil, attributes: protection) else {
-                throw TeamError(message: "没能在手机上建加密备份文件。")
-            }
-            try encryptedArchive.write(to: encryptedPartial, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             try? manager.removeItem(at: url)
             try manager.moveItem(at: encryptedPartial, to: url)
             try? manager.setAttributes(protection, ofItemAtPath: url.path)
             completed = true
-            return (url, Summary(files: count, bytes: encryptedArchive.count))
+            return (url, Summary(files: count, bytes: encryptedBytesWritten))
         }
 
         if withKeys {

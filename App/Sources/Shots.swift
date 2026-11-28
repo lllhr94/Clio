@@ -239,6 +239,47 @@ private struct DeviceSelfTestPage: View {
             record("Alpine 内核启动与环境挂载", false, "wake() 返回 false: \(Den.shared.state)")
         }
 
+        // 8. CLIO-039 BackupCrypto v2 流式分块加解密与防篡改
+        do {
+            let chunkSize = 4_096
+            let sample = Data((0..<(chunkSize * 2 + 512)).map { UInt8($0 % 251) })
+            var cipher = Data()
+            let enc = try BackupCrypto.StreamEncryptor(passphrase: "selftest-v2", chunkSize: chunkSize) { cipher.append($0) }
+            try enc.append(sample)
+            try enc.finish()
+            let plain = try BackupCrypto.decrypt(cipher, passphrase: "selftest-v2")
+            var tampered = cipher
+            tampered[tampered.count - 1] ^= 0x01
+            let rejected: Bool
+            do {
+                _ = try BackupCrypto.decrypt(tampered, passphrase: "selftest-v2")
+                rejected = false
+            } catch {
+                rejected = true
+            }
+            let ok = BackupCrypto.isEncrypted(cipher) && plain == sample && rejected
+            record("CLIO-039 流式分块加密 v2", ok, "plain=\(sample.count)B cipher=\(cipher.count)B tamperRejected=\(rejected)")
+        } catch {
+            record("CLIO-039 流式分块加密 v2", false, error.localizedDescription)
+        }
+
+        // 9. SQLiteEngine WAL + 事务回滚 + 损坏隔离
+        do {
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("selftest-sql-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            let dbURL = tmp.appendingPathComponent("probe.db")
+            let conn = try SQLiteConnection.open(at: dbURL, options: SQLiteOpenOptions(excludeFromBackup: true))
+            let mode = try conn.pragmaString("journal_mode").lowercased()
+            let busy = try conn.pragmaInt32("busy_timeout")
+            conn.close()
+            try Data("broken-header".utf8).write(to: dbURL)
+            let moved = SQLiteConnection.quarantineCorruptDatabase(at: dbURL)
+            let ok = mode == "wal" && busy == 5_000 && moved != nil && !FileManager.default.fileExists(atPath: dbURL.path)
+            record("SQLiteEngine WAL 与损坏隔离", ok, "mode=\(mode) busy=\(busy)ms quarantined=\(moved != nil)")
+        } catch {
+            record("SQLiteEngine WAL 与损坏隔离", false, error.localizedDescription)
+        }
+
         finished = true
     }
 }

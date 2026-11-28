@@ -56,15 +56,62 @@ actor ArtifactIndex {
     static let shared = ArtifactIndex(file: Disk.url("artifacts.json"))
     private let file: URL
 
+    private struct CachedTranscriptSources: Sendable {
+        let mtime: Date
+        let size: Int
+        let sources: [Source]
+    }
+
+    private struct RefreshSignature: Equatable, Sendable {
+        let mutationEpoch: UInt64
+        let keeping: Bool
+        let mountsRevision: UInt64
+        let liveFingerprints: [String: String]
+    }
+
+    private var persistedRecords: [String: Record]?
+    private var diskSourcesCache: [String: CachedTranscriptSources] = [:]
+    private var mutationEpoch: UInt64 = 0
+    private var lastSignature: RefreshSignature?
+    private var lastAvailable: [Record] = []
+
     init(file: URL) { self.file = file }
+
+    /// Marks workspace files dirty (e.g. after `write_file` / `edit_file` / delete / rename) so the next
+    /// `refresh` reconciles files without re-decoding unchanged historical chats on disk.
+    func markFilesDirty() {
+        mutationEpoch &+= 1
+        lastSignature = nil
+    }
+
+    /// Marks one chat transcript dirty (e.g. after leaf deletion or chat clearing) and drops its cached sources.
+    func markChatDirty(_ chatKey: String) {
+        diskSourcesCache.removeValue(forKey: chatKey)
+        mutationEpoch &+= 1
+        lastSignature = nil
+    }
+
+    /// Drops all in-memory caches (e.g. after backup restore).
+    func invalidateAll() {
+        persistedRecords = nil
+        diskSourcesCache.removeAll()
+        mutationEpoch &+= 1
+        lastSignature = nil
+        lastAvailable = []
+    }
 
     // Keep bindings for unavailable artifacts so a later file at the same path
     // cannot claim an old message. Moving a transcript only changes its chat key.
     func reconcile(sources: [Source], files: [LocatedFile]) throws -> [Record] {
         let prior: [String: Record]
-        if FileManager.default.fileExists(atPath: file.path) {
-            prior = try JSONDecoder().decode([String: Record].self, from: Data(contentsOf: file))
+        if let cached = persistedRecords {
+            prior = cached
+        } else if FileManager.default.fileExists(atPath: file.path) {
+            let decoded = try JSONDecoder().decode([String: Record].self, from: Data(contentsOf: file))
+            persistedRecords = decoded
+            prior = decoded
         } else {
+            persistedRecords = [:]
             prior = [:]
         }
         var records = prior
@@ -102,25 +149,58 @@ actor ArtifactIndex {
             guard !Disk.frozen else { throw CancellationError() }
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try JSONEncoder().encode(records).write(to: file, options: [.atomic, .completeFileProtection])
+            persistedRecords = records
         }
         return available.sorted { ($0.producedAt, $0.entryID) > ($1.producedAt, $1.entryID) }
     }
 
-    func refresh(live: [String: [Entry]], keeping: Bool) throws -> [Record] {
-        var transcripts = live
+    func refresh(live: [String: [Entry]], keeping: Bool, force: Bool = false) throws -> [Record] {
+        let signature = RefreshSignature(
+            mutationEpoch: mutationEpoch,
+            keeping: keeping,
+            mountsRevision: MountedFolders.revision,
+            liveFingerprints: Self.fingerprint(live: live)
+        )
+        if !force, lastSignature == signature {
+            return lastAvailable
+        }
+
+        var sources = live.flatMap { Self.sources(in: $0.value, chat: $0.key) }
         if keeping {
             let directory = Disk.url("chats")
-            let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            for url in files where url.pathExtension == "json" {
-                try Task.checkCancellation()
-                let key = url.deletingPathExtension().lastPathComponent
-                guard (key.hasPrefix("bot-") || key.hasPrefix("room-")), transcripts[key] == nil,
-                      let data = try? Data(contentsOf: url),
-                      let entries = try? JSONDecoder().decode([Entry].self, from: data) else { continue }
-                transcripts[key] = entries
+            if let files = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
+            ) {
+                var seenKeys: Set<String> = []
+                for url in files where url.pathExtension == "json" {
+                    try Task.checkCancellation()
+                    let key = url.deletingPathExtension().lastPathComponent
+                    guard key.hasPrefix("bot-") || key.hasPrefix("room-") else { continue }
+                    seenKeys.insert(key)
+                    guard live[key] == nil else { continue }
+
+                    let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    let mtime = vals?.contentModificationDate ?? .distantPast
+                    let size = vals?.fileSize ?? -1
+
+                    if let cached = diskSourcesCache[key], cached.mtime == mtime, cached.size == size {
+                        sources.append(contentsOf: cached.sources)
+                        continue
+                    }
+
+                    guard let data = try? Data(contentsOf: url),
+                          let entries = try? JSONDecoder().decode([Entry].self, from: data) else { continue }
+                    let parsed = Self.sources(in: entries, chat: key)
+                    diskSourcesCache[key] = CachedTranscriptSources(mtime: mtime, size: size, sources: parsed)
+                    sources.append(contentsOf: parsed)
+                }
+                // Prune deleted chat files from cache.
+                for cachedKey in diskSourcesCache.keys where !seenKeys.contains(cachedKey) {
+                    diskSourcesCache.removeValue(forKey: cachedKey)
+                }
             }
         }
-        let sources = transcripts.flatMap { Self.sources(in: $0.value, chat: $0.key) }
         let mounts = MountedFolders.all()
         var files = try Self.files(root: Workspace.root, mount: nil)
         for mount in mounts {
@@ -130,7 +210,23 @@ actor ArtifactIndex {
             let located = try Self.files(root: opened.url, mount: mount)
             if MountedFolders.isCurrent(mount) { files += located }
         }
-        return try reconcile(sources: sources, files: files)
+        let result = try reconcile(sources: sources, files: files)
+        lastSignature = signature
+        lastAvailable = result
+        return result
+    }
+
+    private static func fingerprint(live: [String: [Entry]]) -> [String: String] {
+        var result: [String: String] = [:]
+        result.reserveCapacity(live.count)
+        for (key, entries) in live {
+            if let last = entries.last {
+                result[key] = "\(entries.count):\(last.id):\(Int64(last.at))"
+            } else {
+                result[key] = "0"
+            }
+        }
+        return result
     }
 
     private static func sources(in entries: [Entry], chat: String) -> [Source] {

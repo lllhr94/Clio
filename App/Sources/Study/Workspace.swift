@@ -634,6 +634,7 @@ enum Workspace {
                 try data.write(to: target, options: .atomic)
             }
         }
+        Task { await ArtifactIndex.shared.markFilesDirty() }
     }
 
     /// What only 书案 has: deleting, and a quick JavaScript calculator. Reading, writing and finding are the workspace tools.

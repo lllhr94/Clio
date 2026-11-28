@@ -1,6 +1,13 @@
 # 现状与交接
 
-## 0.37 Batch 5：核心稳定性收口（`antigravity/batch5-core-stability`）
+## 0.37 Batch 6：中期架构瘦身第一阶段（`antigravity/batch6-architecture-slimming`）
+
+- **`CLIO-039` 流式分块加密备份（`BackupCrypto` v2 + `Backup.swift`）**：新增 `CLIO-BACKUP-ENC-2\n` 1 MiB 分块 AES-256-GCM 流式加密（每块独立派生 nonce，并将头/块序号/终结标志绑定为 AAD 防篡改/截断/尾缀/重排）；`Backup.make` 改为直接通过 `StreamEncryptor` 边打包边加密写盘，既严守 `#keys` 明文 0 字节落盘红线，又将大备份内存峰值压到恒定 ~2 MiB；解密端 `BackupCrypto.decrypt` / `decryptFile` 100% 向后兼容旧版 v1 加密备份；补齐 `BackupCryptoTests` v2 分块与红队单测。
+- **`CLIO-076` 事件驱动 `ArtifactIndex`**：增加内存记录缓存、按聊天文件 `(mtime, size)` 缓存历史会话解析结果，以及 `markFilesDirty` / `markChatDirty` / `invalidateAll` 脏标记信号；接入 `Workspace.writeBytes`、`TeamModel` 清理/删叶与备份恢复流程，避免每次切「资料库」重复全盘扫描与解码历史聊天 JSON。
+- **公共 `SQLiteEngine` 底座 + `SubConversationStore` 加固**：在 `AgentKit/Sources/Craft/SQLiteEngine.swift` 实现零依赖公共 SQLite 连接/语句封装（强制 `FULLMUTEX`、`WAL`、`busy_timeout = 5000`、`synchronous = NORMAL`、`foreign_keys = ON`、iOS 文件保护、事务自动回滚、`user_version` 迁移，严格区分暂态忙锁重试与结构损坏 `.corrupt-*` 隔离）；`SubConversationStore` 迁移上公共引擎并补齐 `SQLiteEngineTests` 与 `Batch6ArchitectureSlimmingTests`。
+- **`Team.swift` 按域拆分第一刀**：将「计划 `Plan` / 历史分支 `Leaves` / 发送队列与恢复闸门 `Queue`」从 4,032 行巨石文件抽出至 `TeamModel+Plan.swift`、`TeamModel+Leaves.swift`、`TeamModel+Queue.swift`，`Team.swift` 净减 897 行（降至 3,135 行），零行为变更。
+
+## 0.37 Batch 5：核心稳定性收口（已合入 `batch-0.37`，PR #124）
 
 - **`CLIO-026` 后台到期回调补停子任务**：`BackgroundTurn.begin` 支持每任务独立 `onExpire` 回调，`SubtaskManager.runAttempt` 注册到期取消闭包，iOS 后台续跑到期时不再只停主轮而漏停异步子任务。
 - **`CLIO-016` 关闭思考误锁修复**：收紧 `WholeTurnRetryArbiter` 在 `thinking == .off` 下的 `rejectsExplicitOff` 判定为仅限 `isThinkingParameterRejection`，避免图片超限 400/422 或额度/鉴权类 400 阻断去图重试与备用模型切换；补齐 `WholeTurnRetryArbiterTests` 回归用例。
