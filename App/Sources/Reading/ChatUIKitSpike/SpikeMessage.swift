@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 
 enum SpikeRole: Sendable, Equatable {
@@ -296,3 +297,4 @@ CATransaction.commit()
         )
     ]
 }
+#endif

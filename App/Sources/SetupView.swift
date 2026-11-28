@@ -471,7 +471,7 @@ struct SetupView: View {
 /// Shared by first-launch setup, manual service addition, and browser authorization.
 @MainActor
 enum ServiceOnboardingEngine {
-    private static let session = URLSession(configuration: .ephemeral)
+    private static var session: URLSession { NetworkRuntime.shared.session(for: .default, ephemeral: true) }
 
     private static func isGo(_ endpoint: Endpoint) -> Bool {
         guard Service.of(endpoint)?.id == "opencode-go", let preset = Service.byID["opencode-go"] else { return false }

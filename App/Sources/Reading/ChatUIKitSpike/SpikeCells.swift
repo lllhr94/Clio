@@ -1,3 +1,4 @@
+#if DEBUG
 import SwiftUI
 import UIKit
 
@@ -280,3 +281,4 @@ final class SpikeUserCell: UICollectionViewCell {
         richTextView.frame = CGRect(x: padH, y: innerY, width: cachedTextWidth, height: cachedTextHeight)
     }
 }
+#endif

@@ -81,7 +81,7 @@ struct WeatherTool: AgentTool {
     private static func get(_ url: URL) async throws -> JSONValue {
         var request = URLRequest(url: url)
         request.timeoutInterval = 20
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkRuntime.shared.session(for: .default).data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw TeamError(message: "天气服务没响应，换网页搜索试试。") }
         return try JSONDecoder().decode(JSONValue.self, from: data)
     }

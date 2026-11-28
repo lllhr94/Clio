@@ -248,7 +248,7 @@ extension TeamModel {
         var request = URLRequest(url: source.url, timeoutInterval: 15)
         request.setValue(source.authorizationValue(for: secret), forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await NetworkRuntime.shared.session(for: .service(endpoint.id)).data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200, let reading = Balance.parse(String(decoding: data, as: UTF8.self), baseURL: endpoint.baseURL) else {
             throw TeamError(message: status == 401 ? "密钥不对，查不了余额。" : "没查到余额（\(status)）。")

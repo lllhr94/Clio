@@ -1,3 +1,4 @@
+#if DEBUG
 import CoreText
 import Foundation
 import Prose
@@ -1191,3 +1192,4 @@ final class SpikeLayoutCache {
         return CGSize(width: min(maxWidth, ceil(fitted.width)), height: ceil(fitted.height))
     }
 }
+#endif

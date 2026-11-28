@@ -1,3 +1,4 @@
+#if DEBUG
 import SwiftUI
 import UIKit
 
@@ -639,3 +640,4 @@ final class SpikeComposerView: UIView, UITextFieldDelegate {
         fadeLayer.endPoint = CGPoint(x: 0.5, y: 1)
     }
 }
+#endif

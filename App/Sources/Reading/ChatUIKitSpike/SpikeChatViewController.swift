@@ -1,3 +1,4 @@
+#if DEBUG
 import QuartzCore
 import SwiftUI
 import UIKit
@@ -890,3 +891,4 @@ final class SpikeChatViewController: UIViewController, UICollectionViewDelegate,
         }
     }
 }
+#endif

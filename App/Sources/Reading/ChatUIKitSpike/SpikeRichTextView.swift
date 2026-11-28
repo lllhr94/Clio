@@ -1,3 +1,4 @@
+#if DEBUG
 import SwiftUI
 import UIKit
 
@@ -454,3 +455,4 @@ final class SpikeRichTextView: UITextView, UITextViewDelegate {
         return stripped
     }
 }
+#endif

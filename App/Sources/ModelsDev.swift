@@ -166,7 +166,7 @@ enum ModelsDev {
                 let policy = ModelsDevCatalogSnapshot.ValidationPolicy.default
                 var request = URLRequest(url: source)
                 request.timeoutInterval = 30
-                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                let (bytes, response) = try await NetworkRuntime.shared.session(for: .default).bytes(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
                 if let expected = (response as? HTTPURLResponse)?.expectedContentLength,
                    expected > 0, Int(expected) > policy.maxBytes {
