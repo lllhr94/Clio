@@ -543,21 +543,11 @@ struct ChatBottomStackView<FindBar: View>: View {
                     }
                 }
                 .background(alignment: .bottom) {
-                    LinearGradient(
-                        stops: [
-                            .init(color: Ink.paper.opacity(0), location: 0),
-                            .init(color: Ink.paper.opacity(0.72), location: 0.24),
-                            .init(color: Ink.paper.opacity(0.94), location: 0.48),
-                            .init(color: Ink.paper.opacity(1.0), location: 0.68),
-                            .init(color: Ink.paper.opacity(1.0), location: 1.0),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .padding(.top, -22)
-                    .padding(.bottom, -48)
-                    .ignoresSafeArea(edges: .bottom)
-                    .allowsHitTesting(false)
+                    FrostedEdgeMist(edge: .bottom)
+                        .padding(.top, -26)
+                        .padding(.bottom, -48)
+                        .ignoresSafeArea(edges: .bottom)
+                        .allowsHitTesting(false)
                 }
                 .overlay(alignment: .top) {
                     ChatDockedJumpOverlaySlot(
@@ -1253,8 +1243,7 @@ private struct ChatComposerMainCard: View {
     }
 
     private func cardBody(composing: Bool) -> some View {
-        let idleMargin = largeText ? Ink.Space.page : 34 * ChatBarMetrics.scale
-        let sidePadding = composing ? Ink.Space.page : idleMargin
+        let sidePadding = Ink.Space.page
         return VStack(alignment: .leading, spacing: Ink.Space.s) {
             ChatComposerQuoteBanner(quote: $quote)
             ChatComposerEditingBanner(editing: $editing, draftState: draftState)

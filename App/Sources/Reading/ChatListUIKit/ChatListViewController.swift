@@ -11,7 +11,7 @@ private final class PassThroughTopEdgeContainerView: UIView {
     weak var hostView: UIView?
     var interactiveRects: [Int: CGRect] = [:]
     var isCollapsed = false
-    private let paperFadeLayer = CAGradientLayer()
+    private let edgeMistView = FrostedEdgeMistUIView(edge: .top)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -24,36 +24,19 @@ private final class PassThroughTopEdgeContainerView: UIView {
     }
 
     private func setupPaperFade() {
-        paperFadeLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
-        paperFadeLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
-        paperFadeLayer.locations = [0.0, 0.50, 0.78, 1.0]
-        paperFadeLayer.zPosition = -1
-        layer.insertSublayer(paperFadeLayer, at: 0)
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: PassThroughTopEdgeContainerView, _) in
-            view.refreshThemeColors()
-        }
+        edgeMistView.isUserInteractionEnabled = false
+        edgeMistView.isAccessibilityElement = false
+        insertSubview(edgeMistView, at: 0)
         refreshThemeColors()
     }
 
     func refreshThemeColors() {
-        let paper = UIColor(Ink.paper).resolvedColor(with: traitCollection)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        paperFadeLayer.colors = [
-            paper.withAlphaComponent(0.98).cgColor,
-            paper.withAlphaComponent(0.92).cgColor,
-            paper.withAlphaComponent(0.66).cgColor,
-            paper.withAlphaComponent(0.0).cgColor,
-        ]
-        CATransaction.commit()
+        edgeMistView.refreshAppearance()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        paperFadeLayer.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height + 16)
-        CATransaction.commit()
+        edgeMistView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height + 24)
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {

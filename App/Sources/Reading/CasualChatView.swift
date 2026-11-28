@@ -351,20 +351,10 @@ struct CasualChatView<TopBar: View>: View {
         .padding(.horizontal, Ink.Space.page)
         .padding(.vertical, Ink.Space.s)
         .background {
-            LinearGradient(
-                stops: [
-                    .init(color: Ink.paper.opacity(0), location: 0),
-                    .init(color: Ink.paper.opacity(0.72), location: 0.28),
-                    .init(color: Ink.paper.opacity(0.96), location: 0.60),
-                    .init(color: Ink.paper.opacity(1.0), location: 0.80),
-                    .init(color: Ink.paper.opacity(1.0), location: 1.0),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .padding(.top, -16)
-            .ignoresSafeArea(edges: .bottom)
-            .allowsHitTesting(false)
+            FrostedEdgeMist(edge: .bottom)
+                .padding(.top, -20)
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
         }
     }
 

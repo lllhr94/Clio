@@ -128,7 +128,7 @@ enum ChatBarMetrics {
     static var avatarSize: CGFloat { 38 * scale }
     static var concentricPadding: CGFloat { (height - avatarSize) / 2 }
     static var itemSpacing: CGFloat { 8 * scale }
-    static var pillTrailing: CGFloat { 14 * scale }
+    static var pillTrailing: CGFloat { 16 * scale }
     static var jumpSize: CGFloat { 44 * scale }
     static var controlHeight: CGFloat { 38 * scale }
     static var iconFontSize: CGFloat { 17 * scale }
@@ -525,9 +525,21 @@ private struct ChatCenteredIdentityPill: View {
             )
             .frame(width: avatarRingSize, height: avatarRingSize)
             .clipShape(Circle())
+            .background {
+                Circle()
+                    .fill(Ink.paperRaised.opacity(0.65))
+                    .shadow(color: Ink.Artwork.black.opacity(0.05), radius: 2, y: 1)
+            }
             .overlay {
                 Circle()
-                    .strokeBorder(Ink.rule, lineWidth: 0.5)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [Ink.Artwork.white.opacity(0.75), Ink.rule.opacity(0.45)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
                     .allowsHitTesting(false)
             }
 
@@ -552,9 +564,11 @@ private struct ChatCenteredIdentityPill: View {
                             .foregroundStyle(Ink.inkSoft)
                             .lineLimit(largeText ? 2 : 1)
                             .truncationMode(.tail)
+                            .layoutPriority(1)
                             .fixedSize(horizontal: false, vertical: true)
                             .contentTransition(.opacity)
                     }
+                    .fixedSize(horizontal: !largeText, vertical: false)
                     .transition(.opacity)
                 }
             }

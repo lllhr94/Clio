@@ -12,12 +12,23 @@ struct CompanionAvatar: View {
     var name: String? = nil
     var seal: String? = nil
 
+    @Environment(\.colorScheme) private var colorScheme
+
     private var choice: String? { face ?? bot?.avatar }
     private var color: Color { wash ?? bot.map { Ink.wash(for: $0) } ?? Ink.accentWash }
     private var photoID: String? { choice == "photo" && photo == nil ? bot?.id : nil }
 
     var body: some View {
         let _ = Avatars.revision
+        let isDark = colorScheme == .dark
+        let rimGradient = LinearGradient(
+            colors: [
+                Ink.Artwork.white.opacity(isDark ? 0.18 : 0.72),
+                Ink.rule.opacity(isDark ? 0.48 : 0.36),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
         Group {
             if let picture = photo ?? photoID.flatMap(Avatars.cachedImage) {
                 Image(uiImage: picture)
@@ -25,6 +36,11 @@ struct CompanionAvatar: View {
                     .scaledToFill()
                     .frame(width: size, height: size)
                     .clipShape(Circle())
+                    .overlay {
+                        Circle()
+                            .strokeBorder(rimGradient, lineWidth: 0.75)
+                            .allowsHitTesting(false)
+                    }
             } else if let pack = Self.legacyPack(for: choice) {
                 PetStill(size: size, state: state, wash: color, avatar: true, explicitPack: pack)
             } else {
@@ -32,7 +48,23 @@ struct CompanionAvatar: View {
                     .font(Ink.mark(size * 0.52, bold: true))
                     .foregroundStyle(Ink.ink)
                     .frame(width: size, height: size)
-                    .background(color, in: Circle())
+                    .background {
+                        ZStack {
+                            Circle().fill(color)
+                            Circle().fill(
+                                LinearGradient(
+                                    colors: [Ink.Artwork.white.opacity(isDark ? 0.08 : 0.36), .clear],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                        }
+                    }
+                    .overlay {
+                        Circle()
+                            .strokeBorder(rimGradient, lineWidth: 0.75)
+                            .allowsHitTesting(false)
+                    }
             }
         }
         .accessibilityHidden(true)

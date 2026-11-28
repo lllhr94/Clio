@@ -955,18 +955,18 @@ private struct FrostedChatChromeModifier<S: InsettableShape>: ViewModifier {
         } else {
             let isDark = colorScheme == .dark
             let tintLayer = (isDark && Theme.shared.oled)
-                ? Ink.paper.opacity(0.08)
-                : Ink.paperRaised.opacity(isDark ? 0.06 : 0.08)
-            let topRim = Ink.Artwork.white.opacity(isDark ? 0.12 : 0.28)
-            let bottomRule = Ink.rule.opacity(isDark ? 0.36 : 0.26)
-            let shadowColor = Ink.Artwork.black.opacity(isDark ? 0.20 : 0.05)
+                ? Ink.paper.opacity(0.32)
+                : Ink.paperRaised.opacity(isDark ? 0.28 : 0.56)
+            let topRim = Ink.Artwork.white.opacity(isDark ? 0.16 : 0.82)
+            let bottomRule = Ink.rule.opacity(isDark ? 0.44 : 0.34)
+            let shadowColor = Ink.Artwork.black.opacity(isDark ? 0.24 : 0.075)
             content
                 .background {
                     ZStack {
-                        shape.fill(.ultraThinMaterial)
+                        shape.fill(.thinMaterial)
                         shape.fill(tintLayer)
                     }
-                    .shadow(color: shadowColor, radius: 8, y: 2)
+                    .shadow(color: shadowColor, radius: 12, y: 3)
                 }
                 .overlay {
                     shape.strokeBorder(
@@ -975,11 +975,134 @@ private struct FrostedChatChromeModifier<S: InsettableShape>: ViewModifier {
                             startPoint: .top,
                             endPoint: .bottom
                         ),
-                        lineWidth: lineWidth
+                        lineWidth: 0.65
                     )
                     .allowsHitTesting(false)
                 }
         }
+    }
+}
+
+/// Progressive edge mist (masked Gaussian backdrop blur + warm paper fade) so floating top/bottom
+/// chat chrome melts scrolled prose smoothly with zero hard edge seam.
+@MainActor
+final class FrostedEdgeMistUIView: UIView {
+    enum Edge {
+        case top
+        case bottom
+    }
+
+    private let edge: Edge
+    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterial))
+    private let blurMaskLayer = CAGradientLayer()
+    private let paperFadeLayer = CAGradientLayer()
+
+    init(edge: Edge) {
+        self.edge = edge
+        super.init(frame: .zero)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        self.edge = .top
+        super.init(coder: coder)
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        setup()
+    }
+
+    private func setup() {
+        blurView.isUserInteractionEnabled = false
+        blurView.isAccessibilityElement = false
+        blurMaskLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
+        blurMaskLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
+        blurView.layer.mask = blurMaskLayer
+        addSubview(blurView)
+
+        paperFadeLayer.startPoint = CGPoint(x: 0.5, y: 0.0)
+        paperFadeLayer.endPoint = CGPoint(x: 0.5, y: 1.0)
+        layer.addSublayer(paperFadeLayer)
+
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: FrostedEdgeMistUIView, _) in
+            view.refreshAppearance()
+        }
+        refreshAppearance()
+    }
+
+    func refreshAppearance() {
+        let reduced = Theme.shared.reduceVisualEffects || UIAccessibility.isReduceTransparencyEnabled
+        blurView.isHidden = reduced
+
+        let opaque = UIColor.black.cgColor
+        switch edge {
+        case .top:
+            blurMaskLayer.locations = [0.0, 0.64, 0.86, 1.0]
+            blurMaskLayer.colors = [
+                opaque,
+                UIColor.black.withAlphaComponent(0.95).cgColor,
+                UIColor.black.withAlphaComponent(0.50).cgColor,
+                UIColor.clear.cgColor,
+            ]
+        case .bottom:
+            blurMaskLayer.locations = [0.0, 0.22, 0.56, 1.0]
+            blurMaskLayer.colors = [
+                UIColor.clear.cgColor,
+                UIColor.black.withAlphaComponent(0.48).cgColor,
+                UIColor.black.withAlphaComponent(0.94).cgColor,
+                opaque,
+            ]
+        }
+
+        let paper = UIColor(Ink.paper).resolvedColor(with: traitCollection)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        switch edge {
+        case .top:
+            paperFadeLayer.locations = [0.0, 0.52, 0.80, 1.0]
+            paperFadeLayer.colors = [
+                paper.withAlphaComponent(reduced ? 0.98 : 0.94).cgColor,
+                paper.withAlphaComponent(reduced ? 0.92 : 0.82).cgColor,
+                paper.withAlphaComponent(reduced ? 0.66 : 0.46).cgColor,
+                paper.withAlphaComponent(0.0).cgColor,
+            ]
+        case .bottom:
+            paperFadeLayer.locations = [0.0, 0.26, 0.58, 1.0]
+            paperFadeLayer.colors = [
+                paper.withAlphaComponent(0.0).cgColor,
+                paper.withAlphaComponent(reduced ? 0.72 : 0.54).cgColor,
+                paper.withAlphaComponent(reduced ? 0.95 : 0.86).cgColor,
+                paper.withAlphaComponent(1.0).cgColor,
+            ]
+        }
+        CATransaction.commit()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        blurView.frame = bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        blurMaskLayer.frame = bounds
+        paperFadeLayer.frame = bounds
+        CATransaction.commit()
+    }
+}
+
+/// SwiftUI wrapper around `FrostedEdgeMistUIView` for bottom composer/dock feathering.
+struct FrostedEdgeMist: UIViewRepresentable {
+    let edge: FrostedEdgeMistUIView.Edge
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func makeUIView(context: Context) -> FrostedEdgeMistUIView {
+        FrostedEdgeMistUIView(edge: edge)
+    }
+
+    func updateUIView(_ uiView: FrostedEdgeMistUIView, context: Context) {
+        let _ = (colorScheme, reduceTransparency, Theme.shared.key, Theme.shared.white, Theme.shared.oled, Theme.shared.reduceVisualEffects)
+        uiView.refreshAppearance()
     }
 }
 
