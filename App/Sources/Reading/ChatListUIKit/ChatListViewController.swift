@@ -153,11 +153,11 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var lastReportedTopBarBottomY: CGFloat = 0
     private var isTopBarCollapsed = false
     private var immersiveRestoreTapGesture: UITapGestureRecognizer?
-    private var dataSource: UICollectionViewDiffableDataSource<ChatListItemID, ChatListItemID>!
-
-    private var items: [ChatListItemID] = []
-    private var itemIndexByID: [ChatListItemID: Int] = [:]
-    private var rowByID: [String: ChatListRowItem] = [:]
+    private let timeline = ChatTimelineDataSource()
+    private var dataSource: ChatTimelineDataSource.CollectionSource! { timeline.collectionSource }
+    private var items: [ChatListItemID] { timeline.items }
+    private var itemIndexByID: [ChatListItemID: Int] { timeline.itemIndexByID }
+    private var rowByID: [String: ChatListRowItem] { timeline.rowByID }
 
     private var expandedThinkingIDs: Set<String> = []
     private var expandedPulseIDs: Set<String> = []
@@ -218,9 +218,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var lastReportedFarFromEnd: Bool?
     private var lastReportedNeedsEndCorrection: Bool?
     private var lastReportedVisibleIDs: [String] = []
-    private var turnUserIDBySection: [String?] = []
-    private var firstUserRowID: String?
-    private var lastUserRowID: String?
+    private var turnUserIDBySection: [String?] { timeline.turnUserIDBySection }
+    private var firstUserRowID: String? { timeline.firstUserRowID }
+    private var lastUserRowID: String? { timeline.lastUserRowID }
     private var lastReportedActiveTurnID: String?
     private var lastReportedReplyOwner: String?
     private var lastReportedReplyRect: CGRect = .null
@@ -231,6 +231,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     private var needsDeferredDynamicRefresh = false
     private var needsDeferredStreamingResize = false
     private var lastMeasuredItemHeights: [ChatListItemID: CGFloat] = [:]
+    private var structuralUserHeights: [ChatListItemID: CGFloat] = [:]
     private var userDefaultsObserver: NSObjectProtocol?
     private var mountedFoldersObserver: NSObjectProtocol?
     private var lastObservedUserAvatarSignature = ""
@@ -815,9 +816,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         collectionView.addGestureRecognizer(tap)
         immersiveRestoreTapGesture = tap
 
-        dataSource = UICollectionViewDiffableDataSource<ChatListItemID, ChatListItemID>(
-            collectionView: collectionView
-        ) { [weak self] collectionView, indexPath, itemID in
+        timeline.attach(to: collectionView) { [weak self] collectionView, indexPath, itemID in
             guard let self else { return UICollectionViewCell() }
             return self.dequeueAndConfigureCell(collectionView: collectionView, indexPath: indexPath, itemID: itemID)
         }
@@ -855,6 +854,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             guard let row = rowByID[id] else { return .absolute(44) }
             switch row.line.kind {
             case .user:
+                if abs(width - lastKnownContentWidth) <= 0.25, let retained = structuralUserHeights[itemID] {
+                    return .absolute(retained)
+                }
                 let h = layoutCache.measureUser(row: row, collectionWidth: width, style: currentStyle).cellHeight
                 lastMeasuredItemHeights[itemID] = h
                 return .absolute(h)
@@ -891,7 +893,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             return .absolute(h)
 
         case .liveThinking:
-            let h = ChatLiveThinkingCell.fixedHeight()
+            let h = ChatLiveThinkingCell.fixedHeight(compact: currentState?.hasStreaming == true)
             lastMeasuredItemHeights[itemID] = h
             return .absolute(h)
 
@@ -904,7 +906,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         case .liveToolTail:
             let chatKey = currentState?.chatKey ?? actions.chat.key
             let tail = actions.team.toolTail(for: chatKey)
-            let h = ChatLiveToolTailCell.measureHeight(lines: tail.lines, style: currentStyle)
+            let h = ChatLiveToolTailCell.measureHeight(lines: tail.lines, style: currentStyle, compact: currentState?.hasStreaming == true)
             lastMeasuredItemHeights[itemID] = h
             return .absolute(h)
 
@@ -1013,7 +1015,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 withReuseIdentifier: ChatLiveThinkingCell.reuseID,
                 for: indexPath
             ) as? ChatLiveThinkingCell else { return UICollectionViewCell() }
-            cell.configure(text: currentState?.streamReasoning ?? "")
+            cell.configure(text: currentState?.streamReasoning ?? "", compact: currentState?.hasStreaming == true)
             return cell
 
         case .liveProse(let gen):
@@ -1041,7 +1043,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             let chatKey = currentState?.chatKey ?? actions.chat.key
             let tail = actions.team.toolTail(for: chatKey)
             let expected = lastMeasuredItemHeights[.liveToolTail] ?? -1
-            cell.configure(tail: tail, style: currentStyle, expectedHeight: expected) { [weak self] h in
+            cell.configure(tail: tail, style: currentStyle, expectedHeight: expected, compact: currentState?.hasStreaming == true) { [weak self] h in
                 self?.handleLiveToolTailHeightChanged(h)
             }
             return cell
@@ -1536,7 +1538,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             }
         }
 
-        let nextItems = buildItemIDs(for: next)
+        let nextItems = ChatTimelineDataSource.buildItemIDs(for: next)
         let nextRowMap = Dictionary(uniqueKeysWithValues: next.rows.map { ($0.line.id, $0) })
         let structuralChanged = nextItems != items || prev.historyInView != next.historyInView
 
@@ -1549,16 +1551,8 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
     }
 
     private func applyInitialState(_ state: ChatListState) {
-        let nextItems = buildItemIDs(for: state)
-        items = nextItems
-        rebuildIndexMaps(rows: state.rows)
-
-        var snapshot = NSDiffableDataSourceSnapshot<ChatListItemID, ChatListItemID>()
-        snapshot.appendSections(nextItems)
-        for id in nextItems {
-            snapshot.appendItems([id], toSection: id)
-        }
-        dataSource.apply(snapshot, animatingDifferences: false)
+        timeline.replace(items: ChatTimelineDataSource.buildItemIDs(for: state), rows: state.rows)
+        timeline.applyStructure()
 
         if collectionView.bounds.width > 0 {
             updateCollectionInsetsIfNeeded()
@@ -1645,18 +1639,14 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         scheduleHostMetricsFlush()
 
-        items = buildItemIDs(for: next)
-        rebuildIndexMaps(rows: next.rows)
+        timeline.replace(items: ChatTimelineDataSource.buildItemIDs(for: next), rows: next.rows)
 
         UIView.performWithoutAnimation {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             isProgrammaticScroll = true
 
-            var snapshot = NSDiffableDataSourceSnapshot<ChatListItemID, ChatListItemID>()
-            snapshot.appendSections(items)
-            for id in items { snapshot.appendItems([id], toSection: id) }
-            dataSource.apply(snapshot, animatingDifferences: false)
+            timeline.applyStructure()
 
             if collectionView.bounds.width > 0 {
                 updateCollectionInsetsIfNeeded()
@@ -1679,9 +1669,9 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         nextRowMap: [String: ChatListRowItem]
     ) {
         let oldRowMap = rowByID
-        rowByID = nextRowMap
-        if prev.rows != next.rows {
-            rebuildTurnUserIndex()
+        let rowsChanged = prev.rows != next.rows
+        if rowsChanged {
+            timeline.updateRows(nextRowMap)
             lastJumpPrewarmKey = nil
         }
         let width = max(240, collectionView.bounds.width)
@@ -1748,7 +1738,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             case .liveThinking:
                 if prev.streamReasoning != next.streamReasoning,
                    let cell = collectionView.cellForItem(at: indexPath) as? ChatLiveThinkingCell {
-                    cell.configure(text: next.streamReasoning)
+                    cell.configure(text: next.streamReasoning, compact: next.hasStreaming)
                 }
 
             case .liveFailure:
@@ -1835,7 +1825,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 }
             }
         }
-        if !layoutMayHaveChanged && prev.rows != next.rows {
+        if !layoutMayHaveChanged && rowsChanged {
             for newRow in next.rows {
                 let id = ChatListItemID.line(newRow.line.id)
                 guard !checkedItemIDs.contains(id), oldRowMap[newRow.line.id] != newRow else { continue }
@@ -2004,10 +1994,13 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             ? topVisibleAnchor()
             : nil
 
-        items = nextItems
         cancelAllPrefetches()
-        lastMeasuredItemHeights.removeAll()
-        rebuildIndexMaps(rows: next.rows)
+        let oldNeighbors = timeline.neighbors
+        timeline.replace(items: nextItems, rowMap: nextRowMap)
+        lastMeasuredItemHeights = switchedHistoryView ? [:] : lastMeasuredItemHeights.filter { itemID, _ in
+            guard case .line(let lineID) = itemID else { return false }
+            return timeline.hasUnchangedRow(lineID, previousRows: oldRowMap, previousNeighbors: oldNeighbors)
+        }
 
         UIView.performWithoutAnimation {
             CATransaction.begin()
@@ -2015,12 +2008,25 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             let wasProgrammatic = isProgrammaticScroll
             isProgrammaticScroll = true
 
-            var snapshot = NSDiffableDataSourceSnapshot<ChatListItemID, ChatListItemID>()
-            snapshot.appendSections(nextItems)
-            for id in nextItems {
-                snapshot.appendItems([id], toSection: id)
+            structuralUserHeights = lastMeasuredItemHeights
+            defer { structuralUserHeights.removeAll(keepingCapacity: true) }
+            timeline.applyStructure()
+
+            if prev.hasStreaming != next.hasStreaming,
+               let section = itemIndexByID[.liveThinking],
+               let thinking = collectionView.cellForItem(at: IndexPath(item: 0, section: section)) as? ChatLiveThinkingCell {
+                thinking.configure(text: next.streamReasoning, compact: next.hasStreaming,
+                                   animateCollapse: !reduceMotionEnabled)
             }
-            dataSource.apply(snapshot, animatingDifferences: false)
+
+            if prev.hasStreaming != next.hasStreaming,
+               let section = itemIndexByID[.liveToolTail],
+               let cell = collectionView.cellForItem(at: IndexPath(item: 0, section: section)) as? ChatLiveToolTailCell {
+                let tail = actions.team.toolTail(for: next.chatKey)
+                cell.configure(tail: tail, style: currentStyle, compact: next.hasStreaming) { [weak self] height in
+                    self?.handleLiveToolTailHeightChanged(height)
+                }
+            }
 
             // Update existing visible cells whose payload changed even though their ID stayed in the snapshot.
             let width = max(240, collectionView.bounds.width)
@@ -2103,65 +2109,6 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
         }
         return zip(prev.starters, next.starters).contains { lhs, rhs in
             lhs.0 != rhs.0 || lhs.1 != rhs.1 || lhs.2 != rhs.2
-        }
-    }
-
-    private func buildItemIDs(for state: ChatListState) -> [ChatListItemID] {
-        var out: [ChatListItemID] = []
-        if !state.loaded || (state.rows.isEmpty && !state.hasStreaming && state.streamPulse.isEmpty && state.streamReasoning.isEmpty) {
-            out.append(.emptyStatus)
-        }
-        if state.canLoadEarlier {
-            out.append(.earlierButton)
-        }
-        for row in state.rows {
-            out.append(.line(row.line.id))
-        }
-        if !state.historyInView {
-            if state.isCompressing { out.append(.liveFolding) }
-            if !state.streamPulse.isEmpty { out.append(.livePulse) }
-            if !state.streamReasoning.isEmpty && !state.hasStreaming { out.append(.liveThinking) }
-            if state.hasStreaming { out.append(.liveProse(state.streamGeneration)) }
-            if state.showToolTail { out.append(.liveToolTail) }
-            if state.failureCardError != nil { out.append(.liveFailure) }
-            for q in state.queuedItems { out.append(.queued(q.id)) }
-        }
-        out.append(.bottomSpacer)
-        return out
-    }
-
-    private func rebuildIndexMaps(rows: [ChatListRowItem]) {
-        itemIndexByID.removeAll(keepingCapacity: true)
-        for (idx, item) in items.enumerated() {
-            itemIndexByID[item] = idx
-        }
-        rowByID.removeAll(keepingCapacity: true)
-        for row in rows {
-            rowByID[row.line.id] = row
-        }
-        rebuildTurnUserIndex()
-    }
-
-    private func rebuildTurnUserIndex() {
-        var firstUser: String?
-        var lastUser: String?
-        for item in items {
-            if case .line(let id) = item, rowByID[id]?.line.kind == .user {
-                if firstUser == nil { firstUser = id }
-                lastUser = id
-            }
-        }
-        firstUserRowID = firstUser
-        lastUserRowID = lastUser
-
-        turnUserIDBySection = []
-        turnUserIDBySection.reserveCapacity(items.count)
-        var currentUserID = firstUser
-        for item in items {
-            if case .line(let id) = item, rowByID[id]?.line.kind == .user {
-                currentUserID = id
-            }
-            turnUserIDBySection.append(currentUserID)
         }
     }
 
@@ -2317,7 +2264,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
                 (collectionView.cellForItem(at: indexPath) as? ChatLiveFoldingCell)?.refreshTypography()
             case .liveThinking:
                 if let cell = collectionView.cellForItem(at: indexPath) as? ChatLiveThinkingCell {
-                    cell.configure(text: currentState?.streamReasoning ?? "")
+                    cell.configure(text: currentState?.streamReasoning ?? "", compact: currentState?.hasStreaming == true)
                 }
             case .liveToolTail:
                 (collectionView.cellForItem(at: indexPath) as? ChatLiveToolTailCell)?.refreshTypography(style: currentStyle)
@@ -3239,10 +3186,28 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
 
             let composerBottomInView = bottomDockContainerView?.frame.maxY
                 ?? (view.bounds.height - view.safeAreaInsets.bottom)
-            let composerStartInCollection = collectionView.convert(
+            var composerStartInCollection = collectionView.convert(
                 CGPoint(x: view.bounds.midX, y: composerBottomInView - ChatBarMetrics.height * 0.5 - Ink.Space.s),
                 from: view
             )
+            let clock = SharedFrameDriver.shared
+            let now = CACurrentMediaTime()
+            let nextFrame = clock.predictedNextPresentationTime(now: now)
+            if let dock = bottomDockContainerView, let presented = dock.layer.presentation() {
+                let nextBottom = ChatMotionFrameProjection.nextValue(
+                    presented: presented.frame.maxY, model: composerBottomInView,
+                    now: now, target: nextFrame, frameDuration: clock.frameDuration
+                )
+                composerStartInCollection.y += nextBottom - composerBottomInView
+            }
+            if let presented = collectionView.layer.presentation() {
+                let model = collectionView.bounds.origin.y
+                let nextOffset = ChatMotionFrameProjection.nextValue(
+                    presented: presented.bounds.origin.y, model: model,
+                    now: now, target: nextFrame, frameDuration: clock.frameDuration
+                )
+                composerStartInCollection.y += nextOffset - model
+            }
             let clampedStartY = min(
                 targetRect.midY + view.bounds.height * 0.62,
                 max(targetRect.midY + 28, composerStartInCollection.y)
@@ -4010,7 +3975,7 @@ final class ChatListViewController: UIViewController, UICollectionViewDelegate, 
             let chatKey = currentState?.chatKey ?? actions.chat.key
             let tail = actions.team.toolTail(for: chatKey)
             let expected = lastMeasuredItemHeights[.liveToolTail] ?? -1
-            toolTailCell.configure(tail: tail, style: currentStyle, expectedHeight: expected) { [weak self] h in
+            toolTailCell.configure(tail: tail, style: currentStyle, expectedHeight: expected, compact: currentState?.hasStreaming == true) { [weak self] h in
                 self?.handleLiveToolTailHeightChanged(h)
             }
         }

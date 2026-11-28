@@ -83,3 +83,14 @@ enum ChatSendFlightPolicy {
         return .overlayFlyIn
     }
 }
+
+/// Samples geometry at the same presentation horizon for both coordinate spaces.
+enum ChatMotionFrameProjection {
+    static func nextValue(presented: CGFloat, model: CGFloat, now: CFTimeInterval,
+                          target: CFTimeInterval, frameDuration: CFTimeInterval) -> CGFloat {
+        guard presented.isFinite, model.isFinite, now.isFinite, target.isFinite,
+              frameDuration.isFinite, frameDuration > 0 else { return model }
+        let remaining = max(0, min(1, (target - now) / frameDuration))
+        return presented + (model - presented) * CGFloat(remaining * 0.25)
+    }
+}

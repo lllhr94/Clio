@@ -2326,6 +2326,25 @@ final class ChatProsePictureView: UIView {
     }
 
     @objc private func handleImageTap() {
+        guard canOpen else { return }
+        guard !ClioTransition.shouldSimplifyMotion, let clock = window?.windowScene,
+              clock.activationState == .foregroundActive else {
+            openCurrentImage()
+            return
+        }
+        let expectedGeneration = generation
+        let expectedSource = currentSource
+        let driver = SharedFrameDriver.shared
+        let now = CACurrentMediaTime()
+        let delay = min(1.0 / 30, max(0, driver.predictedNextPresentationTime(now: now) - now))
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.generation == expectedGeneration, self.currentSource == expectedSource,
+                  self.imageView.window != nil else { return }
+            self.openCurrentImage()
+        }
+    }
+
+    private func openCurrentImage() {
         if let ref = workspaceRef, !ref.isMountCurrent {
             let decodedPath = currentSource.removingPercentEncoding ?? currentSource
             LocalPictureCache.set(nil, for: decodedPath)
@@ -2345,7 +2364,7 @@ final class ChatProsePictureView: UIView {
                 let vc = UIHostingController(rootView: NavigationStack {
                     StudyFile(url: ref.url, mount: ref.mount, showsDone: true)
                 })
-                if !UIAccessibility.isReduceMotionEnabled {
+                if !ClioTransition.shouldSimplifyMotion {
                     let expectedSource = currentSource
                     let expectedGeneration = generation
                     vc.preferredTransition = .zoom { [weak self] _ in
@@ -2368,7 +2387,7 @@ final class ChatProsePictureView: UIView {
             }
         } else if let remoteFile, let host = hostViewController, host.presentedViewController == nil {
             let vc = QuickPreviewHostingController(tempFile: remoteFile)
-            if !UIAccessibility.isReduceMotionEnabled {
+            if !ClioTransition.shouldSimplifyMotion {
                 let expectedSource = currentSource
                 let expectedGeneration = generation
                 vc.preferredTransition = .zoom { [weak self] _ in
